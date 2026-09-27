@@ -46,7 +46,7 @@ public sealed class SqlSalesPricing(NexoraDbContext db, ITenantContext tenant) :
         {
             var coupon = await db.Database.SqlQuery<CouponRow>($"""
                 SELECT id AS "Id", discount_type AS "DiscountType", discount_value AS "DiscountValue"
-                FROM nexora.coupon WHERE company_id = {Company} AND code = {couponCode} AND status = 'active'
+                FROM nexora.coupon WHERE company_id = {Company} AND upper(code) = upper({couponCode.Trim()}) AND status = 'active'
                   AND (valid_from IS NULL OR valid_from <= {at})
                   AND (valid_to IS NULL OR valid_to >= {at})
                   AND (usage_limit IS NULL OR used_count < usage_limit)

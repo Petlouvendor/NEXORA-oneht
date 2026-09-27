@@ -33,6 +33,7 @@ export interface CustomerProfile {
   secondaryContactName: string | null;
   secondaryContactPhone: string | null;
   segment: string | null;
+  customerGroupId: string | null;
   customerGroupName: string | null;
   accountManagerId: string | null;
   accountManagerName: string | null;
@@ -49,6 +50,8 @@ export type CustomerPatch = Partial<{
   name: string; type: string; firstName: string; phone: string; email: string; address: string; city: string;
   country: string; taxIdentifier: string; secondaryContactName: string; secondaryContactPhone: string; segment: string;
   notes: string; creditLimit: number; creditDays: number; creditTerms: string;
+  /** Groupe de clients : ses prix de groupe s'appliquent en caisse. */
+  customerGroupId: string;
 }>;
 
 export const getCustomer = (id: string) => apiFetch<CustomerProfile>(`/customers/${id}`);

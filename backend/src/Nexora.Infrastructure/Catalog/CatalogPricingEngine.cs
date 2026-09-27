@@ -113,7 +113,7 @@ public sealed class CatalogPricingEngine(NexoraDbContext db, ITenantContext tena
                 SELECT id AS "Id", discount_type AS "DiscountType", discount_value AS "DiscountValue",
                        usage_limit AS "UsageLimit", used_count AS "UsedCount"
                 FROM nexora.coupon
-                WHERE company_id = {Company} AND code = {req.CouponCode} AND status = 'active'
+                WHERE company_id = {Company} AND upper(code) = upper({req.CouponCode.Trim()}) AND status = 'active'
                   AND (valid_from IS NULL OR valid_from <= {at})
                   AND (valid_to IS NULL OR valid_to >= {at})
                 """).FirstOrDefaultAsync(ct);

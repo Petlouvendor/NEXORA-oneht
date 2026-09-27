@@ -21,6 +21,7 @@ import { ExpenseDialog, OpenCreditDialog, PaymentDialog, RefundDialog, ScheduleF
 import { ActionMenu, PrintMenu } from "@/shared/ExportMenu";
 import { Icon } from "@/shared/icons";
 import { customerStatement } from "@/shared/printApi";
+import { listCustomerGroups, type CustomerGroup } from "@/catalog/catalogApi";
 
 type Tone = "success" | "warning" | "error" | "info" | undefined;
 const creditTone = (s: string): Tone =>
@@ -233,6 +234,8 @@ function ProfileCard({ profile, canEdit, canCredit, onChanged }: {
   const [form, setForm] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Groupes de clients (prix de groupe en caisse) — liste lue au catalogue ; sans accès, le champ n'apparaît pas.
+  const [groups, setGroups] = useState<CustomerGroup[] | null>(null);
 
   const fields: Array<[string, string, string | null]> = [
     ["firstName", "Prénom", profile.firstName], ["name", "Nom / raison sociale", profile.name],
@@ -250,7 +253,11 @@ function ProfileCard({ profile, canEdit, canCredit, onChanged }: {
   ];
 
   function start() {
-    setForm(Object.fromEntries([...fields.map(([k, , v]) => [k, v ?? ""]), ...creditFields.map(([k, , v]) => [k, v])]));
+    setForm({
+      ...Object.fromEntries([...fields.map(([k, , v]) => [k, v ?? ""]), ...creditFields.map(([k, , v]) => [k, v])]),
+      customerGroupId: profile.customerGroupId ?? "",
+    });
+    listCustomerGroups().then(setGroups).catch(() => setGroups(null));
     setError(null);
     setEditing(true);
   }
@@ -261,6 +268,7 @@ function ProfileCard({ profile, canEdit, canCredit, onChanged }: {
     try {
       const patch: Record<string, string | number> = {};
       fields.forEach(([k, , v]) => { if ((form[k] ?? "") !== (v ?? "")) patch[k] = form[k]; });
+      if (form.customerGroupId && form.customerGroupId !== (profile.customerGroupId ?? "")) patch.customerGroupId = form.customerGroupId;
       if (canCredit) {
         if (form.creditLimit !== String(profile.creditLimit ?? "")) patch.creditLimit = Number(form.creditLimit) || 0;
         if (form.creditDays !== String(profile.creditDays ?? "") && form.creditDays !== "") patch.creditDays = Number(form.creditDays);
@@ -315,6 +323,14 @@ function ProfileCard({ profile, canEdit, canCredit, onChanged }: {
               <TextInput value={form[k] ?? ""} onChange={(e) => setForm((f) => ({ ...f, [k]: e.target.value }))} />
             </Field>
           ))}
+          {groups && groups.length > 0 && (
+            <Field label="Groupe de clients" hint="Les prix du groupe s'appliquent automatiquement en caisse.">
+              <Select value={form.customerGroupId ?? ""} onChange={(e) => setForm((f) => ({ ...f, customerGroupId: e.target.value }))}>
+                <option value="">{profile.customerGroupId ? "(inchangé)" : "(aucun)"}</option>
+                {groups.filter((g) => g.status === "active").map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+              </Select>
+            </Field>
+          )}
           {creditFields.map(([k, label]) => (
             <Field key={k} label={label} hint={canCredit ? undefined : "Réservé à la permission credit.set_limit."}>
               <TextInput value={form[k] ?? ""} disabled={!canCredit} type={k === "creditTerms" ? "text" : "number"}

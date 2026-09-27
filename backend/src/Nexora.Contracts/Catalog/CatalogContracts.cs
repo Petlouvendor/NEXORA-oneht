@@ -56,6 +56,8 @@ public sealed record UpdateCategoryRequest(string Name, string? Code, Guid? Pare
 // --- Marques & groupes de clients (référentiels des formulaires produit / prix) ----
 
 public sealed record BrandDto(Guid Id, string Name, string Status);
+/// <summary>Devise active ; <paramref name="IsCompanyDefault"/> = devise par défaut de l'entreprise active.</summary>
+public sealed record CurrencyDto(string Code, string Name, string Symbol, short DecimalPlaces, bool IsCompanyDefault);
 public sealed record CustomerGroupDto(Guid Id, string Name, string? Description, string Status);
 public sealed record CreateNamedItemRequest(string Name, string? Description);
 

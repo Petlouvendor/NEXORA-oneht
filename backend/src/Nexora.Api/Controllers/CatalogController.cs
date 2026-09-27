@@ -137,7 +137,9 @@ public sealed class CatalogController(
     public async Task<IActionResult> GetImage(Guid id, CancellationToken ct)
     {
         var result = await references.GetProductImageAsync(id, ct);
-        return result.IsSuccess ? File(result.Value.Content, result.Value.ContentType) : FromResult(result);
+        if (!result.IsSuccess) return FromResult(result);
+        var ext = result.Value.ContentType switch { "image/jpeg" => "jpg", "image/webp" => "webp", _ => "png" };
+        return Download(result.Value.Content, result.Value.ContentType, $"produit-{id:N}.{ext}");
     }
 
     // --- Listes tarifaires (§18) -------------------------------------
@@ -188,6 +190,11 @@ public sealed class CatalogController(
     [RequirePermission(Permissions.Catalog.ManagePromotion)]
     public async Task<IActionResult> SetCouponStatus(Guid id, [FromBody] SetStatusRequest r, CancellationToken ct)
         => FromResult(await promotions.SetCouponStatusAsync(id, r.Status, ct));
+
+    // --- Devises (formulaires de prix) ------------------------------------
+    [HttpGet("currencies")]
+    [RequirePermission(Permissions.Catalog.View)]
+    public async Task<IActionResult> ListCurrencies(CancellationToken ct) => Ok(await references.ListCurrenciesAsync(ct));
 
     // --- Marques & groupes de clients -----------------------------------
     [HttpGet("brands")]

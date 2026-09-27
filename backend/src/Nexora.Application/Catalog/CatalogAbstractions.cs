@@ -40,6 +40,7 @@ public interface ICatalogQueries
 /// </summary>
 public interface ICatalogReferenceService
 {
+    Task<IReadOnlyList<CurrencyDto>> ListCurrenciesAsync(CancellationToken ct = default);
     Task<IReadOnlyList<BrandDto>> ListBrandsAsync(CancellationToken ct = default);
     Task<Result<Guid>> CreateBrandAsync(CreateNamedItemRequest request, CancellationToken ct = default);
     Task<IReadOnlyList<CustomerGroupDto>> ListCustomerGroupsAsync(CancellationToken ct = default);

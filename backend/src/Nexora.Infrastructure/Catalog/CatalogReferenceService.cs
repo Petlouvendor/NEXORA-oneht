@@ -27,6 +27,16 @@ public sealed class SqlCatalogReferenceService(
 
     // --------------------------------------------------- Marques & groupes clients
 
+    public async Task<IReadOnlyList<CurrencyDto>> ListCurrenciesAsync(CancellationToken ct = default)
+        => await db.Database.SqlQuery<CurrencyDto>($"""
+            SELECT cur.code AS "Code", cur.name AS "Name", cur.symbol AS "Symbol", cur.decimal_places AS "DecimalPlaces",
+                   (cur.id = co.default_currency_id) AS "IsCompanyDefault"
+            FROM nexora.currency cur
+            CROSS JOIN nexora.company co
+            WHERE co.id = {Company} AND cur.status = 'active'
+            ORDER BY (cur.id = co.default_currency_id) DESC, cur.code
+            """).ToListAsync(ct);
+
     public async Task<IReadOnlyList<BrandDto>> ListBrandsAsync(CancellationToken ct = default)
         => await db.Database.SqlQuery<BrandDto>($"""
             SELECT id AS "Id", name AS "Name", status AS "Status" FROM nexora.brand
