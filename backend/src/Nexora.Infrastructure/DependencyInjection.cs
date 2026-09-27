@@ -133,6 +133,9 @@ public static class DependencyInjection
         services.AddScoped<IStockLedger, EfStockLedger>();
         services.AddScoped<ICatalogStore, EfCatalogStore>();
         services.AddScoped<ICatalogPricingEngine, CatalogPricingEngine>();
+        services.AddScoped<ICatalogReferenceService, Nexora.Infrastructure.Catalog.SqlCatalogReferenceService>();
+        services.AddScoped<IUnitConverter, Nexora.Infrastructure.Catalog.SqlUnitConverter>();
+        services.AddScoped<IPromotionService, Nexora.Infrastructure.Catalog.SqlPromotionService>();
         services.AddScoped<ICatalogQueries, CatalogQueries>();
         services.AddScoped<IPurchasingStore, EfPurchasingStore>();
         services.AddScoped<IPurchasingQueries, SqlPurchasingQueries>();

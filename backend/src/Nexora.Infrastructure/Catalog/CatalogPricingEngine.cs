@@ -24,7 +24,6 @@ public sealed class CatalogPricingEngine(NexoraDbContext db, ITenantContext tena
     private sealed record PriceRow(
         decimal Amount, bool TaxIncluded, decimal? MinPrice, decimal QuantityMin,
         Guid? PriceListId, Guid? CustomerGroupId);
-    private sealed record PromoRow(Guid Id, string PromoType, decimal Value, string Name);
     private sealed record CouponRow(Guid Id, string DiscountType, decimal DiscountValue, int? UsageLimit, int UsedCount);
 
     public async Task<Result<PriceQuoteDto>> QuoteAsync(PriceQuoteRequest req, CancellationToken ct = default)
@@ -95,29 +94,10 @@ public sealed class CatalogPricingEngine(NexoraDbContext db, ITenantContext tena
         decimal discountTotal = 0m;
 
         // --- 5. Promotion --------------------------------------------------
-        var promo = await db.Database.SqlQuery<PromoRow>($"""
-            SELECT pr.id AS "Id", pr.promo_type AS "PromoType", pr.value AS "Value", pr.name AS "Name"
-            FROM nexora.promotion pr
-            JOIN nexora.promotion_target pt ON pt.promotion_id = pr.id
-            WHERE pr.company_id = {Company} AND pr.status = 'active'
-              AND (pr.starts_at IS NULL OR pr.starts_at <= {at})
-              AND (pr.ends_at IS NULL OR pr.ends_at >= {at})
-              AND (pt.target_type = 'all'
-                   OR (pt.target_type = 'product'  AND pt.product_id  = {req.ProductId})
-                   OR (pt.target_type = 'category' AND pt.category_id = {product.CategoryId})
-                   OR (pt.target_type = 'brand'    AND pt.brand_id    = {product.BrandId}))
-            ORDER BY pr.priority DESC, pr.value DESC LIMIT 1
-            """).FirstOrDefaultAsync(ct);
-
+        var promo = await PromotionResolver.FindAsync(db, Company, req.ProductId, product.CategoryId, product.BrandId, at, ct);
         if (promo is not null)
         {
-            var d = promo.PromoType switch
-            {
-                "percentage" => R2(lineNet * promo.Value / 100m),
-                "amount" => Math.Min(lineNet, R2(promo.Value * qty)),
-                "price_override" => Math.Max(0m, lineNet - R2(promo.Value * qty)),
-                _ => 0m,
-            };
+            var d = PromotionCalculator.Discount(promo, netUnit, qty, lineNet);
             if (d > 0m)
             {
                 discountTotal += d;

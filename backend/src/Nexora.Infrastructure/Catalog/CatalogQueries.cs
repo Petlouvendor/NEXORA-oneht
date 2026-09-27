@@ -192,10 +192,33 @@ public sealed class CatalogQueries(NexoraDbContext db, ITenantContext tenant, IP
             suppliers = [];
         }
 
+        var unitCode = await db.Database
+            .SqlQuery<string>($"""SELECT code AS "Value" FROM nexora.unit WHERE id = {p.UnitId}""")
+            .FirstOrDefaultAsync(ct);
+        // Règle générale (tous emplacements) : c'est celle que la fiche produit édite.
+        var reorder = await db.Database.SqlQuery<ReorderRuleDto>($"""
+            SELECT min_quantity AS "MinQuantity", max_quantity AS "MaxQuantity", reorder_point AS "ReorderPoint",
+                   reorder_quantity AS "ReorderQuantity", lead_time_days AS "LeadTimeDays", auto_order AS "AutoOrder"
+            FROM nexora.product_reorder_rule
+            WHERE product_id = {productId} AND inventory_location_id IS NULL AND status = 'active'
+            """).FirstOrDefaultAsync(ct);
+        var conversions = await db.Database.SqlQuery<UnitConversionDto>($"""
+            SELECT uc.id AS "Id", uc.product_id AS "ProductId",
+                   uc.from_unit_id AS "FromUnitId", fu.code AS "FromUnitCode",
+                   uc.to_unit_id AS "ToUnitId", tu.code AS "ToUnitCode", uc.factor AS "Factor"
+            FROM nexora.unit_conversion uc
+            JOIN nexora.unit fu ON fu.id = uc.from_unit_id
+            JOIN nexora.unit tu ON tu.id = uc.to_unit_id
+            WHERE uc.product_id = {productId}
+            ORDER BY fu.code, tu.code
+            """).ToListAsync(ct);
+        var hasImage = p.ImageUrl?.StartsWith(SqlCatalogReferenceService.ImagePrefix, StringComparison.Ordinal) == true;
+
         return new ProductDetailDto(
             p.Id, p.Sku, p.Name, p.ShortName, p.Description, p.ProductType, p.Status,
-            p.PluCode, p.ManufacturerRef, p.InternalRef, p.ImageUrl, categoryName, brandName,
-            p.TrackLots, p.IsWeighed, prices, barcodes, suppliers);
+            p.PluCode, p.ManufacturerRef, p.InternalRef, hasImage ? null : p.ImageUrl, categoryName, brandName,
+            p.TrackLots, p.IsWeighed, prices, barcodes, suppliers,
+            p.CategoryId, p.BrandId, p.UnitId, unitCode, p.DefaultTaxId, reorder, hasImage, conversions);
     }
 
     public async Task<IReadOnlyList<CategoryDto>> ListCategoriesAsync(CancellationToken ct = default)
