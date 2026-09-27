@@ -1,0 +1,12 @@
+# Contexte de build Docker = racine du dépôt (l'API embarque database/migrations — §20).
+**/bin/
+**/obj/
+**/node_modules/
+**/TestResults/
+frontend/
+build/
+docs/
+.git/
+.github/
+.vscode/
+.claude/

@@ -1,0 +1,48 @@
+# --- .NET ---
+bin/
+obj/
+*.user
+*.suo
+[Dd]ebug/
+[Rr]elease/
+artifacts/
+.vs/
+TestResults/
+*.trx
+*.coverage
+coverage/
+
+# --- Node / frontend ---
+node_modules/
+dist/
+dist-ssr/
+*.local
+.vite/
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# --- Secrets & config locale (Phase 3 §18) ---
+*.env
+.env.*.local
+appsettings.*.Local.json
+secrets.json
+*.pfx
+*.key
+
+# --- Éditeurs / OS ---
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# --- Divers ---
+*.log
+/tmp/
+
+# TypeScript incremental build
+*.tsbuildinfo
+
+# --- Outils locaux ---
+.claude/settings.local.json
+.claude/*.lock

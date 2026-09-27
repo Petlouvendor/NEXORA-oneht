@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+jobs:
+  # --- Base de données : validation des migrations (Phase 3 §27, §28) ---
+  database:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: nexora
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      PGPASSWORD: postgres
+    steps:
+      - uses: actions/checkout@v4
+      - name: Appliquer les migrations
+        run: |
+          cd database/scripts
+          PSQL_BIN=psql PGHOST=localhost PGUSER=postgres bash apply.sh nexora
+      - name: Test fonctionnel du modèle
+        run: psql -h localhost -U postgres -d nexora -v ON_ERROR_STOP=1 -f database/scripts/smoke_test.sql
+
+  # --- Backend : build, analyse, tests ---
+  backend:
+    runs-on: ubuntu-latest
+    needs: database
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: nexora
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      PGPASSWORD: postgres
+      NEXORA_IT_ADMIN: "Host=localhost;Port=5432;Username=postgres;Password=postgres;Database=postgres"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Base de test (migrations + démo)
+        run: |
+          cd database/scripts
+          PSQL_BIN=psql PGHOST=localhost PGUSER=postgres bash apply.sh nexora
+          psql -h localhost -U postgres -d nexora -v ON_ERROR_STOP=1 -f ../seeds/demo_abc_group.sql
+          psql -h localhost -U postgres -d nexora -c "ALTER ROLE nexora_app WITH PASSWORD 'nexora_app_dev';"
+      - name: Restore
+        run: dotnet restore backend/Nexora.sln
+      - name: Build (warnings = errors)
+        run: dotnet build backend/Nexora.sln -c Release --no-restore
+      - name: Tests (unitaires + API + intégration)
+        run: dotnet test backend/Nexora.sln -c Release --no-build
+      - name: Scan de vulnérabilités des dépendances (§28)
+        run: dotnet list backend/Nexora.sln package --vulnerable --include-transitive
+
+  # --- Frontend : build & typecheck ---
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend/nexora-web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/nexora-web/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build

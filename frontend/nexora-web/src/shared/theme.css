@@ -1,0 +1,636 @@
+/* =============================================================================
+   NEXORA ONE — Design System v2 (docs/design-system.md, brief NEXORA ONE §3-4)
+   Dark Premium + Electric Turquoise + profondeur/verre subtils, par défaut ;
+   mode clair + densité + accessibilité. Tokens sur :root (sombre) ; le mode
+   clair redéfinit UNIQUEMENT les couleurs.
+   ========================================================================== */
+
+:root {
+  color-scheme: dark;
+
+  /* --- Couleur de marque : accent technologique, jamais dominante (§3) --- */
+  --nx-brand: #00f5d4;
+  --nx-brand-strong: #17ffe0;
+  --nx-brand-ink: #03201c;              /* texte sur fond accent */
+  --nx-brand-soft: rgba(0, 245, 212, 0.10);
+  --nx-brand-line: rgba(0, 245, 212, 0.32);
+
+  /* --- Surfaces & texte (sombre, palette du brief §3) --- */
+  --nx-bg: #05080a;
+  --nx-surface: #0b1114;
+  --nx-surface-2: #10191d;
+  --nx-surface-3: #172328;
+  --nx-border: rgba(255, 255, 255, 0.08);
+  --nx-border-strong: rgba(255, 255, 255, 0.14);
+  --nx-text: #f4f7f7;
+  --nx-text-2: #8a9a9d;
+  --nx-text-3: #5f6f73;
+  --nx-overlay: rgba(2, 4, 5, 0.70);
+
+  /* --- Sémantique d'état (§3 : ambre, rouge contrôlé, vert ; couleur + icône, jamais seule) --- */
+  --nx-success: #3ddc97;
+  --nx-success-bg: rgba(61, 220, 151, 0.12);
+  --nx-warning: #ffb547;
+  --nx-warning-bg: rgba(255, 181, 71, 0.12);
+  --nx-error: #f2566f;
+  --nx-error-bg: rgba(242, 86, 111, 0.12);
+  --nx-info: #6cb6ff;
+  --nx-info-bg: rgba(108, 182, 255, 0.12);
+
+  /* --- Profondeur & verre (§3 « glass / depth subtil ») --- */
+  --nx-glass: rgba(11, 17, 20, 0.72);
+  --nx-glass-blur: 14px;
+  --nx-elev-1: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 1px 2px rgba(0, 0, 0, 0.35);
+  --nx-elev-2: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 12px 32px -16px rgba(0, 0, 0, 0.7);
+  --nx-elev-3: 0 1px 0 rgba(255, 255, 255, 0.05) inset, 0 24px 60px -20px rgba(0, 0, 0, 0.85);
+  --nx-glow: 0 0 0 1px var(--nx-brand-line), 0 8px 28px -12px rgba(0, 245, 212, 0.35);
+  /* Signature NEXORA AI / Intelligence : un liseré, jamais un aplat. */
+  --nx-ai-gradient: linear-gradient(135deg, rgba(0, 245, 212, 0.16), rgba(108, 182, 255, 0.06) 45%, transparent 70%);
+
+  /* --- Données financières (§33) --- */
+  --nx-pos: var(--nx-success);
+  --nx-neg: var(--nx-error);
+
+  /* --- Rythme & formes --- */
+  --nx-space: 8px;
+  --nx-radius: 10px;
+  --nx-radius-sm: 7px;
+  --nx-radius-lg: 16px;
+  --nx-radius-xl: 22px;
+  --nx-gap: 16px;                       /* gouttière de la grille (§4 « grille cohérente ») */
+  --nx-shadow: var(--nx-elev-2);
+  --nx-ring: 0 0 0 2px var(--nx-bg), 0 0 0 4px var(--nx-brand);
+
+  /* --- Typographie --- */
+  --nx-font: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --nx-font-num: "Inter", "SF Mono", ui-monospace, "Cascadia Mono", Menlo, monospace;
+  --nx-fs-xs: 11px;
+  --nx-fs-sm: 12.5px;
+  --nx-fs-md: 14px;
+  --nx-fs-lg: 16px;
+  --nx-fs-xl: 20px;
+  --nx-fs-2xl: 26px;
+  --nx-control-h: 38px;
+  --nx-control-pad: 10px 12px;
+  --nx-tap: 40px;                       /* zone tactile minimale §8/§27 */
+
+  --nx-dur: 140ms;
+  --nx-ease: cubic-bezier(0.2, 0.7, 0.3, 1);
+
+  /* Échelle de texte accessible (§31) — pilotée par les préférences utilisateur (0.85–1.5). */
+  --nx-text-scale: 1;
+
+  font-family: var(--nx-font);
+  font-size: calc(var(--nx-fs-md) * var(--nx-text-scale));
+}
+
+/* --- Mode clair : choix explicite --- */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --nx-brand: #00b89e;
+  --nx-brand-strong: #00a894;
+  --nx-brand-ink: #ffffff;
+  --nx-bg: #f5f7f8;
+  --nx-surface: #ffffff;
+  --nx-surface-2: #eef2f3;
+  --nx-surface-3: #e4eaec;
+  --nx-border: #dde4e6;
+  --nx-border-strong: #c7d1d4;
+  --nx-text: #0b1316;
+  --nx-text-2: #52636a;
+  --nx-text-3: #7b8b90;
+  --nx-overlay: rgba(11, 19, 22, 0.32);
+  --nx-success: #12a866;
+  --nx-success-bg: rgba(18, 168, 102, 0.12);
+  --nx-warning: #a9700a;
+  --nx-warning-bg: rgba(214, 158, 46, 0.16);
+  --nx-error: #d63a56;
+  --nx-error-bg: rgba(214, 58, 86, 0.1);
+  --nx-info: #1f78c8;
+  --nx-info-bg: rgba(31, 120, 200, 0.1);
+  --nx-shadow: 0 1px 2px rgba(11, 19, 22, 0.06), 0 12px 28px -14px rgba(11, 19, 22, 0.22);
+    --nx-brand-soft: rgba(0, 184, 158, 0.10);
+    --nx-brand-line: rgba(0, 168, 148, 0.40);
+    --nx-glass: rgba(255, 255, 255, 0.78);
+    --nx-elev-1: 0 1px 2px rgba(11, 19, 22, 0.06);
+    --nx-elev-2: 0 1px 2px rgba(11, 19, 22, 0.06), 0 12px 28px -14px rgba(11, 19, 22, 0.22);
+    --nx-elev-3: 0 2px 4px rgba(11, 19, 22, 0.06), 0 24px 56px -20px rgba(11, 19, 22, 0.30);
+    --nx-glow: 0 0 0 1px var(--nx-brand-line), 0 8px 24px -14px rgba(0, 168, 148, 0.40);
+    --nx-ai-gradient: linear-gradient(135deg, rgba(0, 184, 158, 0.12), rgba(31, 120, 200, 0.05) 45%, transparent 70%);
+}
+
+/* --- Mode « système » : suit prefers-color-scheme --- */
+@media (prefers-color-scheme: light) {
+  :root[data-theme="system"] {
+    color-scheme: light;
+    --nx-brand: #00b89e;
+    --nx-brand-strong: #00a894;
+    --nx-brand-ink: #ffffff;
+    --nx-bg: #f5f7f8;
+    --nx-surface: #ffffff;
+    --nx-surface-2: #eef2f3;
+    --nx-surface-3: #e4eaec;
+    --nx-border: #dde4e6;
+    --nx-border-strong: #c7d1d4;
+    --nx-text: #0b1316;
+    --nx-text-2: #52636a;
+    --nx-text-3: #7b8b90;
+    --nx-overlay: rgba(11, 19, 22, 0.32);
+    --nx-success: #12a866;
+    --nx-success-bg: rgba(18, 168, 102, 0.12);
+    --nx-warning: #a9700a;
+    --nx-warning-bg: rgba(214, 158, 46, 0.16);
+    --nx-error: #d63a56;
+    --nx-error-bg: rgba(214, 58, 86, 0.1);
+    --nx-info: #1f78c8;
+    --nx-info-bg: rgba(31, 120, 200, 0.1);
+    --nx-shadow: 0 1px 2px rgba(11, 19, 22, 0.06), 0 12px 28px -14px rgba(11, 19, 22, 0.22);
+    --nx-brand-soft: rgba(0, 184, 158, 0.10);
+    --nx-brand-line: rgba(0, 168, 148, 0.40);
+    --nx-glass: rgba(255, 255, 255, 0.78);
+    --nx-elev-1: 0 1px 2px rgba(11, 19, 22, 0.06);
+    --nx-elev-2: 0 1px 2px rgba(11, 19, 22, 0.06), 0 12px 28px -14px rgba(11, 19, 22, 0.22);
+    --nx-elev-3: 0 2px 4px rgba(11, 19, 22, 0.06), 0 24px 56px -20px rgba(11, 19, 22, 0.30);
+    --nx-glow: 0 0 0 1px var(--nx-brand-line), 0 8px 24px -14px rgba(0, 168, 148, 0.40);
+    --nx-ai-gradient: linear-gradient(135deg, rgba(0, 184, 158, 0.12), rgba(31, 120, 200, 0.05) 45%, transparent 70%);
+  }
+}
+
+/* --- Densité opérationnelle (§2, §8, §36) --- */
+:root[data-density="compact"] {
+  --nx-space: 6px;
+  --nx-fs-md: 13px;
+  --nx-fs-sm: 11.5px;
+  --nx-control-h: 32px;
+  --nx-control-pad: 6px 10px;
+}
+
+/* --- Mouvement réduit (§28) --- */
+:root[data-motion="reduced"] *,
+:root[data-motion="reduced"] *::before,
+:root[data-motion="reduced"] *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  scroll-behavior: auto !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* --- Contraste élevé (§5, §31-33 WCAG 2.2 AA) : bords nets, encre renforcée, focus épais.
+   La couleur ne porte jamais seule un état (§6) — ceci ne fait que renforcer. --- */
+:root[data-contrast="high"] {
+  --nx-border: var(--nx-text-2);
+  --nx-border-strong: var(--nx-text);
+  --nx-text-2: var(--nx-text);
+  --nx-text-3: var(--nx-text-2);
+  --nx-ring: 0 0 0 2px var(--nx-bg), 0 0 0 5px var(--nx-brand);
+  --nx-shadow: 0 0 0 1px var(--nx-border-strong);
+}
+:root[data-contrast="high"] .nx-card,
+:root[data-contrast="high"] .nx-btn,
+:root[data-contrast="high"] .nx-input,
+:root[data-contrast="high"] input,
+:root[data-contrast="high"] select,
+:root[data-contrast="high"] textarea {
+  border-width: 2px;
+}
+:root[data-contrast="high"] :where(a, button, [role="button"], input, select, textarea):focus-visible {
+  outline: 3px solid var(--nx-brand);
+  outline-offset: 2px;
+}
+
+/* =========================================================================
+   Base
+   ====================================================================== */
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  background: var(--nx-bg);
+  color: var(--nx-text);
+  font-family: var(--nx-font);
+  font-size: var(--nx-fs-md);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+h1 { font-size: var(--nx-fs-2xl); font-weight: 750; letter-spacing: -0.01em; }
+h2 { font-size: var(--nx-fs-xl); font-weight: 700; }
+h3 { font-size: var(--nx-fs-lg); font-weight: 650; }
+a { color: var(--nx-brand); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+::selection { background: color-mix(in srgb, var(--nx-brand) 35%, transparent); }
+
+/* Focus visible clavier uniquement (§27) */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: none;
+  box-shadow: var(--nx-ring);
+  border-radius: var(--nx-radius-sm);
+}
+
+/* Barre de défilement discrète */
+* { scrollbar-width: thin; scrollbar-color: var(--nx-border-strong) transparent; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb { background: var(--nx-border-strong); border-radius: 8px; }
+
+/* Lien d'évitement (accessibilité §27) */
+.nx-skip {
+  position: absolute; left: -9999px; top: 8px; z-index: 100;
+  background: var(--nx-brand); color: var(--nx-brand-ink);
+  padding: 8px 14px; border-radius: var(--nx-radius);
+}
+.nx-skip:focus { left: 8px; }
+
+/* Chiffres tabulaires (§7, §18, §33) */
+.nx-numeric { font-variant-numeric: tabular-nums; font-family: var(--nx-font-num); letter-spacing: -0.01em; }
+
+/* =========================================================================
+   Boutons (§29-30)
+   ====================================================================== */
+.nx-btn {
+  --_bg: var(--nx-brand);
+  --_fg: var(--nx-brand-ink);
+  appearance: none;
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  min-height: var(--nx-control-h);
+  padding: 0 16px;
+  border: 1px solid transparent;
+  border-radius: var(--nx-radius);
+  font: inherit; font-weight: 600;
+  background: var(--_bg); color: var(--_fg);
+  cursor: pointer;
+  transition: filter var(--nx-dur) var(--nx-ease), background var(--nx-dur) var(--nx-ease);
+  white-space: nowrap;
+}
+.nx-btn:hover:not(:disabled) { filter: brightness(1.07); }
+.nx-btn:active:not(:disabled) { filter: brightness(0.96); }
+.nx-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.nx-btn--ghost { --_bg: transparent; --_fg: var(--nx-text); border-color: var(--nx-border-strong); }
+.nx-btn--ghost:hover:not(:disabled) { background: var(--nx-surface-2); filter: none; }
+.nx-btn--subtle { --_bg: var(--nx-surface-2); --_fg: var(--nx-text); }
+.nx-btn--danger { --_bg: var(--nx-error); --_fg: #fff; }
+.nx-btn--sm { min-height: 30px; padding: 0 10px; font-size: var(--nx-fs-sm); }
+.nx-btn--block { width: 100%; }
+
+/* =========================================================================
+   Champs (§19, §29-30)
+   ====================================================================== */
+.nx-input, .nx-select, .nx-textarea {
+  width: 100%;
+  min-height: var(--nx-control-h);
+  padding: var(--nx-control-pad);
+  border-radius: var(--nx-radius);
+  border: 1px solid var(--nx-border-strong);
+  background: var(--nx-surface);
+  color: var(--nx-text);
+  font: inherit;
+  transition: border-color var(--nx-dur) var(--nx-ease);
+}
+.nx-input::placeholder, .nx-textarea::placeholder { color: var(--nx-text-3); }
+.nx-input:hover, .nx-select:hover { border-color: var(--nx-border-strong); }
+.nx-input:disabled, .nx-select:disabled, [data-readonly="true"] {
+  background: var(--nx-surface-2); color: var(--nx-text-2); cursor: not-allowed;
+}
+.nx-input[aria-invalid="true"] { border-color: var(--nx-error); }
+.nx-field { display: grid; gap: 6px; }
+.nx-field > label { font-size: var(--nx-fs-sm); color: var(--nx-text-2); font-weight: 600; }
+.nx-field .nx-req { color: var(--nx-error); margin-left: 2px; }
+.nx-field .nx-hint { font-size: var(--nx-fs-xs); color: var(--nx-text-3); }
+.nx-field .nx-err { font-size: var(--nx-fs-xs); color: var(--nx-error); }
+
+/* =========================================================================
+   Cartes, KPI, badges, pastilles d'état
+   ====================================================================== */
+.nx-card {
+  background: var(--nx-surface);
+  border: 1px solid var(--nx-border);
+  border-radius: var(--nx-radius);
+  padding: calc(var(--nx-space) * 2);
+}
+.nx-card--pad-lg { padding: calc(var(--nx-space) * 3); }
+
+.nx-kpi { display: grid; gap: 5px; }
+.nx-kpi__label { font-size: var(--nx-fs-xs); color: var(--nx-text-2); text-transform: uppercase; letter-spacing: 0.5px; }
+.nx-kpi__value { font-size: var(--nx-fs-xl); font-weight: 750; }
+.nx-kpi__delta { font-size: var(--nx-fs-sm); font-weight: 600; display: inline-flex; align-items: center; gap: 4px; }
+
+.nx-badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 2px 8px; border-radius: 999px;
+  font-size: var(--nx-fs-xs); font-weight: 650; line-height: 1.6;
+  background: var(--nx-surface-2); color: var(--nx-text-2);
+  border: 1px solid var(--nx-border);
+}
+.nx-badge--success { background: var(--nx-success-bg); color: var(--nx-success); border-color: transparent; }
+.nx-badge--warning { background: var(--nx-warning-bg); color: var(--nx-warning); border-color: transparent; }
+.nx-badge--error { background: var(--nx-error-bg); color: var(--nx-error); border-color: transparent; }
+.nx-badge--info { background: var(--nx-info-bg); color: var(--nx-info); border-color: transparent; }
+.nx-badge__dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+
+/* =========================================================================
+   Tableaux de données (§18)
+   ====================================================================== */
+.nx-table { width: 100%; border-collapse: collapse; font-size: var(--nx-fs-md); }
+.nx-table thead th {
+  text-align: left; padding: 8px 10px; white-space: nowrap;
+  font-size: var(--nx-fs-xs); text-transform: uppercase; letter-spacing: 0.4px;
+  color: var(--nx-text-2); border-bottom: 1px solid var(--nx-border);
+  position: sticky; top: 0; background: var(--nx-surface); z-index: 1;
+}
+.nx-table tbody td { padding: 9px 10px; border-bottom: 1px solid var(--nx-border); }
+.nx-table tbody tr:hover td { background: var(--nx-surface-2); }
+.nx-table .nx-num { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--nx-font-num); }
+.nx-table tfoot td { padding: 9px 10px; font-weight: 700; border-top: 2px solid var(--nx-border-strong); }
+.nx-scroll-x { overflow-x: auto; }
+
+/* =========================================================================
+   Overlays : modal, drawer, toast, tooltip (§29)
+   ====================================================================== */
+.nx-overlay {
+  position: fixed; inset: 0; background: var(--nx-overlay);
+  display: grid; place-items: center; padding: 24px; z-index: 60;
+  animation: nx-fade var(--nx-dur) var(--nx-ease);
+}
+.nx-modal {
+  width: min(560px, 100%); max-height: 88vh; overflow: auto;
+  background: var(--nx-surface); border: 1px solid var(--nx-border);
+  border-radius: var(--nx-radius-lg); box-shadow: var(--nx-shadow);
+  padding: calc(var(--nx-space) * 3);
+  animation: nx-pop var(--nx-dur) var(--nx-ease);
+}
+.nx-drawer-wrap { position: fixed; inset: 0; z-index: 60; }
+/* Le panneau passe au-dessus de son voile (.nx-overlay, z-index 60) — sinon le voile capte tous les clics. */
+.nx-drawer, .nx-ai-panel { z-index: 61; }
+.nx-drawer {
+  position: absolute; top: 0; right: 0; height: 100%;
+  width: min(420px, 100%); background: var(--nx-surface);
+  border-left: 1px solid var(--nx-border); box-shadow: var(--nx-shadow);
+  padding: calc(var(--nx-space) * 3); overflow: auto;
+  animation: nx-slide var(--nx-dur) var(--nx-ease);
+}
+.nx-toasts {
+  position: fixed; right: 16px; bottom: 16px; z-index: 80;
+  display: grid; gap: 8px; max-width: 360px;
+}
+.nx-toast {
+  display: flex; gap: 10px; align-items: flex-start;
+  background: var(--nx-surface-3); border: 1px solid var(--nx-border-strong);
+  border-left: 3px solid var(--nx-text-2);
+  border-radius: var(--nx-radius); padding: 10px 12px;
+  box-shadow: var(--nx-shadow); animation: nx-slide var(--nx-dur) var(--nx-ease);
+}
+.nx-toast--success { border-left-color: var(--nx-success); }
+.nx-toast--warning { border-left-color: var(--nx-warning); }
+.nx-toast--error { border-left-color: var(--nx-error); }
+.nx-toast--info { border-left-color: var(--nx-info); }
+
+.nx-tip {
+  position: relative; display: inline-flex;
+}
+.nx-tip__bubble {
+  position: absolute; bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%);
+  background: var(--nx-surface-3); color: var(--nx-text); border: 1px solid var(--nx-border-strong);
+  padding: 6px 9px; border-radius: var(--nx-radius-sm); font-size: var(--nx-fs-xs);
+  white-space: nowrap; box-shadow: var(--nx-shadow); z-index: 70; pointer-events: none;
+}
+
+/* =========================================================================
+   États : vide / chargement / erreur (§30)
+   ====================================================================== */
+.nx-empty {
+  display: grid; gap: 8px; place-items: center; text-align: center;
+  padding: calc(var(--nx-space) * 5) calc(var(--nx-space) * 2);
+  color: var(--nx-text-2);
+}
+.nx-empty h3 { color: var(--nx-text); }
+.nx-skeleton {
+  background: linear-gradient(90deg, var(--nx-surface-2) 25%, var(--nx-surface-3) 37%, var(--nx-surface-2) 63%);
+  background-size: 400% 100%; border-radius: var(--nx-radius-sm);
+  animation: nx-shimmer 1.4s ease infinite;
+}
+.nx-spinner {
+  width: 18px; height: 18px; border-radius: 50%;
+  border: 2px solid var(--nx-border-strong); border-top-color: var(--nx-brand);
+  animation: nx-spin 0.7s linear infinite; display: inline-block;
+}
+.nx-error-text { color: var(--nx-error); }
+/* Bouton présenté comme un lien (ouvre un détail sans quitter l'écran). */
+.nx-linkbtn { appearance: none; background: none; border: none; padding: 0; font: inherit; color: var(--nx-brand); cursor: pointer; text-align: left; }
+.nx-linkbtn:hover { text-decoration: underline; }
+
+/* =========================================================================
+   Coquille applicative : sidebar + barre de contexte (§9-10)
+   ====================================================================== */
+.nx-shell { display: flex; min-height: 100vh; }
+.nx-sidebar {
+  width: 236px; flex-shrink: 0;
+  background: var(--nx-surface); border-right: 1px solid var(--nx-border);
+  padding: 12px; display: flex; flex-direction: column; gap: 2px;
+  position: sticky; top: 0; height: 100vh; overflow-y: auto;
+}
+.nx-brandmark { display: flex; align-items: center; gap: 9px; padding: 6px 8px 14px; font-weight: 800; letter-spacing: 0.5px; }
+.nx-navgroup { font-size: var(--nx-fs-xs); text-transform: uppercase; letter-spacing: 0.6px; color: var(--nx-text-3); padding: 12px 10px 4px; }
+.nx-navlink {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px; border-radius: var(--nx-radius-sm);
+  color: var(--nx-text-2); font-weight: 550; font-size: var(--nx-fs-md);
+  min-height: 34px;
+}
+.nx-navlink:hover { background: var(--nx-surface-2); color: var(--nx-text); text-decoration: none; }
+.nx-navlink.active { color: var(--nx-text); background: var(--nx-surface-2); box-shadow: inset 2px 0 0 var(--nx-brand); }
+.nx-navlink svg { flex-shrink: 0; opacity: 0.85; }
+
+.nx-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.nx-topbar {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 20px; border-bottom: 1px solid var(--nx-border);
+  background: color-mix(in srgb, var(--nx-bg) 82%, transparent);
+  backdrop-filter: blur(8px);
+  position: sticky; top: 0; z-index: 20;
+}
+.nx-context {
+  display: flex; align-items: center; gap: 8px; font-size: var(--nx-fs-sm);
+  color: var(--nx-text-2); min-width: 0;
+}
+.nx-context b { color: var(--nx-text); }
+.nx-context .sep { color: var(--nx-text-3); }
+.nx-iconbtn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: var(--nx-tap); height: var(--nx-tap);
+  border: 1px solid transparent; border-radius: var(--nx-radius);
+  background: transparent; color: var(--nx-text-2); cursor: pointer;
+}
+.nx-iconbtn:hover { background: var(--nx-surface-2); color: var(--nx-text); }
+.nx-content { padding: 22px; flex: 1; }
+.nx-menu-toggle { display: none; }
+@media (max-width: 900px) {
+  .nx-sidebar { position: fixed; z-index: 40; transform: translateX(-100%); transition: transform var(--nx-dur) var(--nx-ease); }
+  .nx-sidebar.open { transform: none; }
+  .nx-content { padding: 16px; }
+  .nx-menu-toggle { display: inline-flex; }
+}
+
+/* Palette de recherche globale (§23) */
+.nx-palette {
+  width: min(560px, 100%); background: var(--nx-surface);
+  border: 1px solid var(--nx-border-strong); border-radius: var(--nx-radius-lg);
+  box-shadow: var(--nx-shadow); overflow: hidden; align-self: flex-start; margin-top: 10vh;
+}
+.nx-palette input { border: none; border-bottom: 1px solid var(--nx-border); border-radius: 0; background: transparent; }
+.nx-palette__item { display: flex; align-items: center; gap: 10px; padding: 10px 14px; cursor: pointer; }
+.nx-palette__item[aria-selected="true"], .nx-palette__item:hover { background: var(--nx-surface-2); }
+
+/* =========================================================================
+   NEXORA ONE — composants d'intelligence (brief §4, §6-8)
+   Chaque élément sert l'information : aucune décoration sans donnée.
+   ====================================================================== */
+.nx-card { box-shadow: var(--nx-elev-1); }
+.nx-sidebar { background: var(--nx-glass); backdrop-filter: blur(var(--nx-glass-blur)); }
+.nx-topbar { background: var(--nx-glass); backdrop-filter: blur(var(--nx-glass-blur)); }
+
+/* Grille de page (§4) : 12 colonnes, gouttière unique. */
+.nx-grid { display: grid; gap: var(--nx-gap); grid-template-columns: repeat(12, minmax(0, 1fr)); }
+.nx-col-12 { grid-column: span 12; } .nx-col-8 { grid-column: span 8; } .nx-col-6 { grid-column: span 6; }
+.nx-col-4 { grid-column: span 4; } .nx-col-3 { grid-column: span 3; }
+@media (max-width: 1100px) { .nx-col-8, .nx-col-4 { grid-column: span 12; } .nx-col-3 { grid-column: span 6; } }
+@media (max-width: 720px) { .nx-col-6, .nx-col-3 { grid-column: span 12; } }
+
+/* En-tête de section : surtitre + titre + action (hiérarchie forte §6). */
+.nx-section-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.nx-eyebrow {
+  font-size: var(--nx-fs-xs); font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--nx-text-3); display: inline-flex; align-items: center; gap: 6px;
+}
+.nx-eyebrow--brand { color: var(--nx-brand); }
+.nx-section-title { margin: 2px 0 0; font-size: var(--nx-fs-lg); font-weight: 680; letter-spacing: -0.01em; }
+
+/* Accueil (§6 « GOOD MORNING ») */
+.nx-greeting h1 { margin: 0; font-size: 30px; font-weight: 760; letter-spacing: -0.025em; }
+.nx-greeting p { margin: 4px 0 0; color: var(--nx-text-2); font-size: var(--nx-fs-lg); }
+
+/* KPI héros : valeur + variation + micro-tendance (§6, §4 « KPI »). */
+.nx-hero-kpi { position: relative; display: grid; gap: 6px; align-content: start; padding: 18px; overflow: hidden; min-height: 132px; height: 100%; }
+.nx-hero-kpi__value { font-size: 26px; font-weight: 760; letter-spacing: -0.02em; }
+.nx-hero-kpi__foot { display: flex; align-items: center; gap: 8px; font-size: var(--nx-fs-sm); color: var(--nx-text-2); }
+.nx-hero-kpi__spark { margin-top: 2px; opacity: 0.9; }
+.nx-delta { display: inline-flex; align-items: center; gap: 3px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.nx-delta--up { color: var(--nx-pos); } .nx-delta--down { color: var(--nx-neg); } .nx-delta--flat { color: var(--nx-text-2); }
+
+/* Bandeau Intelligence : compteurs de signaux. */
+.nx-signal { display: grid; gap: 2px; padding: 12px 14px; border-radius: var(--nx-radius); background: var(--nx-surface-2); border: 1px solid var(--nx-border); }
+.nx-signal__count { font-size: 24px; font-weight: 760; font-variant-numeric: tabular-nums; display: flex; align-items: center; gap: 8px; }
+.nx-signal__label { font-size: var(--nx-fs-sm); color: var(--nx-text-2); }
+
+/* Carte d'intelligence (§2, §7) : QUOI / POURQUOI / IMPACT / ACTION. */
+.nx-insight {
+  position: relative; display: grid; gap: 12px; padding: 18px;
+  background: var(--nx-ai-gradient), var(--nx-surface); border: 1px solid var(--nx-border);
+  border-radius: var(--nx-radius-lg); box-shadow: var(--nx-elev-2);
+  transition: border-color var(--nx-dur) var(--nx-ease), transform var(--nx-dur) var(--nx-ease);
+}
+.nx-insight:hover { border-color: var(--nx-brand-line); }
+.nx-insight::before { content: ""; position: absolute; left: 0; top: 18px; bottom: 18px; width: 3px; border-radius: 0 3px 3px 0; background: var(--_tone, var(--nx-brand)); }
+.nx-insight[data-tone="error"] { --_tone: var(--nx-error); }
+.nx-insight[data-tone="warning"] { --_tone: var(--nx-warning); }
+.nx-insight[data-tone="info"] { --_tone: var(--nx-info); }
+.nx-insight[data-tone="success"] { --_tone: var(--nx-success); }
+.nx-insight__title { font-size: var(--nx-fs-lg); font-weight: 700; letter-spacing: -0.01em; margin: 0; }
+.nx-insight__metrics { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 8px; }
+.nx-metric { padding: 8px 10px; border-radius: var(--nx-radius-sm); background: color-mix(in srgb, var(--nx-surface-2) 80%, transparent); border: 1px solid var(--nx-border); }
+.nx-metric__label { font-size: var(--nx-fs-xs); color: var(--nx-text-3); text-transform: uppercase; letter-spacing: 0.06em; }
+.nx-metric__value { font-weight: 700; font-variant-numeric: tabular-nums; }
+.nx-insight__block { display: grid; gap: 2px; }
+.nx-insight__block b { font-size: var(--nx-fs-xs); letter-spacing: 0.12em; text-transform: uppercase; color: var(--nx-text-3); }
+.nx-insight__action { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: var(--nx-radius); background: var(--nx-brand-soft); border: 1px solid var(--nx-brand-line); color: var(--nx-text); font-weight: 600; }
+.nx-insight__buttons { display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* Timeline d'activité (§6 « ACTIVITY »). */
+.nx-timeline { list-style: none; margin: 0; padding: 0; display: grid; }
+.nx-timeline li { display: grid; grid-template-columns: 14px 1fr auto; gap: 10px; padding: 8px 0; position: relative; }
+.nx-timeline li::before { content: ""; position: absolute; left: 6px; top: 22px; bottom: -8px; width: 1px; background: var(--nx-border); }
+.nx-timeline li:last-child::before { display: none; }
+.nx-timeline__dot { width: 9px; height: 9px; border-radius: 50%; margin-top: 6px; margin-left: 2px; background: var(--_tone, var(--nx-text-3)); box-shadow: 0 0 0 3px var(--nx-surface); }
+.nx-timeline__meta { font-size: var(--nx-fs-xs); color: var(--nx-text-3); white-space: nowrap; text-align: right; }
+
+/* Barres horizontales (classements, faits de NEXORA AI). */
+.nx-barlist { display: grid; gap: 8px; }
+.nx-barlist__row { display: grid; gap: 4px; }
+.nx-barlist__head { display: flex; justify-content: space-between; gap: 8px; font-size: var(--nx-fs-sm); }
+.nx-barlist__track { height: 6px; border-radius: 6px; background: var(--nx-surface-3); overflow: hidden; }
+.nx-barlist__fill { height: 100%; border-radius: 6px; background: var(--nx-brand); transition: width 420ms var(--nx-ease); }
+.nx-barlist__fill--neg { background: var(--nx-error); }
+
+/* Pastilles (chips) : suggestions, filtres, sources. */
+.nx-chip {
+  display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: 999px;
+  border: 1px solid var(--nx-border-strong); background: var(--nx-surface-2); color: var(--nx-text-2);
+  font: inherit; font-size: var(--nx-fs-sm); cursor: pointer; text-decoration: none;
+  transition: border-color var(--nx-dur) var(--nx-ease), color var(--nx-dur) var(--nx-ease);
+}
+.nx-chip:hover { border-color: var(--nx-brand-line); color: var(--nx-text); text-decoration: none; }
+.nx-chip[aria-pressed="true"] { border-color: var(--nx-brand); color: var(--nx-text); background: var(--nx-brand-soft); }
+
+/* Risques par domaine (§6 « RISKS »). */
+.nx-risk { display: grid; gap: 6px; padding: 14px; border-radius: var(--nx-radius); border: 1px solid var(--nx-border); background: var(--nx-surface-2); }
+.nx-risk__head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-weight: 650; }
+
+/* NEXORA AI — panneau conversationnel (§8). */
+.nx-ai-launch { gap: 6px; width: auto; padding: 0 10px; color: var(--nx-text); border-color: var(--nx-brand-line); background: var(--nx-brand-soft); font-weight: 650; font-size: var(--nx-fs-sm); }
+.nx-ai-launch:hover { background: var(--nx-brand-soft); box-shadow: var(--nx-glow); }
+.nx-ai-panel {
+  position: absolute; top: 0; right: 0; height: 100%; width: min(520px, 100%);
+  display: flex; flex-direction: column; background: var(--nx-glass); backdrop-filter: blur(var(--nx-glass-blur));
+  border-left: 1px solid var(--nx-border-strong); box-shadow: var(--nx-elev-3);
+  animation: nx-slide var(--nx-dur) var(--nx-ease);
+}
+.nx-ai-panel__head { display: flex; align-items: center; gap: 10px; padding: 16px 18px; border-bottom: 1px solid var(--nx-border); }
+.nx-ai-panel__body { flex: 1; overflow-y: auto; padding: 18px; display: grid; gap: 16px; align-content: start; }
+.nx-ai-panel__input { display: flex; gap: 8px; padding: 14px 18px; border-top: 1px solid var(--nx-border); }
+.nx-ai-q { justify-self: end; max-width: 85%; padding: 9px 13px; border-radius: 14px 14px 4px 14px; background: var(--nx-surface-3); }
+.nx-ai-a { display: grid; gap: 12px; padding: 14px; border-radius: var(--nx-radius-lg); background: var(--nx-ai-gradient), var(--nx-surface); border: 1px solid var(--nx-border); }
+.nx-ai-a__lead { font-size: var(--nx-fs-lg); font-weight: 650; line-height: 1.45; }
+.nx-ai-a ol { margin: 0; padding-left: 20px; display: grid; gap: 4px; }
+.nx-ai-orb {
+  width: 26px; height: 26px; border-radius: 50%; flex-shrink: 0; display: grid; place-items: center; color: var(--nx-brand-ink);
+  background: radial-gradient(circle at 30% 30%, var(--nx-brand-strong), var(--nx-brand) 55%, #0a8f7f);
+  box-shadow: 0 0 14px -2px rgba(0, 245, 212, 0.55);
+}
+.nx-ai-thinking { display: inline-flex; gap: 4px; }
+.nx-ai-thinking i { width: 6px; height: 6px; border-radius: 50%; background: var(--nx-brand); animation: nx-pulse 1s var(--nx-ease) infinite; }
+.nx-ai-thinking i:nth-child(2) { animation-delay: 0.15s; } .nx-ai-thinking i:nth-child(3) { animation-delay: 0.3s; }
+
+/* Palette Ctrl+K v2 : groupes typés, actions, verre (§5). */
+.nx-palette { width: min(680px, 100%); background: var(--nx-glass); backdrop-filter: blur(var(--nx-glass-blur)); box-shadow: var(--nx-elev-3); }
+.nx-palette__list { max-height: min(60vh, 520px); overflow-y: auto; padding: 6px; }
+.nx-palette__group { padding: 10px 10px 4px; font-size: var(--nx-fs-xs); font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--nx-text-3); }
+.nx-palette__item { border-radius: var(--nx-radius-sm); }
+.nx-palette__item small { color: var(--nx-text-3); font-size: var(--nx-fs-xs); }
+.nx-palette__item[aria-selected="true"] { box-shadow: inset 2px 0 0 var(--nx-brand); }
+.nx-palette__links { display: flex; gap: 6px; flex-wrap: wrap; padding: 0 14px 8px 40px; }
+.nx-kbd { display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 5px; border: 1px solid var(--nx-border-strong); background: var(--nx-surface-2); font-size: 11px; color: var(--nx-text-2); font-family: var(--nx-font-num); }
+
+/* =========================================================================
+   Animations
+   ====================================================================== */
+@keyframes nx-pulse { 0%, 100% { opacity: 0.25; transform: translateY(0); } 50% { opacity: 1; transform: translateY(-2px); } }
+@keyframes nx-fade { from { opacity: 0; } }
+@keyframes nx-pop { from { opacity: 0; transform: scale(0.97) translateY(6px); } }
+@keyframes nx-slide { from { opacity: 0; transform: translateX(12px); } }
+@keyframes nx-spin { to { transform: rotate(360deg); } }
+@keyframes nx-shimmer { to { background-position: -400% 0; } }
+
+/* =========================================================================
+   Impression : documents propres (§34)
+   ====================================================================== */
+@media print {
+  .nx-sidebar, .nx-topbar, .nx-no-print { display: none !important; }
+  .nx-content { padding: 0; }
+  body { background: #fff; color: #000; }
+  .nx-card { border: 1px solid #ccc; box-shadow: none; }
+}

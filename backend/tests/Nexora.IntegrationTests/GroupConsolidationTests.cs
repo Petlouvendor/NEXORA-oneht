@@ -1,0 +1,331 @@
+using System.Globalization;
+using FluentAssertions;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Nexora.Application.Abstractions;
+using Nexora.Application.Group;
+using Nexora.Contracts.Group;
+using Nexora.Domain.Common;
+using Nexora.Infrastructure.Persistence;
+using Npgsql;
+
+namespace Nexora.IntegrationTests;
+
+/// <summary>Scénarios de validation Multi-entreprises, Groupe & Consolidation (Phase 9 §33).</summary>
+[Collection("finance")]
+public sealed class GroupConsolidationTests(FinanceEngineFixture fx)
+{
+    private static readonly Guid Group = Guid.Parse("dce00000-0000-0000-0000-000000000001");
+    private static readonly Guid Pharma = Guid.Parse("dce00000-0000-0000-0000-0000000000c1");
+    private static readonly Guid Resto = Guid.Parse("dce00000-0000-0000-0000-0000000000c2");
+    private static readonly Guid Market = Guid.Parse("dce00000-0000-0000-0000-0000000000c3");
+
+    private AsyncServiceScope GroupScope()
+    {
+        var s = fx.Provider.CreateAsyncScope();
+        var tc = (TestTenantContext)s.ServiceProvider.GetRequiredService<ITenantContext>();
+        tc.SetScope([Pharma, Resto, Market], [Group], Pharma);
+        return s;
+    }
+
+    // --- Raw balanced posted journal entry (bypasses the engine for test data) ---
+    private async Task PostEntryAsync(Guid companyId, DateOnly date, string description,
+        params (string Code, decimal Debit, decimal Credit)[] lines)
+    {
+        await using var c = new NpgsqlConnection(fx.TestConnectionString);
+        await c.OpenAsync();
+        await using var tx = await c.BeginTransactionAsync();
+
+        var journalId = await ScalarAsync<Guid>(c, "SELECT id FROM nexora.journal WHERE company_id = @c AND code = 'OD'", companyId);
+        var periodId = await ScalarAsync<Guid>(c,
+            "SELECT id FROM nexora.accounting_period WHERE company_id = @c AND status = 'open' ORDER BY start_date DESC LIMIT 1", companyId);
+        var currencyId = await ScalarAsync<Guid>(c, "SELECT default_currency_id FROM nexora.company WHERE id = @c", companyId);
+
+        var entryId = Guid.NewGuid();
+        var number = $"OD-{Guid.NewGuid():N}"[..14];
+        await ExecAsync(c,
+            """
+            INSERT INTO nexora.journal_entry (id, company_id, journal_id, accounting_period_id, entry_number, entry_date, description, status, posted_at)
+            VALUES (@id, @c, @j, @p, @n, @d, @desc, 'posted', now())
+            """,
+            ("id", entryId), ("c", companyId), ("j", journalId), ("p", periodId), ("n", number),
+            ("d", date), ("desc", description));
+
+        var ln = 1;
+        foreach (var (code, debit, credit) in lines)
+        {
+            var accountId = await ScalarAsync<Guid>(c,
+                "SELECT id FROM nexora.account WHERE company_id = @c AND code = @code", companyId, code);
+            await ExecAsync(c,
+                """
+                INSERT INTO nexora.journal_entry_line (journal_entry_id, company_id, account_id, line_number, debit, credit, currency_id, base_debit, base_credit)
+                VALUES (@e, @c, @a, @ln, @dr, @cr, @cur, @dr, @cr)
+                """,
+                ("e", entryId), ("c", companyId), ("a", accountId), ("ln", ln++),
+                ("dr", debit), ("cr", credit), ("cur", currencyId));
+        }
+        await tx.CommitAsync();
+    }
+
+    private static async Task<T> ScalarAsync<T>(NpgsqlConnection c, string sql, params object[] args)
+    {
+        await using var cmd = new NpgsqlCommand(sql, c);
+        cmd.Parameters.AddWithValue("c", args[0]);
+        if (args.Length > 1) cmd.Parameters.AddWithValue("code", args[1]);
+        return (T)(await cmd.ExecuteScalarAsync())!;
+    }
+
+    private static async Task ExecAsync(NpgsqlConnection c, string sql, params (string Name, object Value)[] ps)
+    {
+        await using var cmd = new NpgsqlCommand(sql, c);
+        foreach (var (n, v) in ps) cmd.Parameters.AddWithValue(n, v);
+        await cmd.ExecuteNonQueryAsync();
+    }
+
+    // ---- §33 : plan comptable groupe — mapping versionné (§12) ------------
+    [Fact]
+    public async Task Group_account_mapping_is_versioned()
+    {
+        await using var s = GroupScope();
+        var ledger = s.ServiceProvider.GetRequiredService<IGroupLedgerService>();
+        var db = s.ServiceProvider.GetRequiredService<NexoraDbContext>();
+
+        var code = $"T{Guid.NewGuid():N}"[..6];
+        await db.Database.ExecuteSqlAsync($"""
+            INSERT INTO nexora.account (chart_of_accounts_id, company_id, code, name, account_type)
+            SELECT id, {Pharma}, {code}, 'Compte test mapping', 'expense'
+            FROM nexora.chart_of_accounts WHERE company_id = {Pharma} AND status = 'active'
+            """);
+
+        (await ledger.SetMappingAsync(Group, new SetMappingRequest(Pharma, code, "GA-EXP"))).IsSuccess.Should().BeTrue();
+        (await ledger.SetMappingAsync(Group, new SetMappingRequest(Pharma, code, "GA-COGS"))).IsSuccess.Should().BeTrue();
+
+        var mappings = await db.Database.SqlQuery<string>($"""
+            SELECT m.status AS "Value" FROM nexora.account_group_mapping m
+            JOIN nexora.account a ON a.id = m.account_id
+            WHERE a.company_id = {Pharma} AND a.code = {code} ORDER BY m.created_at
+            """).ToListAsync();
+        mappings.Should().BeEquivalentTo(["superseded", "active"]);
+    }
+
+    // ---- §33 : vente intercompany + achat correspondant + rapprochement (§14-15) --
+    [Fact]
+    public async Task Intercompany_transactions_reconcile_automatically()
+    {
+        await using var s = GroupScope();
+        var ic = s.ServiceProvider.GetRequiredService<IIntercompanyService>();
+        var day = new DateOnly(2026, 2, 10);
+
+        var sale = await ic.RecordAsync(Group, new RecordIntercompanyRequest(
+            Pharma, Resto, "sale_purchase", 5000m, "HTG", day, "VTE-IC-1", null));
+        sale.IsSuccess.Should().BeTrue(sale.Error?.Message);
+        var purchase = await ic.RecordAsync(Group, new RecordIntercompanyRequest(
+            Resto, Pharma, "sale_purchase", 5000m, "HTG", day, "FAF-IC-1", null));
+        purchase.IsSuccess.Should().BeTrue();
+
+        var match = await ic.ReconcileAsync(Group, new ReconcileIntercompanyRequest(sale.Value, null));
+        match.IsSuccess.Should().BeTrue(match.Error?.Message);
+        match.Value!.Status.Should().Be("matched");
+        match.Value.CounterpartTransactionId.Should().Be(purchase.Value);
+
+        var unreconciled = await ic.UnreconciledAsync(Group);
+        unreconciled.Should().NotContain(t => t.Id == sale.Value || t.Id == purchase.Value);
+
+        // Montants asymétriques → statut 'asymmetric'.
+        var s2 = await ic.RecordAsync(Group, new RecordIntercompanyRequest(Pharma, Resto, "loan", 5000m, "HTG", day, null, null));
+        var c2 = await ic.RecordAsync(Group, new RecordIntercompanyRequest(Resto, Pharma, "loan", 4800m, "HTG", day, null, null));
+        var m2 = await ic.ReconcileAsync(Group, new ReconcileIntercompanyRequest(s2.Value, c2.Value));
+        m2.Value!.Status.Should().Be("asymmetric");
+        m2.Value.AmountDifference.Should().Be(200m);
+    }
+
+    // ---- §33 : agréger + convertir + générer un bilan consolidé équilibré ----
+    [Fact]
+    public async Task Consolidation_aggregates_and_balances()
+    {
+        await using var s = GroupScope();
+        var consol = s.ServiceProvider.GetRequiredService<IConsolidationService>();
+        var day = new DateOnly(2026, 3, 15);
+
+        // Pharmacie : capital 100 000 en trésorerie ; puis vente 12 000 encaissée, COGS 7 000.
+        await PostEntryAsync(Pharma, day, "Apport", ("5711", 100_000m, 0m), ("1011", 0m, 100_000m));
+        await PostEntryAsync(Pharma, day, "Vente", ("5711", 12_000m, 0m), ("7011", 0m, 12_000m));
+        await PostEntryAsync(Pharma, day, "COGS", ("6031", 7_000m, 0m), ("3110", 0m, 7_000m));
+        // Restaurant : capital 40 000 ; vente 8 000 ; charges 3 000.
+        await PostEntryAsync(Resto, day, "Apport", ("5711", 40_000m, 0m), ("1011", 0m, 40_000m));
+        await PostEntryAsync(Resto, day, "Vente", ("5711", 8_000m, 0m), ("7011", 0m, 8_000m));
+        await PostEntryAsync(Resto, day, "Charges", ("6800", 3_000m, 0m), ("5711", 0m, 3_000m));
+
+        var run = await consol.CreateRunAsync(Group, new CreateConsolidationRunRequest(
+            "Mars 2026", new DateOnly(2026, 3, 1), new DateOnly(2026, 3, 31), [Pharma, Resto], null));
+        run.IsSuccess.Should().BeTrue(run.Error?.Message);
+
+        var executed = await consol.ExecuteAsync(Group, run.Value!.Id);
+        executed.IsSuccess.Should().BeTrue(executed.Error?.Message);
+        executed.Value!.Status.Should().Be("ready");
+        executed.Value.CoherenceOk.Should().BeTrue();
+        executed.Value.TotalDebit.Should().Be(executed.Value.TotalCredit);
+        executed.Value.Companies.Should().OnlyContain(c => c.MappingComplete);
+
+        var statements = await consol.GetStatementsAsync(Group, run.Value.Id);
+        statements.IsSuccess.Should().BeTrue(statements.Error?.Message);
+        statements.Value!.TrialBalanceBalanced.Should().BeTrue();
+        // CA consolidé = 12 000 + 8 000 ; résultat = CA − COGS − charges.
+        statements.Value.TotalRevenue.Should().Be(20_000m);
+        statements.Value.NetResult.Should().Be(10_000m);   // 20 000 − 7 000 − 3 000
+        statements.Value.BalanceSheetBalanced.Should().BeTrue();
+        statements.Value.ByCompany.Should().HaveCount(2);
+    }
+
+    // ---- §33 : appliquer une élimination intercompany (§16) -------------
+    [Fact]
+    public async Task Consolidation_eliminates_matched_intercompany()
+    {
+        await using var s = GroupScope();
+        var consol = s.ServiceProvider.GetRequiredService<IConsolidationService>();
+        var ic = s.ServiceProvider.GetRequiredService<IIntercompanyService>();
+        var day = new DateOnly(2026, 4, 12);
+
+        // A vend à B à crédit 6 000 : A -> Clients / Ventes ; B -> Charges / Fournisseurs.
+        await PostEntryAsync(Pharma, day, "Apport", ("5711", 50_000m, 0m), ("1011", 0m, 50_000m));
+        await PostEntryAsync(Pharma, day, "Vente intragroupe", ("4111", 6_000m, 0m), ("7011", 0m, 6_000m));
+        await PostEntryAsync(Resto, day, "Apport", ("5711", 20_000m, 0m), ("1011", 0m, 20_000m));
+        await PostEntryAsync(Resto, day, "Achat intragroupe", ("6011", 6_000m, 0m), ("4011", 0m, 6_000m));
+
+        var sale = await ic.RecordAsync(Group, new RecordIntercompanyRequest(Pharma, Resto, "sale_purchase", 6_000m, "HTG", day, null, null));
+        var purchase = await ic.RecordAsync(Group, new RecordIntercompanyRequest(Resto, Pharma, "sale_purchase", 6_000m, "HTG", day, null, null));
+        (await ic.ReconcileAsync(Group, new ReconcileIntercompanyRequest(sale.Value, purchase.Value))).Value!.Status.Should().Be("matched");
+
+        var run = await consol.CreateRunAsync(Group, new CreateConsolidationRunRequest(
+            "Avril 2026", new DateOnly(2026, 4, 1), new DateOnly(2026, 4, 30), [Pharma, Resto], null));
+        var executed = await consol.ExecuteAsync(Group, run.Value!.Id);
+        executed.IsSuccess.Should().BeTrue(executed.Error?.Message);
+        executed.Value!.EliminationTotal.Should().Be(6_000m);
+        executed.Value.CoherenceOk.Should().BeTrue();
+        executed.Value.TotalDebit.Should().Be(executed.Value.TotalCredit);
+
+        var st = await consol.GetStatementsAsync(Group, run.Value.Id);
+        var ar = st.Value!.TrialBalance.Single(l => l.GroupAccountCode == "GA-AR");
+        var ap = st.Value.TrialBalance.Single(l => l.GroupAccountCode == "GA-AP");
+        ar.EliminationDebit.Should().Be(6_000m);    // créance intragroupe retirée du débit
+        ap.EliminationCredit.Should().Be(6_000m);   // dette intragroupe retirée du crédit
+        ar.ConsolidatedDebit.Should().Be(0m);
+        ap.ConsolidatedCredit.Should().Be(0m);
+        st.Value.TrialBalanceBalanced.Should().BeTrue();
+    }
+
+    // ---- §33 : cycle de vie brouillon → validé → publié (§18) ----------
+    [Fact]
+    public async Task Consolidation_lifecycle_is_enforced()
+    {
+        await using var s = GroupScope();
+        var consol = s.ServiceProvider.GetRequiredService<IConsolidationService>();
+        var day = new DateOnly(2026, 5, 9);
+        await PostEntryAsync(Pharma, day, "Apport", ("5711", 10_000m, 0m), ("1011", 0m, 10_000m));
+
+        var run = (await consol.CreateRunAsync(Group, new CreateConsolidationRunRequest(
+            "Mai 2026", new DateOnly(2026, 5, 1), new DateOnly(2026, 5, 31), [Pharma], null))).Value!;
+
+        (await consol.ValidateAsync(Group, run.Id)).IsSuccess.Should().BeFalse();   // pas encore exécuté
+
+        (await consol.ExecuteAsync(Group, run.Id)).Value!.Status.Should().Be("ready");
+        (await consol.PublishAsync(Group, run.Id)).IsSuccess.Should().BeFalse();     // pas encore validé
+
+        (await consol.ValidateAsync(Group, run.Id)).Value!.Status.Should().Be("validated");
+        (await consol.PublishAsync(Group, run.Id)).Value!.Status.Should().Be("published");
+
+        (await consol.ReopenAsync(Group, run.Id, new ReopenRunRequest(""))).IsSuccess.Should().BeFalse();   // motif requis
+        (await consol.ReopenAsync(Group, run.Id, new ReopenRunRequest("Correction TVA"))).Value!.Status.Should().Be("reopened");
+    }
+
+    // ---- §33 : centre de contrôle + tâches groupe (§24-25) -------------
+    [Fact]
+    public async Task Control_center_and_group_tasks()
+    {
+        await using var s = GroupScope();
+        var cc = s.ServiceProvider.GetRequiredService<IGroupControlCenter>();
+        var tasks = s.ServiceProvider.GetRequiredService<IGroupTaskService>();
+
+        var summary = await cc.SummaryAsync(Group);
+        summary.Companies.Select(c => c.CompanyId).Should().Contain([Pharma, Resto, Market]);
+
+        var taskId = await tasks.CreateAsync(Group, new CreateGroupTaskRequest(
+            "Clôturer mars — Restaurant", null, Resto, fx.UserId, "high", new DateOnly(2026, 4, 15)));
+        taskId.IsSuccess.Should().BeTrue(taskId.Error?.Message);
+        (await tasks.ListAsync(Group)).Should().Contain(t => t.Id == taskId.Value && t.Priority == "high");
+
+        (await tasks.UpdateAsync(Group, taskId.Value, new UpdateGroupTaskRequest("done", "Fait"))).IsSuccess.Should().BeTrue();
+        (await tasks.ListAsync(Group)).First(t => t.Id == taskId.Value).Status.Should().Be("done");
+    }
+
+    // ---- §33 : ajouter une entreprise sans nouvelle installation, puis archiver (§28-29) --
+    [Fact]
+    public async Task Company_provisioned_then_archived_keeps_history()
+    {
+        await using var s = GroupScope();
+        var prov = s.ServiceProvider.GetRequiredService<ICompanyProvisioningService>();
+        var db = s.ServiceProvider.GetRequiredService<NexoraDbContext>();
+
+        var created = await prov.ProvisionAsync(new ProvisionCompanyRequest($"Services ABC {Guid.NewGuid():N}"[..18], "services", "HTG", Group));
+        created.IsSuccess.Should().BeTrue(created.Error?.Message);
+        var companyId = created.Value;
+
+        var wired = await db.Database.SqlQuery<int>($"""
+            SELECT (SELECT COUNT(*) FROM nexora.journal WHERE company_id = {companyId})
+                 + (SELECT COUNT(*) FROM nexora.accounting_period WHERE company_id = {companyId})
+                 + (SELECT COUNT(*) FROM nexora.chart_of_accounts WHERE company_id = {companyId}) AS "Value"
+            """).FirstAsync();
+        wired.Should().Be(10);  // 8 journaux (dont AN/CL et PA — paie, V076) + 1 période + 1 plan comptable
+
+        // Résumé fonctionnel §20 (V072) : l'entreprise créée peut travailler tout de suite — plan
+        // comptable rempli, correspondances du moteur comptable, caisse enregistreuse prête.
+        var ready = await db.Database.SqlQuery<ReadyState>($"""
+            SELECT (SELECT COUNT(*)::int FROM nexora.account WHERE company_id = {companyId}) AS "Accounts",
+                   (SELECT COUNT(*)::int FROM nexora.account_mapping WHERE company_id = {companyId}) AS "Mappings",
+                   (SELECT COUNT(*)::int FROM nexora.payment_method WHERE company_id = {companyId}) AS "PaymentMethods",
+                   (SELECT COUNT(*)::int FROM nexora.cash_register r
+                      JOIN nexora.financial_account f ON f.id = r.financial_account_id AND f.ledger_account_id IS NOT NULL
+                      JOIN nexora.inventory_location l ON l.store_id = r.store_id
+                     WHERE r.company_id = {companyId}) AS "ReadyRegisters"
+            """).FirstAsync();
+        ready.Should().Be(new ReadyState(29, 35, 4, 1));   // + 8 comptes et 8 correspondances de paie (V076)
+        (await db.Database.SqlQuery<bool>($"""
+            SELECT EXISTS(SELECT 1 FROM nexora.company_activity WHERE company_id = {companyId} AND is_primary) AS "Value"
+            """).FirstAsync()).Should().BeTrue();
+
+        // Archivage : désactive les nouvelles opérations, conserve tout l'historique (§29).
+        (await prov.ArchiveAsync(companyId, new ArchiveCompanyRequest("Cessation d'activité"))).IsSuccess.Should().BeTrue();
+        (await prov.ArchiveAsync(companyId, new ArchiveCompanyRequest(""))).IsSuccess.Should().BeFalse();   // motif requis
+
+        var archived = await db.Database.SqlQuery<ArchivedState>($"""
+            SELECT status AS "Status", (archived_at IS NOT NULL) AS "Stamped",
+                   (SELECT COUNT(*)::int FROM nexora.journal WHERE company_id = {companyId}) AS "Journals",
+                   (SELECT COUNT(*)::int FROM nexora.company_module WHERE company_id = {companyId} AND enabled) AS "EnabledModules"
+            FROM nexora.company WHERE id = {companyId}
+            """).FirstAsync();
+        archived.Status.Should().Be("archived");
+        archived.Stamped.Should().BeTrue();
+        archived.Journals.Should().Be(8);          // historique conservé
+        archived.EnabledModules.Should().Be(0);    // plus de nouvelles opérations
+    }
+
+    private sealed record ArchivedState(string Status, bool Stamped, int Journals, int EnabledModules);
+    private sealed record ReadyState(int Accounts, int Mappings, int PaymentMethods, int ReadyRegisters);
+
+    // ---- §33 : tenter un accès interdit (hors périmètre groupe) (§21-22) --
+    [Fact]
+    public async Task Group_access_denied_outside_scope()
+    {
+        await using var s = fx.Provider.CreateAsyncScope();
+        var tc = (TestTenantContext)s.ServiceProvider.GetRequiredService<ITenantContext>();
+        tc.SetScope([Pharma], [], Pharma);   // aucun périmètre groupe
+
+        var ledger = s.ServiceProvider.GetRequiredService<IGroupLedgerService>();
+        var act = async () => await ledger.ListAccountsAsync(Group);
+        (await act.Should().ThrowAsync<DomainException>()).Which.Error.Kind.Should().Be(ErrorKind.Forbidden);
+
+        var consol = s.ServiceProvider.GetRequiredService<IConsolidationService>();
+        var act2 = async () => await consol.ListRunsAsync(Group);
+        await act2.Should().ThrowAsync<DomainException>();
+    }
+}

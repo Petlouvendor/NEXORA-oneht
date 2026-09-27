@@ -1,0 +1,373 @@
+using Microsoft.EntityFrameworkCore;
+using Nexora.Application.Abstractions;
+using Nexora.Application.Catalog;
+using Nexora.Application.Inventory;
+using Nexora.Application.Purchasing;
+using Nexora.Domain.Catalog;
+using Nexora.Domain.Inventory;
+using Nexora.Domain.Purchasing;
+using Nexora.Infrastructure.Persistence;
+
+namespace Nexora.Infrastructure.Inventory;
+
+internal static class StoreHelpers
+{
+    public static Guid Company(ITenantContext t) => t.ActiveCompanyId
+        ?? throw new InvalidOperationException("Aucune entreprise active.");
+
+    public static async Task<Guid> CurrencyId(NexoraDbContext db, string code, CancellationToken ct)
+        => await db.Currencies.AsNoTracking().Where(c => c.Code == code).Select(c => (Guid?)c.Id).FirstOrDefaultAsync(ct)
+           ?? throw new InvalidOperationException($"Devise {code} inconnue.");
+
+    public static async Task<string> NextNumber(NexoraDbContext db, ITenantContext t, string type, CancellationToken ct)
+    {
+        var year = DateTime.UtcNow.Year;
+        var rows = await db.Database
+            .SqlQuery<string>($"""SELECT nexora.next_document_number({Company(t)}, {type}, {(Guid?)null}, {year}) AS "Value" """)
+            .ToListAsync(ct);
+        return rows[0];
+    }
+}
+
+public sealed class EfCatalogStore(NexoraDbContext db, ITenantContext tenant) : ICatalogStore
+{
+    public Task<bool> SkuExistsAsync(Guid companyId, string sku, CancellationToken ct = default)
+        => db.Products.AsNoTracking().AnyAsync(p => p.CompanyId == companyId && p.Sku == sku, ct);
+
+    public Task<Guid> ResolveCurrencyIdAsync(string code, CancellationToken ct = default)
+        => StoreHelpers.CurrencyId(db, code, ct);
+
+    public Task<Product?> GetProductAsync(Guid id, CancellationToken ct = default)
+        => db.Products.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id, ct);
+
+    public Task UpdateProductAsync(Product product, CancellationToken ct = default)
+    {
+        // L'entité lue par GetProductAsync est non suivie. Si le contexte suit déjà ce produit
+        // (créé ou lu plus tôt dans la même requête), on recopie les valeurs sur l'instance suivie
+        // plutôt que d'en rattacher une seconde — EF refuserait deux instances pour la même clé.
+        var tracked = db.Products.Local.FirstOrDefault(p => p.Id == product.Id);
+        if (tracked is null) db.Products.Update(product);
+        else db.Entry(tracked).CurrentValues.SetValues(product);
+        return Task.CompletedTask;
+    }
+
+    public async Task AddProductAsync(Product product, CancellationToken ct = default)
+        => await db.Products.AddAsync(product, ct);
+
+    public Task<bool> SupplierLinkExistsAsync(Guid productId, Guid supplierId, CancellationToken ct = default)
+        => db.ProductSuppliers.AsNoTracking().AnyAsync(x => x.ProductId == productId && x.SupplierId == supplierId, ct);
+
+    public async Task AddSupplierLinkAsync(ProductSupplier link, bool clearOtherPreferred, CancellationToken ct = default)
+    {
+        if (clearOtherPreferred)
+            await db.ProductSuppliers.Where(x => x.ProductId == link.ProductId && x.IsPreferred)
+                .ExecuteUpdateAsync(u => u.SetProperty(x => x.IsPreferred, false), ct);
+        await db.ProductSuppliers.AddAsync(link, ct);
+    }
+
+    public async Task ClosePreviousPriceAsync(Guid productId, string priceType, Guid? customerGroupId, Guid? priceListId, decimal quantityMin, Guid currencyId, DateTimeOffset at, CancellationToken ct = default)
+        => await db.ProductPrices
+            .Where(p => p.ProductId == productId && p.PriceType == priceType
+                        && p.CustomerGroupId == customerGroupId && p.PriceListId == priceListId
+                        && p.QuantityMin == quantityMin && p.CurrencyId == currencyId && p.ValidTo == null)
+            .ExecuteUpdateAsync(u => u.SetProperty(p => p.ValidTo, at), ct);
+
+    public async Task AddPriceAsync(ProductPrice price, CancellationToken ct = default)
+        => await db.ProductPrices.AddAsync(price, ct);
+
+    public async Task AddBarcodeAsync(ProductBarcode barcode, bool clearOtherPrimary, CancellationToken ct = default)
+    {
+        if (clearOtherPrimary)
+            await db.ProductBarcodes.Where(x => x.ProductId == barcode.ProductId && x.IsPrimary)
+                .ExecuteUpdateAsync(u => u.SetProperty(x => x.IsPrimary, false), ct);
+        await db.ProductBarcodes.AddAsync(barcode, ct);
+    }
+
+    public async Task<bool> BarcodeExistsAsync(Guid companyId, string barcode, CancellationToken ct = default)
+        => await db.Products.AsNoTracking().AnyAsync(p => p.CompanyId == companyId && p.Barcode == barcode, ct)
+           || await db.ProductBarcodes.AsNoTracking().AnyAsync(x => x.CompanyId == companyId && x.Barcode == barcode, ct);
+
+    public Task<bool> PluExistsAsync(Guid companyId, string plu, CancellationToken ct = default)
+        => db.Products.AsNoTracking().AnyAsync(p => p.CompanyId == companyId && p.PluCode == plu, ct);
+
+    public Task<bool> CategoryCodeExistsAsync(Guid companyId, string code, CancellationToken ct = default)
+        => db.Database.SqlQuery<bool>($"""
+            SELECT EXISTS(SELECT 1 FROM nexora.product_category
+                          WHERE company_id = {companyId} AND code = {code}) AS "Value"
+            """).FirstAsync(ct);
+
+    public Task<bool> CategoryExistsAsync(Guid companyId, Guid categoryId, CancellationToken ct = default)
+        => db.Database.SqlQuery<bool>($"""
+            SELECT EXISTS(SELECT 1 FROM nexora.product_category
+                          WHERE company_id = {companyId} AND id = {categoryId}) AS "Value"
+            """).FirstAsync(ct);
+
+    public async Task CreateCategoryAsync(Guid id, Guid companyId, string name, string? code, Guid? parentId, CancellationToken ct = default)
+        => await db.Database.ExecuteSqlAsync($"""
+            INSERT INTO nexora.product_category (id, company_id, parent_id, name, code, status)
+            VALUES ({id}, {companyId}, {parentId}, {name}, {code}, 'active')
+            """, ct);
+
+    public Task<bool> PriceListCodeExistsAsync(Guid companyId, string code, CancellationToken ct = default)
+        => db.PriceLists.AsNoTracking().AnyAsync(l => l.CompanyId == companyId && l.Code == code, ct);
+
+    public async Task AddPriceListAsync(PriceList list, CancellationToken ct = default)
+        => await db.PriceLists.AddAsync(list, ct);
+
+    public Task<string?> ProductStatusAsync(Guid productId, CancellationToken ct = default)
+        => db.Products.AsNoTracking().Where(p => p.Id == productId).Select(p => (string?)p.Status).FirstOrDefaultAsync(ct);
+
+    public async Task SetProductStatusAsync(Guid productId, string status, CancellationToken ct = default)
+        => await db.Products.Where(p => p.Id == productId)
+            .ExecuteUpdateAsync(u => u.SetProperty(p => p.Status, status), ct);
+
+    public async Task UpsertReorderRuleAsync(ProductReorderRule rule, CancellationToken ct = default)
+    {
+        var existing = await db.ReorderRules.FirstOrDefaultAsync(
+            r => r.ProductId == rule.ProductId && r.InventoryLocationId == rule.InventoryLocationId, ct);
+        if (existing is null) { await db.ReorderRules.AddAsync(rule, ct); return; }
+        existing.MinQuantity = rule.MinQuantity;
+        existing.MaxQuantity = rule.MaxQuantity;
+        existing.ReorderPoint = rule.ReorderPoint;
+        existing.ReorderQuantity = rule.ReorderQuantity;
+        existing.LeadTimeDays = rule.LeadTimeDays;
+        existing.AutoOrder = rule.AutoOrder;
+    }
+
+    private Guid Company => StoreHelpers.Company(tenant);
+}
+
+public sealed class EfPurchasingStore(NexoraDbContext db, ITenantContext tenant) : IPurchasingStore
+{
+    private Guid Company => StoreHelpers.Company(tenant);
+
+    public Task<Guid> ResolveCurrencyIdAsync(string code, CancellationToken ct = default) => StoreHelpers.CurrencyId(db, code, ct);
+    public Task<string> NextNumberAsync(string documentType, CancellationToken ct = default) => StoreHelpers.NextNumber(db, tenant, documentType, ct);
+
+    public async Task AddOrderAsync(PurchaseOrder order, CancellationToken ct = default) => await db.PurchaseOrders.AddAsync(order, ct);
+    public async Task<Guid> CompanyCurrencyIdAsync(CancellationToken ct = default)
+        => await db.Database.SqlQuery<Guid>($"""
+            SELECT default_currency_id AS "Value" FROM nexora.company WHERE id = {tenant.ActiveCompanyId}
+            """).FirstAsync(ct);
+
+    public Task<PurchaseOrder?> GetOrderAsync(Guid id, CancellationToken ct = default)
+        // Sans suivi : le statut et les quantités reçues sont mis à jour par ExecuteUpdate — une instance
+        // déjà suivie dans le contexte serait périmée (lecture de contrôle avant réception).
+        => db.PurchaseOrders.AsNoTracking().Include(o => o.Lines).FirstOrDefaultAsync(o => o.Id == id, ct);
+
+    public Task<string?> OrderStatusAsync(Guid orderId, CancellationToken ct = default)
+        => db.PurchaseOrders.AsNoTracking().Where(o => o.Id == orderId).Select(o => (string?)o.Status).FirstOrDefaultAsync(ct);
+
+    public async Task SetOrderStatusAsync(Guid orderId, string status, CancellationToken ct = default)
+        => await db.PurchaseOrders.Where(o => o.Id == orderId)
+            .ExecuteUpdateAsync(u => u.SetProperty(o => o.Status, status), ct);
+
+    public Task<bool> SupplierRefExistsAsync(Guid supplierId, string reference, CancellationToken ct = default)
+        => db.Database.SqlQuery<bool>($"""
+            SELECT EXISTS(SELECT 1 FROM nexora.supplier_invoice
+              WHERE company_id = {Company} AND supplier_id = {supplierId}
+                AND lower(supplier_reference) = lower({reference}) AND status <> 'cancelled') AS "Value"
+            """).FirstAsync(ct);
+
+    private sealed record InvLineRow(Guid? ProductId, string Description, decimal Quantity, decimal UnitPrice);
+    private sealed record OrdLineRow(Guid ProductId, decimal QuantityOrdered, decimal UnitPrice);
+    private sealed record RcvRow(Guid ProductId, decimal Received);
+    private sealed record InvHeaderRow(string DocumentNumber, Guid? PurchaseOrderId, string MatchStatus);
+
+    public async Task<InvoiceMatchData?> GetInvoiceMatchDataAsync(Guid invoiceId, CancellationToken ct = default)
+    {
+        var h = await db.Database.SqlQuery<InvHeaderRow>($"""
+            SELECT document_number AS "DocumentNumber", purchase_order_id AS "PurchaseOrderId",
+                   match_status AS "MatchStatus"
+            FROM nexora.supplier_invoice WHERE id = {invoiceId} AND company_id = {Company}
+            """).FirstOrDefaultAsync(ct);
+        if (h is null) return null;
+
+        var invLines = await db.Database.SqlQuery<InvLineRow>($"""
+            SELECT product_id AS "ProductId", description AS "Description",
+                   quantity AS "Quantity", unit_price AS "UnitPrice"
+            FROM nexora.supplier_invoice_line WHERE supplier_invoice_id = {invoiceId}
+            """).ToListAsync(ct);
+
+        var ordLines = h.PurchaseOrderId is null ? new List<OrdLineRow>() : await db.Database.SqlQuery<OrdLineRow>($"""
+            SELECT product_id AS "ProductId", quantity_ordered AS "QuantityOrdered", unit_price AS "UnitPrice"
+            FROM nexora.purchase_order_line WHERE purchase_order_id = {h.PurchaseOrderId}
+            """).ToListAsync(ct);
+
+        var received = h.PurchaseOrderId is null ? new List<RcvRow>() : await db.Database.SqlQuery<RcvRow>($"""
+            SELECT grl.product_id AS "ProductId", COALESCE(SUM(grl.quantity_received), 0) AS "Received"
+            FROM nexora.goods_receipt_line grl
+            JOIN nexora.goods_receipt gr ON gr.id = grl.goods_receipt_id
+            WHERE gr.purchase_order_id = {h.PurchaseOrderId} AND gr.status = 'posted'
+            GROUP BY grl.product_id
+            """).ToListAsync(ct);
+
+        return new InvoiceMatchData(
+            invoiceId, h.DocumentNumber, h.PurchaseOrderId, h.MatchStatus,
+            invLines.Select(l => new InvoiceMatchLine(l.ProductId, l.Description, l.Quantity, l.UnitPrice)).ToList(),
+            ordLines.Select(l => new OrderMatchLine(l.ProductId, l.QuantityOrdered, l.UnitPrice)).ToList(),
+            received.ToDictionary(r => r.ProductId, r => r.Received));
+    }
+
+    public async Task SetInvoiceMatchAsync(Guid invoiceId, string matchStatus, string detailJson,
+        bool blocked, string? blockReason, Guid? matchedBy, CancellationToken ct = default)
+        => await db.Database.ExecuteSqlAsync($"""
+            UPDATE nexora.supplier_invoice
+               SET match_status = {matchStatus}, match_detail = {detailJson}::jsonb,
+                   matched_at = now(), matched_by = {matchedBy},
+                   payment_blocked = {blocked}, payment_block_reason = {blockReason}
+             WHERE id = {invoiceId} AND company_id = {Company}
+            """, ct);
+
+    public async Task<PayablePaymentInfo?> GetPayablePaymentInfoAsync(Guid payableId, CancellationToken ct = default)
+        => await db.Database.SqlQuery<PayablePaymentInfo>($"""
+            SELECT p.id AS "PayableId", p.supplier_id AS "SupplierId", cur.code AS "Currency",
+                   p.remaining_amount AS "RemainingAmount", p.status AS "Status",
+                   COALESCE(si.payment_blocked, false) AS "InvoicePaymentBlocked",
+                   si.payment_block_reason AS "BlockReason"
+            FROM nexora.supplier_payable p
+            JOIN nexora.currency cur ON cur.id = p.currency_id
+            LEFT JOIN nexora.supplier_invoice si ON si.id = p.supplier_invoice_id
+            WHERE p.id = {payableId} AND p.company_id = {Company}
+            """).FirstOrDefaultAsync(ct);
+
+    public async Task AddReceiptAsync(GoodsReceipt receipt, CancellationToken ct = default) => await db.GoodsReceipts.AddAsync(receipt, ct);
+
+    public Task<Guid?> FindReceiptByOperationAsync(Guid operationUuid, CancellationToken ct = default)
+        => db.StockMovements.AsNoTracking()
+            .Where(m => m.SourceOperationUuid == operationUuid && m.ReferenceType == "goods_receipt")
+            .Select(m => (Guid?)m.ReferenceId).FirstOrDefaultAsync(ct);
+
+    public async Task BumpOrderLineReceivedAsync(Guid orderLineId, decimal quantity, CancellationToken ct = default)
+        => await db.Set<PurchaseOrderLine>().Where(l => l.Id == orderLineId)
+            .ExecuteUpdateAsync(u => u.SetProperty(l => l.QuantityReceived, l => l.QuantityReceived + quantity), ct);
+
+    public async Task RefreshOrderStatusAsync(Guid orderId, CancellationToken ct = default)
+    {
+        var lines = await db.Set<PurchaseOrderLine>().AsNoTracking()
+            .Where(l => l.PurchaseOrderId == orderId)
+            .Select(l => new { l.QuantityOrdered, l.QuantityReceived }).ToListAsync(ct);
+        var status = lines.All(l => l.QuantityReceived >= l.QuantityOrdered) ? "received"
+            : lines.Any(l => l.QuantityReceived > 0) ? "partially_received" : null;
+        // Rien d'imputé sur les lignes : le statut courant (ex. « sent ») est conservé, jamais rétrogradé.
+        if (status is null) return;
+        await db.PurchaseOrders.Where(o => o.Id == orderId)
+            .ExecuteUpdateAsync(u => u.SetProperty(o => o.Status, status), ct);
+    }
+
+    public async Task<Guid> EnsureLotAsync(Guid productId, string lotNumber, DateOnly? expiration,
+        Guid? supplierId, DateOnly? receivedAt, CancellationToken ct = default)
+    {
+        var existing = await db.Lots.AsNoTracking()
+            .Where(l => l.ProductId == productId && l.LotNumber == lotNumber)
+            .Select(l => (Guid?)l.Id).FirstOrDefaultAsync(ct);
+        if (existing is { } id) return id;
+        var lot = new Lot
+        {
+            Id = Guid.NewGuid(), CompanyId = Company, ProductId = productId,
+            LotNumber = lotNumber, ExpirationDate = expiration, Status = "active",
+            SupplierId = supplierId, ReceivedAt = receivedAt,
+        };
+        await db.Lots.AddAsync(lot, ct);
+        return lot.Id;
+    }
+
+    public async Task<Guid> CreateSupplierInvoiceAsync(SupplierInvoiceRow r, IReadOnlyList<SupplierInvoiceLineRow> lines, CancellationToken ct = default)
+    {
+        await db.Database.ExecuteSqlAsync($"""
+            INSERT INTO nexora.supplier_invoice
+              (id, company_id, supplier_id, purchase_order_id, goods_receipt_id, document_number,
+               supplier_reference, invoice_date, due_date, currency_id, subtotal, tax_total, total, status)
+            VALUES ({r.Id}, {r.CompanyId}, {r.SupplierId}, {r.PurchaseOrderId}, {r.GoodsReceiptId}, {r.DocumentNumber},
+                    {r.SupplierReference}, {r.InvoiceDate}, {r.DueDate}, {r.CurrencyId},
+                    {r.Subtotal}, {r.TaxTotal}, {r.Total}, {r.Status})
+            """, ct);
+        foreach (var l in lines)
+            await db.Database.ExecuteSqlAsync($"""
+                INSERT INTO nexora.supplier_invoice_line
+                  (id, supplier_invoice_id, company_id, product_id, description, quantity, unit_price, tax_id, discount, line_total)
+                VALUES ({Guid.NewGuid()}, {r.Id}, {r.CompanyId}, {l.ProductId}, {l.Description},
+                        {l.Quantity}, {l.UnitPrice}, {l.TaxId}, {l.Discount}, {l.LineTotal})
+                """, ct);
+        return r.Id;
+    }
+
+    public async Task AddCostHistoryAsync(ProductCostHistory history, CancellationToken ct = default)
+        => await db.CostHistory.AddAsync(history, ct);
+
+    public async Task AddSupplierReturnAsync(SupplierReturn ret, CancellationToken ct = default)
+        => await db.SupplierReturns.AddAsync(ret, ct);
+
+    public Task<Product?> GetProductAsync(Guid id, CancellationToken ct = default)
+        => db.Products.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id, ct);
+}
+
+public sealed class EfInventoryOpsStore(NexoraDbContext db, ITenantContext tenant) : IInventoryOpsStore
+{
+    public Task<string> NextNumberAsync(string documentType, CancellationToken ct = default) => StoreHelpers.NextNumber(db, tenant, documentType, ct);
+
+    public async Task AddTransferAsync(StockTransfer transfer, CancellationToken ct = default) => await db.StockTransfers.AddAsync(transfer, ct);
+    public Task<StockTransfer?> GetTransferAsync(Guid id, CancellationToken ct = default)
+        => db.StockTransfers.Include(t => t.Lines).FirstOrDefaultAsync(t => t.Id == id, ct);
+
+    public async Task AddCountAsync(InventoryCount count, CancellationToken ct = default) => await db.InventoryCounts.AddAsync(count, ct);
+    public Task<InventoryCount?> GetCountAsync(Guid id, CancellationToken ct = default)
+        => db.InventoryCounts.Include(c => c.Lines).FirstOrDefaultAsync(c => c.Id == id, ct);
+
+    public async Task<decimal> SystemQuantityAsync(Guid productId, Guid locationId, CancellationToken ct = default)
+        => await db.StockBalances.AsNoTracking()
+            .Where(s => s.ProductId == productId && s.InventoryLocationId == locationId)
+            .Select(s => (decimal?)s.QuantityOnHand).FirstOrDefaultAsync(ct) ?? 0m;
+
+    public async Task<decimal> AverageCostAsync(Guid productId, Guid locationId, CancellationToken ct = default)
+        => await db.StockBalances.AsNoTracking()
+            .Where(s => s.ProductId == productId && s.InventoryLocationId == locationId)
+            .Select(s => (decimal?)s.AverageCost).FirstOrDefaultAsync(ct) ?? 0m;
+
+    public async Task AddAdjustmentAsync(StockAdjustment adjustment, CancellationToken ct = default)
+        => await db.StockAdjustments.AddAsync(adjustment, ct);
+
+    public async Task SetCountValidatedAsync(Guid countId, Guid? userId, CancellationToken ct = default)
+        => await db.InventoryCounts.Where(c => c.Id == countId)
+            .ExecuteUpdateAsync(u => u
+                .SetProperty(c => c.Status, "validated")
+                .SetProperty(c => c.ValidatedAt, DateTimeOffset.UtcNow)
+                .SetProperty(c => c.ValidatedBy, userId), ct);
+
+    public async Task SetTransferStatusAsync(Guid transferId, string status, DateTimeOffset? shipped, DateTimeOffset? received, CancellationToken ct = default)
+        => await db.StockTransfers.Where(t => t.Id == transferId)
+            .ExecuteUpdateAsync(u => u
+                .SetProperty(t => t.Status, status)
+                .SetProperty(t => t.ReceivedAt, t => received ?? t.ReceivedAt), ct);
+}
+
+public sealed class SqlReorderService(NexoraDbContext db, ITenantContext tenant) : IReorderService
+{
+    private sealed record Row(Guid ProductId, string Sku, string ProductName, Guid LocationId,
+        decimal OnHand, decimal Available, decimal ReorderPoint, decimal ReorderQuantity, Guid? PreferredSupplierId);
+
+    public async Task<IReadOnlyList<ReorderSuggestion>> SuggestionsAsync(CancellationToken ct = default)
+    {
+        var company = StoreHelpers.Company(tenant);
+        var rows = await db.Database.SqlQuery<Row>($"""
+            SELECT p.id AS "ProductId", p.sku AS "Sku", p.name AS "ProductName",
+                   sb.inventory_location_id AS "LocationId",
+                   sb.quantity_on_hand AS "OnHand",
+                   (sb.quantity_on_hand - sb.quantity_reserved) AS "Available",
+                   r.reorder_point AS "ReorderPoint",
+                   GREATEST(r.reorder_quantity, r.max_quantity - sb.quantity_on_hand) AS "ReorderQuantity",
+                   (SELECT ps.supplier_id FROM nexora.product_supplier ps
+                     WHERE ps.product_id = p.id ORDER BY ps.is_preferred DESC LIMIT 1) AS "PreferredSupplierId"
+            FROM nexora.product_reorder_rule r
+            JOIN nexora.product p ON p.id = r.product_id
+            JOIN nexora.stock_balance sb ON sb.product_id = r.product_id
+                 AND (r.inventory_location_id IS NULL OR r.inventory_location_id = sb.inventory_location_id)
+            WHERE r.company_id = {company} AND r.status = 'active'
+              AND (sb.quantity_on_hand - sb.quantity_reserved) <= r.reorder_point
+            """).ToListAsync(ct);
+
+        return rows.Select(x => new ReorderSuggestion(
+            x.ProductId, x.Sku, x.ProductName, x.LocationId, x.OnHand, x.Available, x.ReorderPoint,
+            x.ReorderQuantity <= 0 ? x.ReorderPoint : x.ReorderQuantity, x.PreferredSupplierId)).ToList();
+    }
+}

@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" />
+    <PackageReference Include="BCrypt.Net-Next" />
+    <PackageReference Include="ClosedXML" />
+    <PackageReference Include="PDFsharp-MigraDoc" />
+    <PackageReference Include="MailKit" />
+    <PackageReference Include="Twilio" />
+    <PackageReference Include="FirebaseAdmin" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+  </ItemGroup>
+
+  <!-- Résumé fonctionnel §20 : l'assistant d'installation applique les migrations livrées avec l'API. -->
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\..\database\migrations\V*.sql" LogicalName="migrations/%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <!-- Impression PDF : police Inter (SIL OFL 1.1, voir Printing/Fonts/Inter-LICENSE-OFL.txt) embarquée,
+       l'image Linux de l'API n'ayant aucune police système. -->
+  <ItemGroup>
+    <EmbeddedResource Include="Printing\Fonts\*.ttf" LogicalName="fonts/%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Nexora.Application\Nexora.Application.csproj" />
+    <ProjectReference Include="..\Nexora.Domain\Nexora.Domain.csproj" />
+    <ProjectReference Include="..\Nexora.Contracts\Nexora.Contracts.csproj" />
+  </ItemGroup>
+
+</Project>

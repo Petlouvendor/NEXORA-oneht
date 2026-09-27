@@ -1,0 +1,605 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import {
+  checkout, getCurrentSession, getDiscountRequest, getMyLimits, requestDiscount, STATUS_LABEL,
+  type CheckoutCommand, type CheckoutResult, type CurrentSession, type DiscountRequest, type PosLimits, type PosProduct,
+} from "@/pos/posApi";
+import { ProductSearch } from "@/pos/ProductSearch";
+import { SessionPanel } from "@/pos/SessionPanel";
+import { ReturnsPanel, statusTone } from "@/pos/ReturnsPanel";
+import { ApprovalsPanel } from "@/pos/ApprovalsPanel";
+import { ManagerOverrideDialog } from "@/pos/ManagerOverrideDialog";
+import { CustomerPicker } from "@/pos/CustomerPicker";
+import { CreditOverrideRequestDialog, CreditOverridesPanel, useCreditOverride } from "@/pos/CreditOverridePanels";
+import type { CustomerLookup } from "@/customers/customersApi";
+import { ApiError } from "@/core/apiClient";
+import { pushBatch } from "@/sync/syncApi";
+import { useOnline } from "@/shared/useOnline";
+import { useOutbox } from "@/shared/useOutbox";
+import { autoFlushOnReconnect, enqueue, flushOutbox, outboxProtection, pruneSynced, type BatchSender } from "@/shared/offlineQueue";
+import { useToast } from "@/shared/Toast";
+import { Badge, Button, Card, ConfirmDialog, Field, IconButton, Modal, StatePill, Tabs, TextInput } from "@/shared/ui";
+import { Icon } from "@/shared/icons";
+import { money, relative } from "@/shared/format";
+import { printDocument } from "@/shared/printApi";
+
+/**
+ * Écran POS (guide fonctionnel développeur §7-§13, §21, §24). Un outil de vente rapide et contrôlé :
+ * session de caisse obligatoire, recherche courte (jamais le catalogue complet), prix fourni par le
+ * serveur et non modifiable, remise bornée par la limite du rôle — au-delà, demande Manager —, retour
+ * et remboursement uniquement sur validation Manager. Aucune donnée de pilotage n'est affichée.
+ * Le serveur reste l'autorité : prix, remises, stock et droits y sont recontrôlés à l'encaissement.
+ */
+interface CartLine {
+  productId: string;
+  name: string;
+  quantity: number;
+  unitPrice: number;      // indicatif : prix de vente en vigueur, recalculé par le serveur
+  discount: number;       // montant de remise saisi (≥ 0)
+}
+
+const SYNC_DEVICE_KEY = "nexora.pos.syncDeviceId";
+
+function loadSyncDevice(): string {
+  try { return localStorage.getItem(SYNC_DEVICE_KEY) ?? ""; } catch { return ""; }
+}
+
+export function PosPage() {
+  const [params] = useSearchParams();
+  const focusApproval = params.get("approvals");
+  const [tab, setTab] = useState(focusApproval ? "approvals" : "sale");
+  const [limits, setLimits] = useState<PosLimits | null>(null);
+  const [session, setSession] = useState<CurrentSession | null>(null);
+  const [sessionLoaded, setSessionLoaded] = useState(false);
+
+  const reloadSession = useCallback(() => {
+    getCurrentSession()
+      .then((s) => setSession(s ?? null))
+      .catch(() => setSession(null))
+      .finally(() => setSessionLoaded(true));
+  }, []);
+
+  useEffect(() => {
+    getMyLimits().then(setLimits).catch(() => setLimits(null));
+    reloadSession();
+  }, [reloadSession]);
+
+  const approver = Boolean(limits && (limits.canRefund || limits.canApproveDiscount || limits.canManageSessions || limits.canOverrideCredit));
+  const tabs = [
+    { id: "sale", label: "Vente" },
+    ...(limits?.canRequestReturn ? [{ id: "returns", label: "Retours" }] : []),
+    ...(approver ? [{ id: "approvals", label: "Validations" }] : []),
+  ];
+
+  return (
+    <div style={{ display: "grid", gap: 12 }}>
+      <Tabs tabs={tabs} active={tab} onChange={setTab} />
+      {tab === "sale" && sessionLoaded && (
+        <SaleScreen limits={limits} session={session} onSessionChanged={reloadSession} />
+      )}
+      {tab === "returns" && <ReturnsPanel session={session} />}
+      {tab === "approvals" && limits && approver && (
+        <div style={{ display: "grid", gap: 12 }}>
+          {limits.canOverrideCredit && <CreditOverridesPanel focusId={params.get("id")} />}
+          {(limits.canRefund || limits.canApproveDiscount || limits.canManageSessions) && <ApprovalsPanel limits={limits} focusId={params.get("id")} />}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SaleScreen({ limits, session, onSessionChanged }: {
+  limits: PosLimits | null; session: CurrentSession | null; onSessionChanged: () => void;
+}) {
+  const online = useOnline();
+  const toast = useToast();
+  const { entries: queue, pending: pendingCount } = useOutbox();
+  const [cart, setCart] = useState<CartLine[]>([]);
+  // UUID d'opération du panier : clé d'idempotence de l'encaissement et lien des remises validées.
+  const [cartId, setCartId] = useState(() => crypto.randomUUID());
+  const [approvals, setApprovals] = useState<Record<string, DiscountRequest>>({});
+  const [tendered, setTendered] = useState<number>(0);
+  const [busy, setBusy] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [receipt, setReceipt] = useState<CheckoutResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [asking, setAsking] = useState<CartLine | null>(null);
+  const [onSite, setOnSite] = useState<DiscountRequest | null>(null);
+  const [syncDevice, setSyncDevice] = useState(loadSyncDevice);
+  // Module clients §17, §34 : client de la vente ; à crédit, le reste non encaissé passe sur son compte.
+  const [customer, setCustomer] = useState<CustomerLookup | null>(null);
+  const [creditMode, setCreditMode] = useState(false);
+  // Module clients §7, §15 : avoir du client utilisé en paiement ; §12 : dépassement de crédit approuvé.
+  const [storeCredit, setStoreCredit] = useState(0);
+  const [overrideAsk, setOverrideAsk] = useState<string | null>(null);
+  const [overrideOnSite, setOverrideOnSite] = useState(false);
+  const { request: override, setRequest: setOverride, refresh: refreshOverride } = useCreditOverride(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  const currency = session?.currency ?? "HTG";
+  const canSell = session?.status === "open" && Boolean(session.inventoryLocationId && session.financialAccountId);
+
+  // Envoi d'un lot de synchronisation (Phase 10 §14) — jamais de confirmation simulée (§21).
+  const sender = useCallback<BatchSender>(async (batch) => {
+    if (!syncDevice) throw new Error("Appareil de synchronisation non configuré.");
+    const res = await pushBatch(syncDevice, batch.map((e) => ({
+      // Module clients §24 : un versement client hors ligne se rejoue par le même moteur que la vente.
+      operationUuid: e.id, entityType: e.kind === "customer.payment" ? "customer_payment" : "sale", operationType: "create", payload: e.payload,
+      priority: 5, clientCreatedAt: e.createdAt,
+    })));
+    return res.operations.map((o) => ({
+      id: o.operationUuid,
+      status: o.status === "SYNCED" ? "synced" : o.status === "CONFLICT" ? "conflict" : "failed",
+      message: o.message,
+    }));
+  }, [syncDevice]);
+
+  useEffect(() => autoFlushOnReconnect(sender), [sender]);
+
+  // Suivi des demandes de remise en attente (§12) : le panier se débloque dès la décision du Manager.
+  useEffect(() => {
+    const pending = Object.values(approvals).filter((a) => a.status === "pending_approval");
+    if (pending.length === 0) return;
+    const t = setInterval(() => {
+      pending.forEach((a) => getDiscountRequest(a.id)
+        .then((fresh) => {
+          setApprovals((m) => ({ ...m, [fresh.productId]: fresh }));
+          if (fresh.status === "approved") toast.success(`Remise sur ${fresh.productName} validée par ${fresh.decidedByName ?? "le Manager"}.`);
+          if (fresh.status === "rejected") toast.push(`Remise sur ${fresh.productName} refusée : ${fresh.decisionNote ?? ""}`, "warning");
+        })
+        .catch(() => { /* nouvel essai au tour suivant */ }));
+    }, 5000);
+    return () => clearInterval(t);
+  }, [approvals, toast]);
+
+  async function syncNow() {
+    setSyncing(true);
+    try {
+      const r = await flushOutbox(sender);
+      if (r.synced) toast.success(`${r.synced} vente(s) synchronisée(s).`);
+      if (r.conflict) toast.push(`${r.conflict} conflit(s) à traiter dans le centre de synchronisation.`, "warning");
+      if (r.failed) toast.error(`${r.failed} opération(s) en échec.`);
+      pruneSynced();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Synchronisation impossible.");
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  const limit = limits?.discountLimitPercent ?? null;
+  const lineGross = (l: CartLine) => Math.round(l.quantity * l.unitPrice * 100) / 100;
+  const linePercent = (l: CartLine) => (lineGross(l) > 0 ? (l.discount / lineGross(l)) * 100 : 0);
+  const needsApproval = (l: CartLine) => l.discount > 0 && limit !== null && linePercent(l) > limit + 0.0001;
+  const approvedFor = (l: CartLine) => {
+    const a = approvals[l.productId];
+    return a?.status === "approved" && a.requestedPercent + 0.0001 >= linePercent(l);
+  };
+  const blocked = cart.some((l) => needsApproval(l) && !approvedFor(l));
+
+  const total = useMemo(() => cart.reduce((sum, l) => sum + lineGross(l) - l.discount, 0), [cart]);
+  const canCredit = Boolean(limits?.canSellCredit && customer?.creditEnabled);
+  const onCredit = creditMode && canCredit;
+  const availableStore = customer?.availableStoreCredit ?? 0;
+  const useStore = Math.round(Math.max(0, Math.min(storeCredit, availableStore, total)) * 100) / 100;
+  const due = Math.max(0, Math.round((total - useStore) * 100) / 100);
+  // À crédit, le montant reçu peut être nul (vente entièrement à crédit) ; sinon, défaut = reste à payer.
+  const paid = onCredit ? tendered : tendered || due;
+  const change = Math.max(0, paid - due);
+  const creditPart = onCredit ? Math.max(0, Math.round((due - paid) * 100) / 100) : 0;
+  const insufficient = !onCredit && paid + 0.001 < due;
+  const overAvailable = onCredit && customer?.availableCredit != null && creditPart > customer.availableCredit + 0.001;
+
+  function add(p: PosProduct) {
+    setError(null);
+    if (p.salePrice == null) {
+      setError(`« ${p.name} » n'a pas de prix de vente en vigueur.`);
+      return;
+    }
+    if (p.availability === "out") toast.push(`« ${p.name} » est indiqué en rupture : le serveur confirmera le stock.`, "warning");
+    setCart((c) => {
+      const i = c.findIndex((l) => l.productId === p.productId);
+      if (i >= 0) return c.map((l, idx) => (idx === i ? { ...l, quantity: l.quantity + 1 } : l));
+      return [...c, { productId: p.productId, name: p.name, quantity: 1, unitPrice: p.salePrice ?? 0, discount: 0 }];
+    });
+  }
+  const updateLine = (i: number, patch: Partial<CartLine>) =>
+    setCart((c) => c.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
+  const removeLine = (i: number) => setCart((c) => c.filter((_, idx) => idx !== i));
+
+  function resetCart() {
+    setCart([]);
+    setTendered(0);
+    setCustomer(null);
+    setCreditMode(false);
+    setStoreCredit(0);
+    setOverrideAsk(null);
+    setOverride(null);
+    setApprovals({});
+    setCartId(crypto.randomUUID());
+    searchRef.current?.focus();
+  }
+
+  async function pay() {
+    if (!session) return;
+    setConfirming(false);
+    setError(null);
+    setBusy(true);
+    const cmd: CheckoutCommand = {
+      operationUuid: cartId,
+      inventoryLocationId: session.inventoryLocationId ?? "",
+      cashSessionId: session.sessionId,
+      customerId: customer?.id ?? null,
+      currency,
+      lines: cart.map((l) => ({ productId: l.productId, quantity: l.quantity, lineDiscount: l.discount })),
+      // Vente à crédit : seul le montant réellement reçu est un encaissement ; le serveur calcule le reste dû.
+      tenders: paid > 0 ? [{ financialAccountId: session.financialAccountId ?? "", paymentMethodId: null, amount: paid }] : [],
+      amountTendered: paid,
+      storeCreditAmount: useStore,
+    };
+    try {
+      const result = await checkout(cmd);
+      setReceipt(result);
+      toast.success(`Vente ${result.documentNumber} enregistrée.`);
+      resetCart();
+      onSessionChanged();
+    } catch (err) {
+      // Serveur injoignable → la vente est mise en file, jamais déclarée confirmée (§21).
+      if (err instanceof ApiError && (err.isOffline || !online)) {
+        enqueue({ id: cmd.operationUuid, kind: "sale.checkout", payload: cmd });
+        setReceipt(null);
+        resetCart();
+        toast.push("Hors ligne — vente mise en file d'attente, non encore confirmée. Elle sera synchronisée à la reconnexion.", "warning");
+      } else {
+        setError(err instanceof ApiError ? err.message : "Échec de l'encaissement");
+        // §12 : limite dépassée → proposer le circuit d'approbation pour CE panier.
+        if (err instanceof ApiError && err.problem.title === "pos.credit_limit" && customer && creditPart > 0 && limits?.canSellCredit)
+          setOverrideAsk(err.message);
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 340px", gap: 16, alignItems: "start" }}>
+      {/* ---- Recherche + panier ---- */}
+      <div style={{ display: "grid", gap: 12 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+          <ProductSearch locationId={session?.inventoryLocationId ?? null} onPick={add} disabled={!canSell} inputRef={searchRef} />
+          {!online && <Badge tone="warning" style={{ whiteSpace: "nowrap" }}><Icon.Offline size={13} /> Hors ligne</Badge>}
+          {pendingCount > 0 && <Badge tone="info" style={{ whiteSpace: "nowrap" }}><Icon.Sync size={13} /> {pendingCount} non synchronisée(s)</Badge>}
+          {outboxProtection() === "plaintext" && (
+            <Badge tone="warning" style={{ whiteSpace: "nowrap" }}>
+              <span title="Le navigateur ne peut chiffrer la file hors ligne que si l'application est servie en HTTPS.">File hors ligne non chiffrée</span>
+            </Badge>
+          )}
+        </div>
+
+        <Card style={{ padding: 0, overflow: "hidden" }}>
+          <table className="nx-table">
+            <thead>
+              <tr>
+                <th>Article</th><th className="nx-num" style={{ width: 78 }}>Qté</th>
+                <th className="nx-num" style={{ width: 100 }}>Prix</th>
+                <th className="nx-num" style={{ width: 150 }}>Remise{limit !== null && limits?.canDiscount ? ` (≤ ${limit} %)` : ""}</th>
+                <th className="nx-num" style={{ width: 110 }}>Total</th><th style={{ width: 44 }} />
+              </tr>
+            </thead>
+            <tbody>
+              {cart.map((l, i) => {
+                const over = needsApproval(l);
+                const req = approvals[l.productId];
+                return (
+                  <tr key={l.productId}>
+                    <td>{l.name}</td>
+                    <td><TextInput type="number" min={1} value={l.quantity} style={{ textAlign: "right" }} aria-label={`Quantité — ${l.name}`}
+                                   onChange={(e) => updateLine(i, { quantity: Math.max(1, Number(e.target.value) || 1) })} /></td>
+                    {/* §12 : le prix vient du serveur ; le caissier ne le saisit pas. */}
+                    <td className="nx-num">{money(l.unitPrice, currency)}</td>
+                    <td>
+                      {limits?.canDiscount ? (
+                        <div style={{ display: "grid", gap: 4 }}>
+                          <TextInput type="number" min={0} value={l.discount} style={{ textAlign: "right" }} aria-label={`Remise — ${l.name}`}
+                                     invalid={over && !approvedFor(l)}
+                                     onChange={(e) => updateLine(i, { discount: Math.max(0, Math.min(lineGross(l), Number(e.target.value) || 0)) })} />
+                          {over && !approvedFor(l) && (req?.status === "pending_approval"
+                            ? <>
+                                <Badge tone="warning">Validation en attente</Badge>
+                                <Button size="sm" variant="ghost" onClick={() => setOnSite(req)}>Responsable présent</Button>
+                              </>
+                            : <Button size="sm" variant="ghost" onClick={() => setAsking(l)}>Demander validation</Button>)}
+                          {over && req && req.status !== "pending_approval" && (
+                            <Badge tone={statusTone(req.status)}>{STATUS_LABEL[req.status] ?? req.status}</Badge>
+                          )}
+                        </div>
+                      ) : <span className="nx-num">—</span>}
+                    </td>
+                    <td className="nx-num">{money(lineGross(l) - l.discount, currency)}</td>
+                    <td><IconButton label="Retirer la ligne" onClick={() => removeLine(i)}><Icon.X size={14} /></IconButton></td>
+                  </tr>
+                );
+              })}
+              {cart.length === 0 && (
+                <tr><td colSpan={6} style={{ padding: 28, textAlign: "center", color: "var(--nx-text-2)" }}>
+                  {canSell ? "Panier vide — scannez ou recherchez un article." : "Ouvrez une session de caisse pour vendre."}
+                </td></tr>
+              )}
+            </tbody>
+          </table>
+        </Card>
+        {cart.length > 0 && (
+          <div><Button size="sm" variant="ghost" onClick={resetCart}>Vider le panier</Button></div>
+        )}
+      </div>
+
+      {/* ---- Session, total, paiement ---- */}
+      <div style={{ display: "grid", gap: 12, position: "sticky", top: 78 }}>
+        <SessionPanel session={session} onChanged={onSessionChanged} />
+
+        <CustomerPicker customer={customer} disabled={busy}
+                        onChange={(c) => { setCustomer(c); setStoreCredit(0); if (!c) setCreditMode(false); }}
+                        cashAccountId={session?.status === "open" ? session.financialAccountId : null}
+                        cashSessionId={session?.status === "open" ? session.sessionId : null} />
+
+        <Card style={{ textAlign: "center" }}>
+          <div style={{ color: "var(--nx-text-2)", fontSize: "var(--nx-fs-xs)", textTransform: "uppercase", letterSpacing: 0.6 }}>
+            Montant dû
+          </div>
+          <div className="nx-numeric" style={{ fontSize: 40, fontWeight: 800, lineHeight: 1.15 }}>{money(total, currency)}</div>
+        </Card>
+
+        <Card className="nx-field" style={{ gap: 12 }}>
+          {availableStore > 0 && (
+            <Field label={`Payer avec l'avoir (disponible ${money(availableStore, currency)})`}>
+              <TextInput type="number" min={0} max={Math.min(availableStore, total)} className="nx-input nx-numeric" value={storeCredit || ""}
+                         onChange={(e) => setStoreCredit(Math.max(0, Number(e.target.value) || 0))} />
+            </Field>
+          )}
+          {useStore > 0 && (
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <span>Reste à payer</span><b className="nx-numeric">{money(due, currency)}</b>
+            </div>
+          )}
+          <Field label="Montant reçu">
+            <TextInput type="number" min={0} className="nx-input nx-numeric" value={tendered}
+                       style={{ fontSize: "var(--nx-fs-lg)", textAlign: "right" }}
+                       onChange={(e) => setTendered(Math.max(0, Number(e.target.value) || 0))} />
+          </Field>
+          <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700 }}>
+            <span>Rendu monnaie</span>
+            <span className="nx-numeric" style={{ color: "var(--nx-brand)" }}>{money(change, currency)}</span>
+          </div>
+          {canCredit && (
+            <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input type="checkbox" checked={creditMode} onChange={(e) => setCreditMode(e.target.checked)} />
+              Vente à crédit (le reste passe sur le compte du client)
+            </label>
+          )}
+          {onCredit && (
+            <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700 }}>
+              <span>Reste à crédit</span>
+              <span className="nx-numeric" style={{ color: overAvailable ? "var(--nx-warning)" : undefined }}>{money(creditPart, currency)}</span>
+            </div>
+          )}
+          {override && (
+            <div style={{ fontSize: "var(--nx-fs-sm)", display: "grid", gap: 4 }}>
+              {override.status === "pending" && <>
+                <Badge tone="warning">Dépassement en attente de validation ({override.currentLevel}/{override.requiredLevels})</Badge>
+                <Button size="sm" variant="ghost" onClick={() => setOverrideOnSite(true)}>Responsable présent</Button>
+              </>}
+              {override.status === "approved" && <Badge tone="success">Dépassement approuvé{override.decidedByName ? ` par ${override.decidedByName}` : ""} — encaissez</Badge>}
+              {override.status === "rejected" && <Badge tone="error">Dépassement refusé : {override.decisionNote ?? ""}</Badge>}
+            </div>
+          )}
+          {overAvailable && (
+            <div style={{ color: "var(--nx-warning)", fontSize: "var(--nx-fs-sm)" }}>
+              <Icon.Alert size={14} /> Au-delà du crédit disponible : la vente sera refusée sans autorisation d'un responsable.
+            </div>
+          )}
+          {insufficient && cart.length > 0 && (
+            <div style={{ color: "var(--nx-warning)", fontWeight: 600 }}><Icon.Alert size={14} /> Paiement insuffisant</div>
+          )}
+          {blocked && (
+            <div style={{ color: "var(--nx-warning)", fontSize: "var(--nx-fs-sm)" }}>
+              <Icon.Alert size={14} /> Une remise dépasse votre limite : validation Manager requise avant l'encaissement.
+            </div>
+          )}
+          {error && <div className="nx-error-text" role="alert">{error}</div>}
+        </Card>
+
+        {queue.filter((e) => e.status !== "synced").length > 0 && (
+          <Card className="nx-field" style={{ gap: 8 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ fontSize: "var(--nx-fs-xs)", textTransform: "uppercase", color: "var(--nx-text-2)" }}>Ventes non synchronisées</div>
+              <Button size="sm" variant="ghost" loading={syncing} disabled={syncing || !online} onClick={() => void syncNow()}>
+                <Icon.Sync size={14} /> Synchroniser
+              </Button>
+            </div>
+            {queue.filter((e) => e.status !== "synced").slice(0, 6).map((e) => (
+              <div key={e.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "var(--nx-fs-sm)" }}>
+                <span style={{ color: "var(--nx-text-2)" }}>{e.id.slice(0, 8)} · {relative(e.createdAt)}</span>
+                <StatePill status={e.status} />
+              </div>
+            ))}
+            {!syncDevice && (
+              <Field label="Identifiant de l'appareil de synchronisation">
+                <TextInput value={syncDevice} onChange={(e) => {
+                  setSyncDevice(e.target.value);
+                  try { localStorage.setItem(SYNC_DEVICE_KEY, e.target.value); } catch { /* stockage indisponible */ }
+                }} />
+              </Field>
+            )}
+          </Card>
+        )}
+
+        <Button block loading={busy} disabled={busy || cart.length === 0 || !canSell || blocked || insufficient}
+                style={{ fontSize: "var(--nx-fs-lg)", minHeight: 56 }} onClick={() => setConfirming(true)}>
+          <Icon.Wallet size={18} /> Encaisser {money(total, currency)}
+        </Button>
+
+        {receipt && <Receipt receipt={receipt} currency={currency} onClose={() => setReceipt(null)} />}
+      </div>
+
+      {confirming && (
+        <ConfirmDialog
+          title="Confirmer l'encaissement"
+          message="Cette opération enregistre la vente et met à jour le stock, la caisse et la comptabilité. Les prix et remises sont recontrôlés par le serveur."
+          impact={
+            <div style={{ display: "grid", gap: 4 }}>
+              <div style={{ display: "flex", justifyContent: "space-between" }}><span>Total</span><b className="nx-numeric">{money(total, currency)}</b></div>
+              <div style={{ display: "flex", justifyContent: "space-between" }}><span>Reçu</span><span className="nx-numeric">{money(paid, currency)}</span></div>
+              <div style={{ display: "flex", justifyContent: "space-between" }}><span>Rendu</span><span className="nx-numeric">{money(change, currency)}</span></div>
+              {customer && <div style={{ display: "flex", justifyContent: "space-between" }}><span>Client</span><span>{customer.displayName}</span></div>}
+              {useStore > 0 && <div style={{ display: "flex", justifyContent: "space-between" }}><span>Payé par avoir</span><span className="nx-numeric">{money(useStore, currency)}</span></div>}
+              {creditPart > 0 && <div style={{ display: "flex", justifyContent: "space-between" }}><span>À crédit</span><b className="nx-numeric">{money(creditPart, currency)}</b></div>}
+              {creditPart > 0 && !online && <div style={{ color: "var(--nx-warning)" }}>Hors ligne : le crédit sera soumis à la politique hors ligne à la synchronisation.</div>}
+            </div>
+          }
+          confirmLabel="Valider la vente"
+          onConfirm={() => void pay()}
+          onCancel={() => setConfirming(false)}
+        />
+      )}
+
+      {overrideAsk && customer && (
+        <CreditOverrideRequestDialog cartId={cartId} customerId={customer.id} customerName={customer.displayName}
+                                     amount={creditPart} currency={currency} limitMessage={overrideAsk}
+                                     onClose={() => setOverrideAsk(null)}
+                                     onRequested={(r, validateNow) => {
+                                       setOverride(r);
+                                       setOverrideAsk(null);
+                                       setError(null);
+                                       if (r.status === "approved") toast.success("Dépassement déjà approuvé : encaissez.");
+                                       else if (validateNow) setOverrideOnSite(true);
+                                       else toast.push("Demande de dépassement envoyée au responsable.", "info");
+                                     }} />
+      )}
+
+      {overrideOnSite && override && (
+        <ManagerOverrideDialog
+          title="Validation responsable — dépassement de crédit"
+          summary={<span>Crédit de <b>{money(override.amount, override.currency)}</b> pour <b>{override.customerName}</b> au-delà du permis.
+            {" "}{override.limitMessage} Motif : {override.reason}.</span>}
+          approveAction="approve_credit_override" rejectAction="reject_credit_override" targetId={override.id}
+          onClose={() => setOverrideOnSite(false)}
+          onDone={() => { refreshOverride(); setOverrideOnSite(false); }}
+        />
+      )}
+
+      {asking && session && (
+        <DiscountRequestDialog
+          line={asking} cartId={cartId} currency={currency} locationId={session.inventoryLocationId ?? ""}
+          onClose={() => setAsking(null)}
+          onSent={(r, validateNow) => {
+            setApprovals((m) => ({ ...m, [r.productId]: r }));
+            setAsking(null);
+            if (validateNow) setOnSite(r);
+          }}
+        />
+      )}
+
+      {onSite && (
+        <ManagerOverrideDialog
+          title="Validation responsable — remise exceptionnelle"
+          summary={<span>Remise de <b>{money(onSite.requestedAmount, onSite.currency)}</b> ({onSite.requestedPercent} %) sur
+            <b> {onSite.productName}</b> × {onSite.quantity}. Motif du caissier : {onSite.reason}.</span>}
+          approveAction="approve_discount" rejectAction="reject_discount" targetId={onSite.id}
+          onClose={() => setOnSite(null)}
+          onDone={() => {
+            getDiscountRequest(onSite.id).then((fresh) => setApprovals((m) => ({ ...m, [fresh.productId]: fresh }))).catch(() => {});
+            setOnSite(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/** Demande de remise exceptionnelle (§12) : montant brut recalculé par le serveur, motif obligatoire. */
+function DiscountRequestDialog({ line, cartId, currency, locationId, onClose, onSent }: {
+  line: CartLine; cartId: string; currency: string; locationId: string;
+  onClose: () => void; onSent: (r: DiscountRequest, validateNow: boolean) => void;
+}) {
+  const toast = useToast();
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function send(validateNow: boolean) {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await requestDiscount({
+        operationUuid: cartId, productId: line.productId, quantity: line.quantity,
+        requestedDiscount: line.discount, currency, inventoryLocationId: locationId, reason: reason.trim(),
+      });
+      if (!validateNow) toast.push(`Demande ${r.requestNumber} envoyée au Manager.`, "info");
+      onSent(r, validateNow);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Demande impossible.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal title="Remise exceptionnelle" onClose={onClose}
+           footer={<>
+             <Button variant="ghost" onClick={onClose}>Annuler</Button>
+             <Button variant="ghost" loading={busy} disabled={busy || !reason.trim()} onClick={() => void send(false)}>Envoyer au Manager</Button>
+             <Button loading={busy} disabled={busy || !reason.trim()} onClick={() => void send(true)}>Responsable présent</Button>
+           </>}>
+      <div style={{ display: "grid", gap: 10 }}>
+        <p style={{ margin: 0 }}>
+          Remise de <b>{money(line.discount, currency)}</b> sur <b>{line.name}</b> × {line.quantity}. Elle dépasse votre limite :
+          un Manager doit la valider. La vente reste en attente jusqu'à sa décision.
+        </p>
+        <Field label="Motif" required>
+          <TextInput autoFocus value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Ex. emballage abîmé" />
+        </Field>
+        {error && <div className="nx-error-text" role="alert">{error}</div>}
+      </div>
+    </Modal>
+  );
+}
+
+/** Ticket de caisse (§7.1) : totaux de la transaction en cours uniquement. */
+function Receipt({ receipt, currency, onClose }: { receipt: CheckoutResult; currency: string; onClose: () => void }) {
+  return (
+    <Card style={{ background: "var(--nx-success-bg)", borderColor: "transparent", display: "grid", gap: 6 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontWeight: 700 }}>
+        <span><Icon.Check size={16} /> Vente {receipt.documentNumber}</span>
+        <IconButton label="Masquer le ticket" onClick={onClose}><Icon.X size={14} /></IconButton>
+      </div>
+      <div style={{ color: "var(--nx-text-2)", fontSize: "var(--nx-fs-sm)" }}>
+        Total {money(receipt.total, currency)}
+        {receipt.discountTotal > 0 && ` · remises ${money(receipt.discountTotal, currency)}`}
+        {` · rendu ${money(receipt.changeGiven, currency)}`}
+        {(receipt.storeCreditUsed ?? 0) > 0 && ` · payé par avoir ${money(receipt.storeCreditUsed ?? 0, currency)}`}
+        {receipt.creditAmount > 0 && ` · à crédit ${money(receipt.creditAmount, currency)}`}
+      </div>
+      <PrintTicket saleId={receipt.saleId} />
+    </Card>
+  );
+}
+
+/** Vrai ticket 80 mm de la vente (émis par le serveur : totaux, paiements, part à crédit, reste à verser
+ * du client) ; une réimpression porte la mention « DUPLICATA ». */
+function PrintTicket({ saleId }: { saleId: string }) {
+  const toast = useToast();
+  const [busy, setBusy] = useState<"ticket" | "pdf" | null>(null);
+  const print = (format: "ticket" | "pdf") => {
+    setBusy(format);
+    printDocument("sale", saleId, format)
+      .catch((e) => toast.error(e instanceof ApiError ? e.message : "Impression impossible."))
+      .finally(() => setBusy(null));
+  };
+  return (
+    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+      <Button size="sm" loading={busy === "ticket"} onClick={() => print("ticket")}><Icon.Printer size={14} /> Imprimer le ticket</Button>
+      <Button size="sm" variant="ghost" loading={busy === "pdf"} onClick={() => print("pdf")}>Format A4</Button>
+    </div>
+  );
+}
