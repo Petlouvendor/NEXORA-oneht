@@ -49,6 +49,9 @@ public interface ICatalogStore
     Task<bool> PluExistsAsync(Guid companyId, string plu, CancellationToken ct = default);
     Task<bool> CategoryCodeExistsAsync(Guid companyId, string code, CancellationToken ct = default);
     Task<bool> CategoryExistsAsync(Guid companyId, Guid categoryId, CancellationToken ct = default);
+    Task<bool> UnitExistsAsync(Guid companyId, Guid unitId, CancellationToken ct = default);
+    Task<bool> TaxExistsAsync(Guid companyId, Guid taxId, CancellationToken ct = default);
+    Task<bool> SupplierExistsAsync(Guid companyId, Guid supplierId, CancellationToken ct = default);
     Task CreateCategoryAsync(Guid id, Guid companyId, string name, string? code, Guid? parentId, CancellationToken ct = default);
     Task<bool> PriceListCodeExistsAsync(Guid companyId, string code, CancellationToken ct = default);
     Task AddPriceListAsync(PriceList list, CancellationToken ct = default);
@@ -63,11 +66,22 @@ public sealed class CatalogService(
     private Guid Company => tenant.ActiveCompanyId
         ?? throw new InvalidOperationException("Aucune entreprise active.");
 
+    /// <summary>Mêmes valeurs que la contrainte <c>product_type_chk</c> (V007).</summary>
+    public static readonly string[] ProductTypes = ["stockable", "service", "composite", "weight", "non_stock"];
+
     public async Task<Result<Guid>> CreateProductAsync(CreateProductCommand c, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(c.Sku))
             return Error.Validation("catalog.sku_required", "Le SKU est obligatoire.");
-        if (await store.SkuExistsAsync(Company, c.Sku, ct))
+        if (string.IsNullOrWhiteSpace(c.Name) || c.Name.Trim().Length > 200)
+            return Error.Validation("catalog.name_required", "Le nom du produit est obligatoire (200 caractères au plus).");
+        if (!ProductTypes.Contains(c.ProductType))
+            return Error.Validation("catalog.product_type", $"Type de produit « {c.ProductType} » inconnu.");
+        if (!await store.UnitExistsAsync(Company, c.UnitId, ct))
+            return Error.Validation("catalog.unit_unknown", "Unité inconnue pour cette entreprise.");
+        if (c.DefaultTaxId is { } tax && !await store.TaxExistsAsync(Company, tax, ct))
+            return Error.Validation("catalog.tax_unknown", "Taxe inconnue pour cette entreprise.");
+        if (await store.SkuExistsAsync(Company, c.Sku.Trim(), ct))
             return Error.Conflict("catalog.sku_exists", $"Le SKU « {c.Sku} » existe déjà.");
         if (!string.IsNullOrWhiteSpace(c.Barcode) && await store.BarcodeExistsAsync(Company, c.Barcode!.Trim(), ct))
             return Error.Conflict("catalog.barcode_exists", $"Le code-barres « {c.Barcode} » est déjà utilisé.");
@@ -204,6 +218,10 @@ public sealed class CatalogService(
     {
         if (await store.GetProductAsync(c.ProductId, ct) is null)
             return Error.NotFound("catalog.product_not_found", "Produit introuvable.");
+        if (c.PurchasePrice < 0 || c.LeadTimeDays < 0)
+            return Error.Validation("catalog.supplier_values", "Le prix d'achat et le délai ne peuvent être négatifs.");
+        if (!await store.SupplierExistsAsync(Company, c.SupplierId, ct))
+            return Error.Validation("catalog.supplier_unknown", "Fournisseur inconnu pour cette entreprise.");
         if (await store.SupplierLinkExistsAsync(c.ProductId, c.SupplierId, ct))
             return Error.Conflict("catalog.supplier_linked", "Ce fournisseur est déjà associé au produit.");
 
@@ -256,6 +274,15 @@ public sealed class CatalogService(
 
     public async Task<Result> SetReorderRuleAsync(SetReorderRuleCommand c, CancellationToken ct = default)
     {
+        var product = await store.GetProductAsync(c.ProductId, ct);
+        if (product is null || product.CompanyId != Company)
+            return Error.NotFound("catalog.product_not_found", "Produit introuvable.");
+        if (c.MinQuantity < 0 || c.MaxQuantity < 0 || c.ReorderPoint < 0 || c.ReorderQuantity < 0 || c.LeadTimeDays < 0)
+            return Error.Validation("catalog.reorder_negative", "Les seuils et le délai ne peuvent être négatifs.");
+        // Un maximum nul signifie « pas de plafond » ; sinon il borne le minimum et le point de commande.
+        if (c.MaxQuantity > 0 && (c.MinQuantity > c.MaxQuantity || c.ReorderPoint > c.MaxQuantity))
+            return Error.Validation("catalog.reorder_bounds",
+                "Le stock minimum et le point de commande ne peuvent dépasser le stock maximum.");
         await store.UpsertReorderRuleAsync(new ProductReorderRule
         {
             Id = Guid.NewGuid(),

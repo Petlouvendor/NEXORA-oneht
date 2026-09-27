@@ -279,6 +279,12 @@ public sealed class SalesService(
                         }, token);
                 }
 
+                // Un coupon est consommé une fois par vente, dans la transaction de vente : s'il a atteint
+                // sa limite entre le calcul du prix et l'encaissement, la vente entière est annulée.
+                if (priced.Select(x => x.CouponId).FirstOrDefault(c => c is not null) is { } couponUsed
+                    && !await store.ConsumeCouponAsync(couponUsed, token))
+                    throw new InvalidOperationException("Ce coupon a atteint sa limite d'utilisation.");
+
                 await store.AddSaleAsync(sale, token);
                 if (movements.Count > 0)
                 {

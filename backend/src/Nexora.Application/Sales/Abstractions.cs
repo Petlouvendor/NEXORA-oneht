@@ -105,6 +105,8 @@ public interface ISalesStore
     Task AddPaymentAsync(Domain.Finance.Payment payment, CancellationToken ct = default);
     Task AddSalePaymentAsync(Domain.Sales.SalePayment link, CancellationToken ct = default);
     Task AddSalePromotionAsync(Domain.Sales.SalePromotion promo, CancellationToken ct = default);
+    /// <summary>Incrémente l'usage d'un coupon s'il reste sous sa limite ; <c>false</c> = coupon épuisé.</summary>
+    Task<bool> ConsumeCouponAsync(Guid couponId, CancellationToken ct = default);
     Task<Guid?> DefaultTaxIdAsync(Guid productId, CancellationToken ct = default);
     Task<bool> ProductRequiresStockAsync(Guid productId, CancellationToken ct = default);
     Task<bool> ProductTracksLotsAsync(Guid productId, CancellationToken ct = default);

@@ -32,3 +32,59 @@ public interface ICatalogQueries
     Task<IReadOnlyList<TaxDto>> ListTaxesAsync(CancellationToken ct = default);
     Task<IReadOnlyList<PromotionDto>> ListPromotionsAsync(CancellationToken ct = default);
 }
+
+/// <summary>
+/// Référentiels du catalogue gérés depuis l'interface (finalisation produit, phase 1) : unités,
+/// conversions, modification des catégories, image produit. Chaque écriture est tracée par le
+/// trigger d'audit générique (<c>nexora.audit_row</c>, V079) ; aucune ne touche au stock.
+/// </summary>
+public interface ICatalogReferenceService
+{
+    Task<IReadOnlyList<CurrencyDto>> ListCurrenciesAsync(CancellationToken ct = default);
+    Task<IReadOnlyList<BrandDto>> ListBrandsAsync(CancellationToken ct = default);
+    Task<Result<Guid>> CreateBrandAsync(CreateNamedItemRequest request, CancellationToken ct = default);
+    Task<IReadOnlyList<CustomerGroupDto>> ListCustomerGroupsAsync(CancellationToken ct = default);
+    Task<Result<Guid>> CreateCustomerGroupAsync(CreateNamedItemRequest request, CancellationToken ct = default);
+
+    Task<IReadOnlyList<UnitDto>> ListUnitsAsync(CancellationToken ct = default);
+    Task<Result<Guid>> CreateUnitAsync(CreateUnitRequest request, CancellationToken ct = default);
+
+    Task<IReadOnlyList<UnitConversionDto>> ListConversionsAsync(Guid? productId, CancellationToken ct = default);
+    Task<Result<Guid>> CreateConversionAsync(CreateUnitConversionRequest request, CancellationToken ct = default);
+    Task<Result> DeleteConversionAsync(Guid id, CancellationToken ct = default);
+
+    Task<Result> UpdateCategoryAsync(Guid id, UpdateCategoryRequest request, CancellationToken ct = default);
+
+    Task<Result> SetProductImageAsync(Guid productId, SetProductImageRequest request, CancellationToken ct = default);
+    Task<Result<(byte[] Content, string ContentType)>> GetProductImageAsync(Guid productId, CancellationToken ct = default);
+}
+
+/// <summary>
+/// Conversion d'unités déterministe, toujours côté serveur (§13 : « 1 carton = 24 bouteilles »).
+/// Ordre de résolution figé : même unité → conversion propre au produit (sens direct, puis inverse)
+/// → conversion générique (direct, puis inverse). Pas de chaînage implicite : une conversion
+/// absente est un refus explicite, jamais une estimation. Résultat arrondi à 6 décimales
+/// (domaine <c>nexora.quantity</c>).
+/// </summary>
+public interface IUnitConverter
+{
+    Task<Result<UnitConversionResultDto>> ConvertAsync(
+        Guid? productId, Guid fromUnitId, Guid toUnitId, decimal quantity, CancellationToken ct = default);
+}
+
+/// <summary>
+/// Promotions et coupons gérés depuis l'interface. Le calcul reste celui de
+/// <see cref="PromotionCalculator"/> (encaissement et simulateur) : ce service ne fait qu'écrire
+/// des règles valides — une promotion incohérente est refusée, jamais « corrigée » en silence.
+/// </summary>
+public interface IPromotionService
+{
+    Task<IReadOnlyList<PromotionDto>> ListAsync(CancellationToken ct = default);
+    Task<Result<Guid>> CreateAsync(SavePromotionRequest request, CancellationToken ct = default);
+    Task<Result> UpdateAsync(Guid id, SavePromotionRequest request, CancellationToken ct = default);
+    Task<Result> SetStatusAsync(Guid id, string status, CancellationToken ct = default);
+
+    Task<IReadOnlyList<CouponDto>> ListCouponsAsync(CancellationToken ct = default);
+    Task<Result<Guid>> CreateCouponAsync(CreateCouponRequest request, CancellationToken ct = default);
+    Task<Result> SetCouponStatusAsync(Guid id, string status, CancellationToken ct = default);
+}

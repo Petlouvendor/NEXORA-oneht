@@ -102,6 +102,21 @@ public sealed class EfCatalogStore(NexoraDbContext db, ITenantContext tenant) : 
                           WHERE company_id = {companyId} AND id = {categoryId}) AS "Value"
             """).FirstAsync(ct);
 
+    public Task<bool> UnitExistsAsync(Guid companyId, Guid unitId, CancellationToken ct = default)
+        => db.Database.SqlQuery<bool>($"""
+            SELECT EXISTS(SELECT 1 FROM nexora.unit WHERE company_id = {companyId} AND id = {unitId}) AS "Value"
+            """).FirstAsync(ct);
+
+    public Task<bool> TaxExistsAsync(Guid companyId, Guid taxId, CancellationToken ct = default)
+        => db.Database.SqlQuery<bool>($"""
+            SELECT EXISTS(SELECT 1 FROM nexora.tax WHERE company_id = {companyId} AND id = {taxId}) AS "Value"
+            """).FirstAsync(ct);
+
+    public Task<bool> SupplierExistsAsync(Guid companyId, Guid supplierId, CancellationToken ct = default)
+        => db.Database.SqlQuery<bool>($"""
+            SELECT EXISTS(SELECT 1 FROM nexora.supplier WHERE company_id = {companyId} AND id = {supplierId}) AS "Value"
+            """).FirstAsync(ct);
+
     public async Task CreateCategoryAsync(Guid id, Guid companyId, string name, string? code, Guid? parentId, CancellationToken ct = default)
         => await db.Database.ExecuteSqlAsync($"""
             INSERT INTO nexora.product_category (id, company_id, parent_id, name, code, status)
