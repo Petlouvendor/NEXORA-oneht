@@ -343,17 +343,109 @@ public sealed class EfInventoryOpsStore(NexoraDbContext db, ITenantContext tenan
         => await db.StockAdjustments.AddAsync(adjustment, ct);
 
     public async Task SetCountValidatedAsync(Guid countId, Guid? userId, CancellationToken ct = default)
-        => await db.InventoryCounts.Where(c => c.Id == countId)
+    {
+        var at = DateTimeOffset.UtcNow;
+        await db.InventoryCounts.Where(c => c.Id == countId)
             .ExecuteUpdateAsync(u => u
                 .SetProperty(c => c.Status, "validated")
-                .SetProperty(c => c.ValidatedAt, DateTimeOffset.UtcNow)
+                .SetProperty(c => c.ValidatedAt, at)
                 .SetProperty(c => c.ValidatedBy, userId), ct);
+        SyncTracked(db.InventoryCounts.Local.FirstOrDefault(c => c.Id == countId), e =>
+        {
+            Set(e.Property(x => x.Status), "validated");
+            Set(e.Property(x => x.ValidatedAt), (DateTimeOffset?)at);
+            Set(e.Property(x => x.ValidatedBy), userId);
+        });
+    }
 
     public async Task SetTransferStatusAsync(Guid transferId, string status, DateTimeOffset? shipped, DateTimeOffset? received, CancellationToken ct = default)
-        => await db.StockTransfers.Where(t => t.Id == transferId)
+    {
+        await db.StockTransfers.Where(t => t.Id == transferId)
             .ExecuteUpdateAsync(u => u
                 .SetProperty(t => t.Status, status)
                 .SetProperty(t => t.ReceivedAt, t => received ?? t.ReceivedAt), ct);
+        SyncTracked(db.StockTransfers.Local.FirstOrDefault(t => t.Id == transferId), e =>
+        {
+            Set(e.Property(x => x.Status), status);
+            if (received is not null) Set(e.Property(x => x.ReceivedAt), received);
+        });
+    }
+
+    private Guid Company => StoreHelpers.Company(tenant);
+
+    public Task<string> FunctionalCurrencyAsync(CancellationToken ct = default)
+        => db.Database.SqlQuery<string>($"""
+            SELECT cur.code AS "Value" FROM nexora.company co JOIN nexora.currency cur ON cur.id = co.default_currency_id
+            WHERE co.id = {Company}
+            """).FirstAsync(ct);
+
+    public Task<bool> LocationExistsAsync(Guid locationId, CancellationToken ct = default)
+        => db.Database.SqlQuery<bool>($"""
+            SELECT EXISTS(SELECT 1 FROM nexora.inventory_location WHERE id = {locationId} AND company_id = {Company}) AS "Value"
+            """).FirstAsync(ct);
+
+    public Task<bool> ProductExistsAsync(Guid productId, CancellationToken ct = default)
+        => db.Database.SqlQuery<bool>($"""
+            SELECT EXISTS(SELECT 1 FROM nexora.product WHERE id = {productId} AND company_id = {Company}) AS "Value"
+            """).FirstAsync(ct);
+
+    public async Task<IReadOnlyList<Guid>> ProductsForFullCountAsync(Guid locationId, CancellationToken ct = default)
+        => await db.Database.SqlQuery<Guid>($"""
+            SELECT DISTINCT p.id AS "Value"
+            FROM nexora.product p
+            WHERE p.company_id = {Company}
+              AND (EXISTS (SELECT 1 FROM nexora.stock_balance sb
+                           WHERE sb.product_id = p.id AND sb.inventory_location_id = {locationId} AND sb.quantity_on_hand <> 0)
+                   OR (p.status = 'active' AND p.product_type IN ('stockable','weight')
+                       AND EXISTS (SELECT 1 FROM nexora.product_reorder_rule r
+                                   WHERE r.product_id = p.id AND r.status = 'active'
+                                     AND (r.inventory_location_id IS NULL OR r.inventory_location_id = {locationId}))))
+            """).ToListAsync(ct);
+
+    public async Task SetCountStatusAsync(Guid countId, string status, string? notes, CancellationToken ct = default)
+    {
+        await db.InventoryCounts.Where(c => c.Id == countId)
+            .ExecuteUpdateAsync(u => u
+                .SetProperty(c => c.Status, status)
+                .SetProperty(c => c.Notes, c => notes ?? c.Notes), ct);
+        SyncTracked(db.InventoryCounts.Local.FirstOrDefault(c => c.Id == countId), e =>
+        {
+            Set(e.Property(x => x.Status), status);
+            if (notes is not null) Set(e.Property(x => x.Notes), notes);
+        });
+    }
+
+    /// <summary>
+    /// Les changements de statut passent par <c>ExecuteUpdate</c> (directement en base) : l'entité déjà suivie
+    /// par le contexte garderait l'ancien statut et une seconde opération dans la même unité de travail la
+    /// relirait périmée (ex. recevoir un transfert déjà annulé). On aligne l'entité suivie — valeur courante
+    /// ET originale, pour qu'EF ne réémette aucune mise à jour.
+    /// </summary>
+    private void SyncTracked<T>(T? entity, Action<Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry<T>> apply) where T : class
+    {
+        if (entity is null) return;
+        apply(db.Entry(entity));
+    }
+
+    private static void Set<TP>(Microsoft.EntityFrameworkCore.ChangeTracking.PropertyEntry<InventoryCount, TP> p, TP value)
+    {
+        p.CurrentValue = value;
+        p.OriginalValue = value;
+    }
+
+    private static void Set<TP>(Microsoft.EntityFrameworkCore.ChangeTracking.PropertyEntry<StockTransfer, TP> p, TP value)
+    {
+        p.CurrentValue = value;
+        p.OriginalValue = value;
+    }
+
+    public async Task SetAdjustmentJournalAsync(Guid adjustmentId, Guid journalEntryId, CancellationToken ct = default)
+    {
+        // L'ajustement vient d'être ajouté au contexte : on le persiste avant d'y rattacher l'écriture.
+        await db.SaveChangesAsync(ct);
+        await db.StockAdjustments.Where(a => a.Id == adjustmentId)
+            .ExecuteUpdateAsync(u => u.SetProperty(a => a.JournalEntryId, journalEntryId), ct);
+    }
 }
 
 public sealed class SqlReorderService(NexoraDbContext db, ITenantContext tenant) : IReorderService

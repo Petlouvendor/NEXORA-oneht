@@ -3,7 +3,7 @@ import { useAuth } from "@/auth/AuthContext";
 import { useToast } from "@/shared/Toast";
 import { errorMessage, useAsync } from "@/shared/useAsync";
 import { Badge, Button, Card, DataTable, Field, Modal, SectionLabel, Select, StatePill, TextInput } from "@/shared/ui";
-import { money } from "@/shared/format";
+import { dateShort, money } from "@/shared/format";
 import {
   createCoupon, createPromotion, listCoupons, listProducts, listPromotions, setCouponStatus, setPromotionStatus,
   updatePromotion, type Promotion, type PromotionTarget, type SavePromotion,
@@ -56,7 +56,7 @@ export function PromotionsPanel({ refs }: { refs: CatalogRefs }) {
 
   const period = (p: Promotion) => {
     if (!p.startsAt && !p.endsAt) return "Permanente";
-    const d = (x: string | null) => (x ? new Date(x).toLocaleDateString("fr") : "…");
+    const d = (x: string | null) => (x ? dateShort(x) : "…");
     return `${d(p.startsAt)} → ${d(p.endsAt)}`;
   };
 
@@ -315,7 +315,7 @@ function CouponsCard() {
           { key: "v", header: "Remise", render: (x) => (x.discountType === "percentage" ? `${x.discountValue} %` : money(x.discountValue)) },
           { key: "u", header: "Utilisations", numeric: true, render: (x) => `${x.usedCount}${x.usageLimit ? ` / ${x.usageLimit}` : ""}` },
           { key: "p", header: "Validité", render: (x) => (x.validFrom || x.validTo
-            ? `${x.validFrom ? new Date(x.validFrom).toLocaleDateString("fr") : "…"} → ${x.validTo ? new Date(x.validTo).toLocaleDateString("fr") : "…"}` : "Permanente") },
+            ? `${x.validFrom ? dateShort(x.validFrom) : "…"} → ${x.validTo ? dateShort(x.validTo) : "…"}` : "Permanente") },
           { key: "s", header: "Statut", render: (x) => <StatePill status={x.usageLimit && x.usedCount >= x.usageLimit ? "exhausted" : x.status} /> },
           {
             key: "a", header: "", render: (x) => (

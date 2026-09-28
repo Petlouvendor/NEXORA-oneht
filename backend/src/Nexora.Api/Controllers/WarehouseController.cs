@@ -10,8 +10,14 @@ namespace Nexora.Api.Controllers;
 /// <summary>Entrepôts & emplacements de stock (Phase 24 §4-6, §41).</summary>
 [ApiVersion("1.0")]
 [Route("api/v{version:apiVersion}/warehouses")]
-public sealed class WarehouseController(IStockQueries queries, IWarehouseService service) : ApiControllerBase
+public sealed class WarehouseController(IStockQueries queries, IWarehouseService service, IInventoryDocumentQueries documents)
+    : ApiControllerBase
 {
+    /// <summary>Établissements et magasins de rattachement (formulaires de création).</summary>
+    [HttpGet("sites")]
+    [RequirePermission(Permissions.Inventory.View)]
+    public async Task<IActionResult> Sites(CancellationToken ct) => Ok(await documents.SitesAsync(ct));
+
     [HttpGet]
     [RequirePermission(Permissions.Inventory.View)]
     public async Task<IActionResult> List(CancellationToken ct) => Ok(await queries.WarehousesAsync(ct));

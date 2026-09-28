@@ -205,7 +205,7 @@ public sealed partial class NexoraDbContext
             e.HasKey(x => x.Id);
             Cols(e, ("Id", "id"), ("InventoryCountId", "inventory_count_id"), ("CompanyId", "company_id"),
                 ("ProductId", "product_id"), ("LotId", "lot_id"), ("SystemQuantity", "system_quantity"),
-                ("CountedQuantity", "counted_quantity"), ("UnitCost", "unit_cost"));
+                ("CountedQuantity", "counted_quantity"), ("UnitCost", "unit_cost"), ("Note", "note"));
             e.Property(x => x.Variance).HasColumnName("variance").ValueGeneratedOnAddOrUpdate();
             e.Property(x => x.Variance).Metadata.SetAfterSaveBehavior(Microsoft.EntityFrameworkCore.Metadata.PropertySaveBehavior.Ignore);
             Timestamps(e);
@@ -229,7 +229,7 @@ public sealed partial class NexoraDbContext
             e.HasKey(x => x.Id);
             Cols(e, ("Id", "id"), ("StockAdjustmentId", "stock_adjustment_id"), ("CompanyId", "company_id"),
                 ("ProductId", "product_id"), ("LotId", "lot_id"), ("QuantityDelta", "quantity_delta"),
-                ("UnitCost", "unit_cost"));
+                ("UnitCost", "unit_cost"), ("Note", "note"));
             Timestamps(e);
         });
 

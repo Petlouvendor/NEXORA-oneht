@@ -30,6 +30,27 @@ public interface IStockQueries
     Task<IReadOnlyList<LocationDto>> LocationsAsync(Guid? warehouseId, CancellationToken ct = default);
 }
 
+/// <summary>Filtres du tableau de stock. <c>Status</c> : out | low | normal | over | expiring (lot à péremption ≤ 60 j).</summary>
+public sealed record StockOverviewQuery(
+    Guid? LocationId, Guid? CategoryId, string? Status, string? Search, int Limit = 200, int Offset = 0);
+
+/// <summary>
+/// Lectures des opérations de stock (finalisation produit, phase 2) : tableau de stock avec état calculé
+/// par le serveur, transferts, inventaires et ajustements (liste + détail).
+/// </summary>
+public interface IInventoryDocumentQueries
+{
+    Task<StockOverviewDto> OverviewAsync(StockOverviewQuery query, CancellationToken ct = default);
+    Task<IReadOnlyList<TransferSummaryDto>> TransfersAsync(string? status, int limit, CancellationToken ct = default);
+    Task<TransferDetailDto?> TransferAsync(Guid id, CancellationToken ct = default);
+    Task<IReadOnlyList<CountSummaryDto>> CountsAsync(string? status, int limit, CancellationToken ct = default);
+    Task<CountDetailDto?> CountAsync(Guid id, CancellationToken ct = default);
+    Task<IReadOnlyList<AdjustmentSummaryDto>> AdjustmentsAsync(string? type, DateTimeOffset? from, DateTimeOffset? to, int limit, CancellationToken ct = default);
+    Task<AdjustmentDetailDto?> AdjustmentAsync(Guid id, CancellationToken ct = default);
+    /// <summary>Établissements et magasins de l'entreprise (rattachement des entrepôts / emplacements).</summary>
+    Task<IReadOnlyList<StockSiteDto>> SitesAsync(CancellationToken ct = default);
+}
+
 /// <summary>Création d'entrepôts et d'emplacements (Phase 24 §4-6, §42 « modifier paramètres »).</summary>
 public interface IWarehouseService
 {

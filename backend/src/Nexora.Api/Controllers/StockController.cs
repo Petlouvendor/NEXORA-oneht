@@ -14,8 +14,17 @@ namespace Nexora.Api.Controllers;
 /// </summary>
 [ApiVersion("1.0")]
 [Route("api/v{version:apiVersion}/stock")]
-public sealed class StockController(IStockQueries queries, ILotService lots) : ApiControllerBase
+public sealed class StockController(IStockQueries queries, ILotService lots, IInventoryDocumentQueries documents) : ApiControllerBase
 {
+    /// <summary>Tableau de stock (finalisation produit, phase 2) : état calculé par le serveur, filtres, pagination.
+    /// <paramref name="status"/> : out | low | normal | over | expiring.</summary>
+    [HttpGet("overview")]
+    [RequirePermission(Permissions.Inventory.View)]
+    public async Task<IActionResult> Overview(
+        [FromQuery] Guid? locationId, [FromQuery] Guid? categoryId, [FromQuery] string? status, [FromQuery] string? q,
+        [FromQuery] int limit = 200, [FromQuery] int offset = 0, CancellationToken ct = default)
+        => Ok(await documents.OverviewAsync(new StockOverviewQuery(locationId, categoryId, status, q, limit, offset), ct));
+
     [HttpGet("balances")]
     [RequirePermission(Permissions.Inventory.View)]
     public async Task<IActionResult> Balances(

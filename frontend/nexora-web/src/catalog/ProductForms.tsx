@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { dateShort } from "@/shared/format";
 import { useAuth } from "@/auth/AuthContext";
 import { useToast } from "@/shared/Toast";
 import { errorMessage, useAsync } from "@/shared/useAsync";
@@ -508,8 +509,8 @@ function PricesSection({ product, refs, onChanged }: { product: ProductDetail; r
           { key: "min", header: "Qté ≥", numeric: true, render: (x) => x.quantityMin },
           { key: "a", header: "Montant", numeric: true, render: (x) => <Money value={x.amount} currency={x.currency} /> },
           { key: "tax", header: "Base", render: (x) => (x.taxIncluded ? "TTC" : "HT") },
-          { key: "v", header: "Depuis", render: (x) => new Date(x.validFrom).toLocaleDateString("fr") },
-          { key: "c", header: "", render: (x) => (x.validTo ? <Badge tone="warning">clos {new Date(x.validTo).toLocaleDateString("fr")}</Badge> : <Badge tone="success">actif</Badge>) },
+          { key: "v", header: "Depuis", render: (x) => dateShort(x.validFrom) },
+          { key: "c", header: "", render: (x) => (x.validTo ? <Badge tone="warning">clos {dateShort(x.validTo)}</Badge> : <Badge tone="success">actif</Badge>) },
         ]}
         rows={product.prices}
         rowKey={(x) => x.id}
