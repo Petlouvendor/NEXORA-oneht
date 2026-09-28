@@ -8,7 +8,8 @@ import { apiDownload, apiFetch } from "@/core/apiClient";
 export type PrintFormat = "pdf" | "ticket" | "xlsx" | "csv";
 export type PrintableKind =
   | "customer-payment" | "customer-credit" | "credit-memo" | "customer-refund" | "customer-expense" | "sale"
-  | "supplier-payment" | "supplier-invoice" | "purchase-order" | "goods-receipt";
+  | "supplier-payment" | "supplier-invoice" | "purchase-order" | "goods-receipt"
+  | "quote" | "sales-order" | "document";
 
 export type PrintKind = "text" | "money" | "number" | "integer" | "date" | "datetime" | "percent";
 export type PrintValue = string | number | null;

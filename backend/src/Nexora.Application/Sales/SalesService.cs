@@ -94,6 +94,7 @@ public sealed class SalesService(
         // imputé par le serveur sur le crédit né de la vente, dans la même transaction.
         var storeCredit = Rounding.Money(cmd.StoreCreditAmount);
         if (storeCredit < 0m) return Error.Validation("pos.store_credit_amount", "Montant d'avoir invalide.");
+        if (cmd.CapStoreCreditToTotal && storeCredit > total) storeCredit = total;
         if (storeCredit > 0m)
         {
             if (cmd.CustomerId is not { } memoCustomer)
@@ -358,7 +359,7 @@ public sealed class SalesService(
                 if (storeCredit > 0m)
                 {
                     var used = await creditMemos.ApplyToReceivableAsync(cmd.CustomerId!.Value, posted.Value!.ReceivableId!.Value,
-                        cmd.Currency, storeCredit, soldAt, token);
+                        cmd.Currency, storeCredit, soldAt, token, cmd.StoreCreditSalesOrderId);
                     if (used != storeCredit)
                         throw new InvalidOperationException($"Avoir disponible insuffisant au moment de l'encaissement ({used} / {storeCredit}).");
                 }

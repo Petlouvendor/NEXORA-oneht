@@ -24,21 +24,7 @@ export const orderEditable = (status: string) => status === "draft" || status ==
 /** Commande pouvant être réceptionnée. */
 export const orderReceivable = (status: string) => ["approved", "sent", "partially_received"].includes(status);
 
-export const round2 = (v: number) => Math.round((v + Number.EPSILON) * 100) / 100;
-
-/** Estimation d'une ligne pendant la saisie — même règle que le serveur (net = qté × prix − remise ; taxe = net × taux, arrondie au centime). */
-export function estimateLine(quantity: number, unitPrice: number, discount: number, ratePercent: number) {
-  const net = round2(quantity * unitPrice - discount);
-  const tax = round2((net * ratePercent) / 100);
-  return { net, tax, total: round2(net + tax) };
-}
-
-export function estimateTotals(lines: Array<{ quantity: number; unitPrice: number; discount: number; ratePercent: number }>) {
-  return lines.reduce((acc, l) => {
-    const e = estimateLine(l.quantity, l.unitPrice, l.discount, l.ratePercent);
-    return { subtotal: round2(acc.subtotal + e.net), tax: round2(acc.tax + e.tax), total: round2(acc.total + e.total) };
-  }, { subtotal: 0, tax: 0, total: 0 });
-}
+export { round2, estimateLine, estimateTotals } from "@/shared/amounts";
 
 export const today = () => todayIso();
 export const qtyText = (v: number | null | undefined, unit?: string | null) =>
