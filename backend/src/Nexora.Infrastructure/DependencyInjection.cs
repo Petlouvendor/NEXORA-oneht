@@ -140,6 +140,7 @@ public static class DependencyInjection
         services.AddScoped<IPurchasingStore, EfPurchasingStore>();
         services.AddScoped<IPurchasingQueries, SqlPurchasingQueries>();
         services.AddScoped<IInventoryOpsStore, EfInventoryOpsStore>();
+        services.AddScoped<IInventoryDocumentQueries, Nexora.Infrastructure.Inventory.SqlInventoryDocumentQueries>();
         services.AddScoped<IReorderService, SqlReorderService>();
 
         // Stock, entrepôts, lots & inventaires (Phase 24)

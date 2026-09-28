@@ -76,7 +76,9 @@ public sealed class BiReportingTests(FinanceEngineFixture fx)
     [Fact]
     public async Task Objective_set_list_delete_and_score_reflects_actual_vs_target()
     {
-        await InsertSale(6000, DateTimeOffset.UtcNow.AddDays(-1));
+        // Vente du jour : l'objectif « week » couvre lundi → aujourd'hui. Une vente datée d'hier sortait de la
+        // semaine chaque lundi (test rouge un jour sur sept, sans régression).
+        await InsertSale(6000, DateTimeOffset.UtcNow.AddMinutes(-1));
 
         await using var s = Scope();
         var objectives = For<IObjectiveService>(s.ServiceProvider, Direction);
