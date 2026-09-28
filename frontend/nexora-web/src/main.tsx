@@ -29,3 +29,11 @@ createRoot(document.getElementById("root")!).render(
     </AuthProvider>
   </StrictMode>,
 );
+
+/* Phase 6 : application installable, rouvrable sans réseau (caisse hors ligne). Uniquement en production :
+ * en développement, le cache gênerait le rechargement à chaud. */
+if (import.meta.env.PROD && "serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => { /* navigateur sans service worker : mode en ligne */ });
+  });
+}

@@ -4,6 +4,8 @@ import { Badge, TextInput } from "@/shared/ui";
 import { Icon } from "@/shared/icons";
 import { money } from "@/shared/format";
 import { scanProduct, searchProducts, type Availability, type PosProduct } from "@/pos/posApi";
+import { scanOffline, searchOffline, type OfflineCatalogItem } from "@/pos/offlineStore";
+import { displayPrice } from "@/pos/cartMath";
 
 const AVAILABILITY: Record<Availability, { label: string; tone?: "success" | "warning" | "error" }> = {
   in_stock: { label: "Disponible", tone: "success" },
@@ -20,12 +22,15 @@ const AVAILABILITY: Record<Availability, { label: string; tone?: "success" | "wa
  * directement au panier (le prix est revalidé par le serveur à l'encaissement).
  */
 export function ProductSearch({
-  locationId, onPick, disabled, inputRef,
+  locationId, onPick, disabled, inputRef, offlineCatalog, offline,
 }: {
   locationId: string | null;
   onPick: (p: PosProduct) => void;
   disabled?: boolean;
   inputRef?: React.RefObject<HTMLInputElement | null>;
+  /** Phase 6 : catalogue du profil hors ligne, utilisé sans réseau (ou si le serveur est injoignable). */
+  offlineCatalog?: OfflineCatalogItem[] | null;
+  offline?: boolean;
 }) {
   const [term, setTerm] = useState("");
   const [items, setItems] = useState<PosProduct[]>([]);
@@ -48,6 +53,13 @@ export function ProductSearch({
     }
     const ctrl = new AbortController();
     abortRef.current = ctrl;
+    const local = () => {
+      const found = searchOffline(offlineCatalog ?? [], q);
+      setItems(found);
+      setHighlight(found.length > 0 ? 0 : -1);
+      setMessage(found.length === 0 ? `Aucun produit du catalogue hors ligne ne correspond à « ${q} ».` : null);
+    };
+    if (offline && offlineCatalog) { local(); return; }
     const timer = setTimeout(() => {
       setLoading(true);
       searchProducts(q, locationId, ctrl.signal)
@@ -58,12 +70,15 @@ export function ProductSearch({
           setMessage(r.items.length === 0 ? `Aucun produit vendable ne correspond à « ${q} ». Modifiez la recherche.` : null);
         })
         .catch((e) => {
-          if (!ctrl.signal.aborted) setMessage(e instanceof ApiError ? e.message : "Recherche impossible.");
+          if (ctrl.signal.aborted) return;
+          // Serveur injoignable : on cherche dans le catalogue hors ligne s'il existe.
+          if (e instanceof ApiError && e.isOffline && offlineCatalog) local();
+          else setMessage(e instanceof ApiError ? e.message : "Recherche impossible.");
         })
         .finally(() => !ctrl.signal.aborted && setLoading(false));
     }, 200);
     return () => { clearTimeout(timer); ctrl.abort(); };
-  }, [term, locationId, minChars]);
+  }, [term, locationId, minChars, offline, offlineCatalog]);
 
   function pick(p: PosProduct) {
     onPick(p);
@@ -75,9 +90,16 @@ export function ProductSearch({
   }
 
   async function scanExact(code: string) {
+    const localScan = () => {
+      const hit = scanOffline(offlineCatalog ?? [], code);
+      if (hit) pick(hit);
+      else setMessage(`Aucun produit du catalogue hors ligne pour le code « ${code} ».`);
+    };
+    if (offline && offlineCatalog) { localScan(); return; }
     try {
       pick(await scanProduct(code, locationId));
     } catch (e) {
+      if (e instanceof ApiError && e.isOffline && offlineCatalog) { localScan(); return; }
       setMessage(e instanceof ApiError && e.problem.status === 404
         ? `Aucun produit vendable pour le code « ${code} ».`
         : e instanceof ApiError ? e.message : "Scan impossible.");
@@ -137,7 +159,7 @@ export function ProductSearch({
               </span>
               <span style={{ display: "flex", gap: 8, alignItems: "center", whiteSpace: "nowrap" }}>
                 <Badge tone={AVAILABILITY[p.availability].tone}>{AVAILABILITY[p.availability].label}</Badge>
-                <b className="nx-numeric">{p.salePrice != null ? money(p.salePrice, p.currency ?? "HTG") : "Sans prix"}</b>
+                <b className="nx-numeric">{displayPrice(p) != null ? money(displayPrice(p)!, p.currency ?? "HTG") : "Sans prix"}</b>
               </span>
             </li>
           ))}

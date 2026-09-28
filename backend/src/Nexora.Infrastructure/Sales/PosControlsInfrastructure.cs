@@ -677,12 +677,14 @@ public sealed class SqlPosCatalogQueries(
                    CASE WHEN p.product_type NOT IN ('stockable', 'weight') THEN 'untracked'
                         WHEN COALESCE(sb.available, 0) <= 0 THEN 'out'
                         WHEN rr.reorder_point IS NOT NULL AND sb.available <= rr.reorder_point THEN 'low'
-                        ELSE 'in_stock' END AS "Availability"
+                        ELSE 'in_stock' END AS "Availability",
+                   COALESCE((SELECT tx.rate FROM nexora.tax tx WHERE tx.id = p.default_tax_id), 0) AS "TaxRate",
+                   COALESCE(dp.tax_included, false) AS "PriceIncludesTax"
             FROM nexora.product p
             JOIN nexora.company co ON co.id = p.company_id
             CROSS JOIN LATERAL (SELECT nexora.search_norm({term}) AS n) q
             LEFT JOIN LATERAL (
-                SELECT pp.amount, cur.code
+                SELECT pp.amount, cur.code, pp.tax_included
                 FROM nexora.product_price pp JOIN nexora.currency cur ON cur.id = pp.currency_id
                 WHERE pp.product_id = p.id AND pp.price_type = 'sale' AND pp.price_list_id IS NULL
                   AND pp.customer_group_id IS NULL AND pp.quantity_min = 0
@@ -727,11 +729,13 @@ public sealed class SqlPosCatalogQueries(
                    CASE WHEN p.product_type NOT IN ('stockable', 'weight') THEN 'untracked'
                         WHEN COALESCE(sb.available, 0) <= 0 THEN 'out'
                         WHEN rr.reorder_point IS NOT NULL AND sb.available <= rr.reorder_point THEN 'low'
-                        ELSE 'in_stock' END AS "Availability"
+                        ELSE 'in_stock' END AS "Availability",
+                   COALESCE((SELECT tx.rate FROM nexora.tax tx WHERE tx.id = p.default_tax_id), 0) AS "TaxRate",
+                   COALESCE(dp.tax_included, false) AS "PriceIncludesTax"
             FROM nexora.product p
             JOIN nexora.company co ON co.id = p.company_id
             LEFT JOIN LATERAL (
-                SELECT pp.amount, cur.code
+                SELECT pp.amount, cur.code, pp.tax_included
                 FROM nexora.product_price pp JOIN nexora.currency cur ON cur.id = pp.currency_id
                 WHERE pp.product_id = p.id AND pp.price_type = 'sale' AND pp.price_list_id IS NULL
                   AND pp.customer_group_id IS NULL AND pp.quantity_min = 0

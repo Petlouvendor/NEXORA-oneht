@@ -23,8 +23,22 @@ public sealed class PosController(
     ICashSessionQueries sessionQueries,
     IPosCatalogQueries products,
     IManagerOverrideService managerOverride,
-    ITenderOptionsQuery tenderOptions) : ApiControllerBase
+    ITenderOptionsQuery tenderOptions,
+    IPosOfflineService offline) : ApiControllerBase
 {
+    /// <summary>Phase 6 : le navigateur de caisse s'enregistre lui-même comme appareil de synchronisation
+    /// (révocable par un responsable). Idempotent sur l'identifiant de l'appareil.</summary>
+    [HttpPost("device")]
+    [RequirePermission(Permissions.Pos.Sell)]
+    public async Task<IActionResult> EnrollDevice([FromBody] EnrollPosDeviceRequest r, CancellationToken ct)
+        => FromResult(await offline.EnrollAsync(r, ct));
+
+    /// <summary>Phase 6 : profil hors ligne (politique + catalogue vendable de l'emplacement, sans coût).</summary>
+    [HttpGet("offline-profile")]
+    [RequirePermission(Permissions.Pos.Sell)]
+    public async Task<IActionResult> OfflineProfile([FromQuery] Guid? locationId, CancellationToken ct)
+        => Ok(await offline.ProfileAsync(locationId, ct));
+
     /// <summary>Moyens d'encaissement (espèces, carte, mobile money…) et comptes compatibles, sans solde (phase 5).</summary>
     [HttpGet("tender-options")]
     [RequirePermission(Permissions.Pos.Sell)]
@@ -87,6 +101,12 @@ public sealed class PosController(
     [RequirePermission(Permissions.Pos.ApproveDiscount)]
     public async Task<IActionResult> RejectDiscount(Guid id, [FromBody] DecideRequest decision, CancellationToken ct)
         => FromResult(await discountRequests.RejectAsync(id, decision, ct));
+
+    /// <summary>Phase 6 : montant exact du panier (prix, promotions, taxes) avant l'encaissement ; rien n'est écrit.</summary>
+    [HttpPost("cart/preview")]
+    [RequirePermission(Permissions.Pos.Sell)]
+    public async Task<IActionResult> PreviewCart([FromBody] CartPreviewRequest r, CancellationToken ct)
+        => FromResult(await sales.PreviewAsync(r, ct));
 
     [HttpPost("checkout")]
     [RequirePermission(Permissions.Pos.Sell)]
