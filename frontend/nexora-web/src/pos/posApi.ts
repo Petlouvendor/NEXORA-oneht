@@ -88,6 +88,9 @@ export interface PosProduct {
   salePrice: number | null;
   currency: string | null;
   availability: Availability;
+  /** Taux de la taxe par défaut (0 sans taxe) et prix saisi TTC ou HT (phase 6). */
+  taxRate?: number;
+  priceIncludesTax?: boolean;
 }
 
 export interface PosProductSearch {
@@ -316,3 +319,16 @@ export const STATUS_LABEL: Record<string, string> = {
   executed: "Exécutée",
   cancelled: "Annulée",
 };
+
+// --- Aperçu du panier calculé par le serveur (phase 6) ---
+export interface CartPreviewLine {
+  productId: string; quantity: number; unitPrice: number; manualDiscount: number; promotionDiscount: number;
+  promotionLabel: string | null; taxAmount: number; lineTotal: number;
+}
+export interface CartPreview { subtotal: number; discountTotal: number; taxTotal: number; total: number; lines: CartPreviewLine[] }
+
+export const previewCart = (body: {
+  inventoryLocationId: string; customerId: string | null; currency: string;
+  lines: Array<{ productId: string; quantity: number; lineDiscount: number }>;
+}, signal?: AbortSignal) =>
+  apiFetch<CartPreview>("/pos/cart/preview", { method: "POST", body: JSON.stringify(body), signal });
