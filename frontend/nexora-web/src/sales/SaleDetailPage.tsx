@@ -7,10 +7,16 @@ import { Icon } from "@/shared/icons";
 import { dateTime } from "@/shared/format";
 import { printDocument } from "@/shared/printApi";
 import { getSale, type SaleDetail, type SaleLine, type SalePayment } from "@/sales/ordersApi";
+import { Badge } from "@/shared/ui";
+import { useToast } from "@/shared/Toast";
+import { useAsync } from "@/shared/useAsync";
+import { useSubmit } from "@/shared/forms";
+import { DOCUMENT_TYPE_LABEL, issueDocument, openDocumentPdf, searchDocuments } from "@/documents/documentsApi";
 
 const SALE_TYPE: Record<string, string> = { cash: "Comptant", credit: "À crédit", mixed: "Mixte", quote: "Devis", layaway: "Mise de côté" };
 
-/** Détail d'une vente — ouvert depuis la recherche Ctrl+K ou le fil d'activité (NEXORA ONE §5-6). Lecture seule. */
+/** Détail d'une vente — ouvert depuis la recherche Ctrl+K, le fil d'activité ou une commande client. La facture
+ * s'émet d'ici (document figé, numéroté, vérifiable). */
 export function SaleDetailPage() {
   const { id = "" } = useParams();
   const { hasPermission } = useAuth();
@@ -74,6 +80,42 @@ export function SaleDetailPage() {
         <SectionLabel>Paiements</SectionLabel>
         <DataTable columns={payCols} rows={sale.payments} rowKey={(p) => p.paymentId} empty="Aucun paiement enregistré." />
       </Card>
+      {hasPermission("documents.view") && <SaleDocuments saleId={sale.id} status={sale.status} />}
     </div>
+  );
+}
+
+/** Documents émis pour la vente (facture…) ; émission de la facture si elle n'existe pas encore. */
+function SaleDocuments({ saleId, status }: { saleId: string; status: string }) {
+  const { hasPermission } = useAuth();
+  const toast = useToast();
+  const docs = useAsync(() => searchDocuments({ sourceType: "sale", sourceId: saleId }), [saleId]);
+  const { busy, error, submit } = useSubmit();
+  const valid = (docs.data ?? []).filter((d) => d.status !== "cancelled" && d.status !== "replaced");
+  const hasInvoice = valid.some((d) => d.documentType === "invoice");
+  const canIssue = hasPermission("documents.issue") && !hasInvoice && status !== "void" && status !== "draft" && status !== "parked";
+
+  async function issue() {
+    const d = await submit(() => issueDocument("invoice", "sale", saleId));
+    if (d) { toast.success(`Facture ${d.documentNumber} émise.`); docs.reload(); void openDocumentPdf(d.id); }
+  }
+
+  return (
+    <Card>
+      <SectionLabel action={canIssue ? <Button size="sm" disabled={busy} onClick={() => void issue()}>Émettre la facture</Button> : undefined}>
+        Documents
+      </SectionLabel>
+      {error && <div role="alert" className="nx-error-text">{error}</div>}
+      {docs.error && <div role="alert" className="nx-error-text">{docs.error}</div>}
+      {(docs.data ?? []).length === 0
+        ? <div style={{ color: "var(--nx-text-2)" }}>{docs.loading ? "Chargement…" : "Aucun document émis pour cette vente."}</div>
+        : (docs.data ?? []).map((d) => (
+          <div key={d.id} style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", padding: "4px 0" }}>
+            <Badge>{DOCUMENT_TYPE_LABEL[d.documentType] ?? d.documentType}</Badge><code>{d.documentNumber}</code>
+            {d.status === "cancelled" && <Badge tone="error">annulée</Badge>}
+            <Button size="sm" variant="ghost" onClick={() => void openDocumentPdf(d.id)}><Icon.Printer size={14} /> PDF</Button>
+          </div>
+        ))}
+    </Card>
   );
 }

@@ -48,6 +48,21 @@ export interface Order {
   fulfilledAt: string | null;
   lines: OrderLine[];
   saleIds: string[];
+  customerName: string | null;
+  inventoryLocationId: string | null;
+  locationName: string | null;
+  /** Acompte encore disponible (avoir non encore imputé sur une vente). */
+  depositAvailable: number;
+  sales: OrderSaleRef[] | null;
+  cancelledReason: string | null;
+  createdAt: string | null;
+}
+
+export interface OrderSaleRef { id: string; documentNumber: string; soldAt: string; total: number; amountDue: number; status: string }
+
+export interface PaymentOptions {
+  accounts: Array<{ id: string; name: string; accountType: string; currency: string }>;
+  methods: Array<{ id: string; name: string; type: string }>;
 }
 
 export interface CreateOrderLine {
@@ -84,34 +99,43 @@ export const getOrder = (id: string) => apiFetch<Order>(`/orders/${id}`);
 export const createOrder = (body: CreateOrderRequest) =>
   apiFetch<string>("/orders", { method: "POST", body: JSON.stringify(body) });
 
+/** Modification d'une commande en brouillon (phase 4). */
+export const updateOrder = (id: string, body: CreateOrderRequest) =>
+  apiFetch<void>(`/orders/${id}`, { method: "PUT", body: JSON.stringify(body) });
+export const getOrderPaymentOptions = () => apiFetch<PaymentOptions>("/orders/payment-options");
+
 export const confirmOrder = (id: string) => apiFetch<void>(`/orders/${id}/confirm`, { method: "POST" });
 export const reserveOrder = (id: string) => apiFetch<void>(`/orders/${id}/reserve`, { method: "POST" });
 export const cancelOrder = (id: string, reason: string) =>
   apiFetch<void>(`/orders/${id}/cancel`, { method: "POST", body: JSON.stringify({ reason }) });
 
-export const recordDeposit = (id: string, amount: number, tenderFinancialAccountId: string) =>
+/** Acompte : `operationUuid` fixé à l'ouverture du dialogue (un double envoi n'encaisse jamais deux fois). */
+export const recordDeposit = (id: string, amount: number, tenderFinancialAccountId: string, operationUuid: string = uuid()) =>
   apiFetch<void>(`/orders/${id}/deposit`, {
     method: "POST",
-    idempotencyKey: uuid(),
-    body: JSON.stringify({ operationUuid: uuid(), amount, tenderFinancialAccountId }),
+    idempotencyKey: operationUuid,
+    body: JSON.stringify({ operationUuid, amount, tenderFinancialAccountId }),
   });
 
+/** Livraison (totale ou partielle) : crée la vente ; l'acompte disponible est imputé par le serveur. */
 export const completeOrder = (
   id: string,
-  tenders: Array<{ financialAccountId: string; paymentMethodId?: string | null; amount: number }>,
+  tenders: Array<{ financialAccountId: string; paymentMethodId?: string | null; amount: number; reference?: string | null }>,
   onCredit: boolean,
   creditDueDate?: string | null,
+  lineQuantities: Record<string, number> | null = null,
+  operationUuid: string = uuid(),
 ) =>
-  apiFetch<{ saleId: string; total: number }>(`/orders/${id}/complete`, {
+  apiFetch<{ saleId: string; documentNumber: string; total: number; creditAmount: number; amountPaid: number }>(`/orders/${id}/complete`, {
     method: "POST",
-    idempotencyKey: uuid(),
+    idempotencyKey: operationUuid,
     body: JSON.stringify({
-      operationUuid: uuid(),
+      operationUuid,
       cashSessionId: null,
       onCredit,
       creditDueDate: creditDueDate ?? null,
-      tenders,
-      lineQuantities: null,
+      tenders: tenders.map((t) => ({ ...t, paymentMethodId: t.paymentMethodId ?? null, reference: t.reference ?? null })),
+      lineQuantities,
     }),
   });
 
