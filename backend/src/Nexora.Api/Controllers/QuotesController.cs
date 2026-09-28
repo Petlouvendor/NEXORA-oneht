@@ -27,6 +27,16 @@ public sealed class QuotesController(QuoteService quotes) : ApiControllerBase
     public async Task<IActionResult> Create([FromBody] CreateQuoteRequest r, CancellationToken ct)
         => FromResult(await quotes.CreateAsync(r, ct));
 
+    [HttpPut("{id:guid}")]
+    [RequirePermission(Permissions.Documents.CreateQuote)]
+    public async Task<IActionResult> Update(Guid id, [FromBody] CreateQuoteRequest r, CancellationToken ct)
+        => FromResult(await quotes.UpdateAsync(id, r, ct));
+
+    [HttpPost("{id:guid}/cancel")]
+    [RequirePermission(Permissions.Documents.CreateQuote)]
+    public async Task<IActionResult> Cancel(Guid id, [FromBody] QuoteDecisionRequest r, CancellationToken ct)
+        => FromResult(await quotes.CancelAsync(id, r?.Reason, ct));
+
     [HttpPost("{id:guid}/send")]
     [RequirePermission(Permissions.Documents.CreateQuote)]
     public async Task<IActionResult> Send(Guid id, CancellationToken ct)

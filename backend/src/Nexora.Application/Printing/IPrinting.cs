@@ -77,6 +77,10 @@ public static class PrintAccess
         [PrintableKinds.SupplierInvoice] = new([Permissions.Purchasing.ViewPayables, Permissions.Purchasing.Invoice], []),
         [PrintableKinds.PurchaseOrder] = new([Permissions.Purchasing.View, Permissions.Purchasing.Order], []),
         [PrintableKinds.GoodsReceipt] = new([Permissions.Purchasing.View, Permissions.Purchasing.Receive], []),
+        // Guide §7.2 : sans documents.view_all, seulement les devis / documents que l'on a soi-même émis.
+        [PrintableKinds.Quote] = new([Permissions.Documents.ViewAll], [Permissions.Documents.View]),
+        [PrintableKinds.IssuedDocument] = new([Permissions.Documents.ViewAll], [Permissions.Documents.View]),
+        [PrintableKinds.SalesOrder] = new([Permissions.Pos.ManageOrder], []),
         ["customer-statement"] = new([Permissions.Credit.ViewPortfolio], []),
         ["supplier-statement"] = new([Permissions.Purchasing.ViewPayables], []),
     };

@@ -154,8 +154,32 @@ public sealed class SqlCustomerCreditMemoWriter(NexoraDbContext db, ITenantConte
               AND m.status IN ('available', 'partially_used')
             """).FirstAsync(ct);
 
+    public async Task<Guid> IssueForOrderDepositAsync(Guid customerId, Guid paymentId, Guid salesOrderId, Guid currencyId,
+        decimal amount, string orderNumber, CancellationToken ct = default)
+    {
+        var company = CustomerAccountRules.Company(tenant);
+        var id = Guid.NewGuid();
+        var number = await CustomerAccountRules.NextNumberAsync(db, company, "customer_credit_memo", "AVC-", ct);
+        await db.Database.ExecuteSqlAsync($"""
+            INSERT INTO nexora.customer_credit_memo
+                (id, company_id, memo_number, customer_id, source_type, payment_id, sales_order_id, currency_id, amount,
+                 gl_account_key, reason, created_by)
+            VALUES ({id}, {company}, {number}, {customerId}, 'order_deposit', {paymentId}, {salesOrderId}, {currencyId}, {amount},
+                    'suspense', {"Commande " + orderNumber}, {tenant.UserId})
+            """, ct);
+        return id;
+    }
+
+    public Task<decimal> OrderDepositAvailableAsync(Guid salesOrderId, CancellationToken ct = default)
+        => db.Database.SqlQuery<decimal>($"""
+            SELECT COALESCE(SUM(m.remaining_amount), 0) AS "Value"
+            FROM nexora.customer_credit_memo m
+            WHERE m.company_id = {CustomerAccountRules.Company(tenant)} AND m.sales_order_id = {salesOrderId}
+              AND m.source_type = 'order_deposit' AND m.status IN ('available', 'partially_used')
+            """).FirstAsync(ct);
+
     public async Task<decimal> ApplyToReceivableAsync(Guid customerId, Guid receivableId, string currency, decimal amount,
-        DateTimeOffset at, CancellationToken ct = default)
+        DateTimeOffset at, CancellationToken ct = default, Guid? preferSalesOrderId = null)
     {
         var company = CustomerAccountRules.Company(tenant);
         // Avoirs verrouillés, du plus ancien au plus récent : deux caisses ne consomment pas le même avoir.
@@ -164,7 +188,8 @@ public sealed class SqlCustomerCreditMemoWriter(NexoraDbContext db, ITenantConte
             FROM nexora.customer_credit_memo m JOIN nexora.currency c ON c.id = m.currency_id
             WHERE m.company_id = {company} AND m.customer_id = {customerId} AND c.code = {currency}
               AND m.status IN ('available', 'partially_used') AND m.remaining_amount > 0
-            ORDER BY m.created_at, m.id
+            ORDER BY COALESCE(m.sales_order_id = {preferSalesOrderId}::uuid, false) DESC,
+                     m.created_at, m.id
             FOR UPDATE OF m
             """).ToListAsync(ct);
 

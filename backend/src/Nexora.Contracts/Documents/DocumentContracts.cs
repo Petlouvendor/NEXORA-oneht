@@ -25,7 +25,10 @@ public sealed record QuoteDto(
 
 public sealed record QuoteDecisionRequest(string? Reason = null);
 
-public sealed record ConvertQuoteRequest(bool OnCredit = false, DateOnly? DueDate = null, string OrderType = "delivery");
+/// <summary>Conversion en commande. <c>InventoryLocationId</c> : emplacement qui servira la commande (sans lui,
+/// la commande reste en brouillon à compléter).</summary>
+public sealed record ConvertQuoteRequest(bool OnCredit = false, DateOnly? DueDate = null, string OrderType = "delivery",
+    Guid? InventoryLocationId = null);
 
 // --- Documents émis (§3, §8, §19, §31, §33) ----------------------------
 
@@ -51,7 +54,9 @@ public sealed record IssuedDocumentDetailDto(IssuedDocumentDto Header, System.Te
 /// <summary>Recherche documentaire (§34).</summary>
 public sealed record DocumentSearchRequest(
     string? Type = null, string? Status = null, string? Number = null, Guid? PartyId = null,
-    DateOnly? From = null, DateOnly? To = null, int Limit = 100);
+    DateOnly? From = null, DateOnly? To = null, int Limit = 100,
+    // Phase 4 : documents d'une source (vente, commande, devis, retour, paiement).
+    string? SourceType = null, Guid? SourceId = null);
 
 /// <summary>Données publiques minimales renvoyées par la vérification QR (§27-28).</summary>
 public sealed record DocumentVerificationDto(

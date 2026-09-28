@@ -46,6 +46,9 @@ public sealed partial class SqlReceiptService(
             PrintableKinds.SupplierInvoice => await SupplierInvoiceAsync(id, ct),
             PrintableKinds.PurchaseOrder => await PurchaseOrderAsync(id, ct),
             PrintableKinds.GoodsReceipt => await GoodsReceiptAsync(id, ct),
+            PrintableKinds.Quote => await QuoteAsync(id, level, ct),
+            PrintableKinds.SalesOrder => await SalesOrderAsync(id, ct),
+            PrintableKinds.IssuedDocument => await IssuedDocumentAsync(id, level, ct),
             _ => null,
         };
         if (built is null) return Error.NotFound("print.not_found", "Document introuvable.");

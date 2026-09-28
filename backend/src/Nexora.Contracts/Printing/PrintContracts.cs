@@ -92,10 +92,14 @@ public static class PrintableKinds
     public const string SupplierInvoice = "supplier-invoice";
     public const string PurchaseOrder = "purchase-order";
     public const string GoodsReceipt = "goods-receipt";
+    // Phase 4 : devis, commande client, document commercial émis (facture, avoir, bon de livraison…).
+    public const string Quote = "quote";
+    public const string SalesOrder = "sales-order";
+    public const string IssuedDocument = "document";
 
     public static readonly IReadOnlyList<string> All =
     [
         CustomerPayment, CustomerCredit, CreditMemo, CustomerRefund, CustomerExpense, Sale,
-        SupplierPayment, SupplierInvoice, PurchaseOrder, GoodsReceipt,
+        SupplierPayment, SupplierInvoice, PurchaseOrder, GoodsReceipt, Quote, SalesOrder, IssuedDocument,
     ];
 }

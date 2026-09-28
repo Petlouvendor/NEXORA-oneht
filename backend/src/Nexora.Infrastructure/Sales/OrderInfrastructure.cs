@@ -34,7 +34,44 @@ public sealed class EfOrderStore(NexoraDbContext db, ITenantContext tenant) : IO
     public async Task<bool> ProductRequiresStockAsync(Guid productId, CancellationToken ct = default)
         => await db.Products.AsNoTracking().Where(p => p.Id == productId)
             .Select(p => p.ProductType == "stockable" || p.ProductType == "weight").FirstOrDefaultAsync(ct);
+
+    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Aucune entreprise active.");
+
+    public async Task<Guid?> CurrencyIdOrNullAsync(string code, CancellationToken ct = default)
+        => await db.Currencies.AsNoTracking().Where(c => c.Code == code).Select(c => (Guid?)c.Id).FirstOrDefaultAsync(ct);
+
+    public Task<bool> LocationExistsAsync(Guid locationId, CancellationToken ct = default)
+        => db.Database.SqlQuery<bool>($"""
+            SELECT EXISTS(SELECT 1 FROM nexora.inventory_location
+                          WHERE id = {locationId} AND company_id = {Company} AND status = 'active') AS "Value"
+            """).FirstAsync(ct);
+
+    public Task<string?> CustomerStatusAsync(Guid customerId, CancellationToken ct = default)
+        => db.Database.SqlQuery<string?>($"""
+            SELECT status AS "Value" FROM nexora.customer WHERE id = {customerId} AND company_id = {Company}
+            """).FirstOrDefaultAsync(ct);
+
+    public async Task SyncEstablishmentAsync(Guid orderId, CancellationToken ct = default)
+        => await db.Database.ExecuteSqlAsync($"""
+            UPDATE nexora.sales_order SET establishment_id = COALESCE(nexora.location_establishment(inventory_location_id), establishment_id)
+            WHERE id = {orderId} AND company_id = {Company}
+            """, ct);
+
+    public Task RemoveLinesAsync(SalesOrder order, CancellationToken ct = default)
+    {
+        db.Set<SalesOrderLine>().RemoveRange(order.Lines);
+        order.Lines.Clear();
+        return Task.CompletedTask;
+    }
+
+    public Task AddLinesAsync(IEnumerable<SalesOrderLine> lines, CancellationToken ct = default)
+    {
+        db.Set<SalesOrderLine>().AddRange(lines);
+        return Task.CompletedTask;
+    }
 }
+
+internal sealed record OrderExtraRow(string? CustomerName, string? LocationName, decimal DepositAvailable);
 
 /// <summary>Lectures ventes & commandes (Phase 25 §9, §43).</summary>
 public sealed class SqlSalesQueries(NexoraDbContext db, ITenantContext tenant, IPermissionService permissions) : ISalesQueries
@@ -113,6 +150,24 @@ public sealed class SqlSalesQueries(NexoraDbContext db, ITenantContext tenant, I
 
         var currency = await db.Currencies.AsNoTracking().Where(c => c.Id == order.CurrencyId).Select(c => c.Code).FirstAsync(ct);
         var saleIds = await db.Sales.AsNoTracking().Where(s => s.SalesOrderId == orderId).Select(s => s.Id).ToListAsync(ct);
+        var extra = await db.Database.SqlQuery<OrderExtraRow>($"""
+            SELECT c.name AS "CustomerName", loc.name AS "LocationName",
+                   COALESCE((SELECT SUM(m.remaining_amount) FROM nexora.customer_credit_memo m
+                             WHERE m.sales_order_id = o.id AND m.source_type = 'order_deposit'
+                               AND m.status IN ('available', 'partially_used')), 0) AS "DepositAvailable"
+            FROM nexora.sales_order o
+            LEFT JOIN nexora.customer c ON c.id = o.customer_id
+            LEFT JOIN nexora.inventory_location loc ON loc.id = o.inventory_location_id
+            WHERE o.id = {orderId} AND o.company_id = {Company}
+            """).FirstAsync(ct);
+        var sales = await db.Database.SqlQuery<OrderSaleRefDto>($"""
+            SELECT s.id AS "Id", s.document_number AS "DocumentNumber", s.sold_at AS "SoldAt", s.total AS "Total",
+                   COALESCE((SELECT SUM(r.remaining_amount) FROM nexora.customer_receivable r
+                             WHERE r.sale_id = s.id AND r.status IN ('OPEN','PARTIALLY_PAID','OVERDUE')), 0) AS "AmountDue",
+                   s.status AS "Status"
+            FROM nexora.sale s WHERE s.sales_order_id = {orderId} AND s.company_id = {Company}
+            ORDER BY s.sold_at
+            """).ToListAsync(ct);
 
         return new OrderDto(
             order.Id, order.DocumentNumber, order.OrderType, order.Status, order.CustomerId, currency,
@@ -122,6 +177,7 @@ public sealed class SqlSalesQueries(NexoraDbContext db, ITenantContext tenant, I
             order.Lines.OrderBy(l => l.Description).Select(l => new OrderLineDto(
                 l.Id, l.ProductId, l.Description, l.Quantity, l.QuantityFulfilled, l.UnitPrice, l.Discount,
                 l.TaxAmount, l.LineTotal)).ToList(),
-            saleIds);
+            saleIds, extra.CustomerName, order.InventoryLocationId, extra.LocationName, extra.DepositAvailable, sales,
+            order.CancelledReason, order.CreatedAt);
     }
 }
