@@ -93,8 +93,11 @@ public sealed record PendingClosingDto(
 
 /// <summary>Produit proposé au POS : nom, référence, prix de vente et disponibilité SIMPLE
 /// (<c>in_stock</c> | <c>low</c> | <c>out</c> | <c>untracked</c>) — jamais de quantité, de coût ni de fournisseur.</summary>
+/// <summary><c>SalePrice</c> = prix affiché au catalogue ; <c>PriceIncludesTax</c> dit s'il est TTC ; <c>TaxRate</c> = taux de
+/// la taxe par défaut (0 sans taxe). La caisse en déduit le montant dû exactement comme le serveur (phase 6).</summary>
 public sealed record PosProductDto(
-    Guid ProductId, string Name, string Sku, string? Barcode, decimal? SalePrice, string? Currency, string Availability);
+    Guid ProductId, string Name, string Sku, string? Barcode, decimal? SalePrice, string? Currency, string Availability,
+    decimal TaxRate = 0m, bool PriceIncludesTax = false);
 
 /// <summary>Liste courte et pertinente ; <paramref name="MinChars"/> / <paramref name="MaxResults"/>
 /// rappellent au client les bornes configurées.</summary>

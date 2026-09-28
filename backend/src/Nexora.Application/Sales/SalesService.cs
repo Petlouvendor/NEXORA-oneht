@@ -43,6 +43,39 @@ public sealed class SalesService(
     /// <summary>Exécution d'une commande : ses prix ont été figés — et contrôlés — à la saisie de la
     /// commande ou du devis d'origine ; les rejouer ici exigerait à tort <c>pos.change_price</c>
     /// de la personne qui livre. Non exposé hors de la couche Application.</summary>
+    /// <summary>
+    /// Aperçu du panier (phase 6) : exactement le calcul de l'encaissement (prix, promotions, coupon, taxes, arrondis),
+    /// sans rien écrire. La caisse affiche ainsi le montant réellement dû — avant, elle ignorait taxes et promotions.
+    /// Jamais de coût.
+    /// </summary>
+    public async Task<Result<Nexora.Contracts.Sales.CartPreviewDto>> PreviewAsync(Nexora.Contracts.Sales.CartPreviewRequest r, CancellationToken ct = default)
+    {
+        if (r.Lines is null || r.Lines.Count == 0)
+            return Result.Success(new Nexora.Contracts.Sales.CartPreviewDto(0m, 0m, 0m, 0m, []));
+        if (r.Lines.Any(l => l.Quantity <= 0m || l.LineDiscount < 0m))
+            return Error.Validation("pos.cart_line", "Quantité positive et remise non négative requises.");
+        var lines = r.Lines.Select(l => new CheckoutLine(l.ProductId, l.Quantity, null, l.LineDiscount, null)).ToList();
+        if (await pricingGuard.ValidateProductsAsync(lines, ct) is { IsSuccess: false } unsellable) return unsellable.Error!;
+        var priced = await pricing.PriceCartAsync(r.InventoryLocationId, r.CustomerId, r.Currency, clock.UtcNow, lines, r.CouponCode, ct);
+
+        decimal subtotal = 0, discountTotal = 0, taxTotal = 0;
+        var result = new List<Nexora.Contracts.Sales.CartPreviewLineDto>();
+        foreach (var p in priced)
+        {
+            var gross = Rounding.Money(p.UnitPrice * p.Quantity);
+            var disc = Rounding.Money(p.ManualDiscount + p.PromotionDiscount);
+            var net = gross - disc;
+            var tax = Rounding.Money(net * p.TaxRate / 100m);
+            subtotal += gross;
+            discountTotal += disc;
+            taxTotal += tax;
+            result.Add(new(p.ProductId, p.Quantity, p.UnitPrice, p.ManualDiscount, p.PromotionDiscount, p.PromotionLabel,
+                tax, Rounding.Money(net + tax)));
+        }
+        return Result.Success(new Nexora.Contracts.Sales.CartPreviewDto(
+            subtotal, discountTotal, taxTotal, Rounding.Money(subtotal - discountTotal + taxTotal), result));
+    }
+
     internal Task<Result<CheckoutResult>> CheckoutFrozenPricesAsync(CheckoutCommand cmd, CancellationToken ct = default)
         => CheckoutCoreAsync(cmd, guardClientPricing: false, ct);
 
