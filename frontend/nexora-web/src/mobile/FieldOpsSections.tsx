@@ -1,3 +1,4 @@
+import { todayIso } from "@/shared/format";
 import { useCallback, useEffect, useState } from "react";
 import { ApiError } from "@/core/apiClient";
 import { Badge, Button, Card, DataTable, SectionLabel, type Column } from "@/shared/ui";
@@ -61,7 +62,7 @@ export function DeliveryRoutesSection({ canManage }: { canManage: boolean }) {
         <SectionLabel action={canManage && (
           <Button size="sm" disabled={routes.busy} onClick={() => {
             const address = prompt("Adresse de livraison :"); if (!address) return;
-            void routes.run(() => createRoute({ routeDate: new Date().toISOString().slice(0, 10), stops: [{ address }] }));
+            void routes.run(() => createRoute({ routeDate: todayIso(), stops: [{ address }] }));
           }}>Nouvelle tournée</Button>
         )}>Tournées de livraison (§12, §52)</SectionLabel>
         {routes.error && <div className="nx-error-text">{routes.error}</div>}

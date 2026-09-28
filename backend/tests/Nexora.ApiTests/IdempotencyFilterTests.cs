@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Mvc.Filters;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Nexora.Api.Security;
 
 namespace Nexora.ApiTests;
@@ -16,7 +17,7 @@ public sealed class IdempotencyFilterTests
 {
     private const string Key = "test-key-12345678";
 
-    private static IdempotencyFilter Filter(MemoryCache cache) => new(cache, NullLogger<IdempotencyFilter>.Instance);
+    private static IdempotencyFilter Filter(MemoryCache cache) => new(cache, NullLogger<IdempotencyFilter>.Instance, Options.Create(new JsonOptions()));
 
     private static ActionExecutingContext Executing(string? key, IDictionary<string, object?> args)
     {
@@ -66,6 +67,27 @@ public sealed class IdempotencyFilterTests
         replayed.StatusCode.Should().Be(201);
         replayed.Content.Should().Contain("abc-123").And.Contain("100");
         second.HttpContext.Response.Headers["Idempotency-Replay"].ToString().Should().Be("true");
+    }
+
+    private sealed record InvoiceResult(Guid InvoiceId, bool WasReplay);
+
+    [Fact]
+    public async Task Replayed_body_uses_the_same_json_casing_as_the_original_response()
+    {
+        // Défaut phase 3 : le rejeu renvoyait « InvoiceId » (PascalCase) au lieu de « invoiceId » — un client
+        // qui réessayait après une coupure réseau lisait un identifiant indéfini.
+        var cache = new MemoryCache(new MemoryCacheOptions());
+        var filter = Filter(cache);
+        var args = new Dictionary<string, object?> { ["r"] = new { amount = 1 } };
+        var id = Guid.NewGuid();
+        var next = NextReturning(() => new ObjectResult(new InvoiceResult(id, false)) { StatusCode = 200 }, () => { });
+
+        await filter.OnActionExecutionAsync(Executing(Key, args), next);
+        var second = Executing(Key, args);
+        await filter.OnActionExecutionAsync(second, next);
+
+        var content = second.Result.Should().BeOfType<ContentResult>().Which.Content!;
+        content.Should().Contain("\"invoiceId\"").And.Contain("\"wasReplay\"").And.NotContain("InvoiceId");
     }
 
     [Fact]
