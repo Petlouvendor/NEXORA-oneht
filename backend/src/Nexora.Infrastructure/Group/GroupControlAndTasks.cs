@@ -51,10 +51,10 @@ public sealed class SqlGroupControlCenter(NexoraDbContext db, ITenantContext ten
                                   WHERE (mm.source_transaction_id = t.id OR mm.counterpart_transaction_id = t.id)
                                     AND mm.status = 'matched')) ic ON true
             LEFT JOIN LATERAL (
-                SELECT COALESCE(SUM(original_amount - paid_amount), 0) total FROM nexora.customer_receivable
+                SELECT COALESCE(SUM(remaining_amount), 0) total FROM nexora.customer_receivable
                 WHERE company_id = c.id AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE')) ar ON true
             LEFT JOIN LATERAL (
-                SELECT COALESCE(SUM(original_amount - paid_amount), 0) total FROM nexora.supplier_payable
+                SELECT COALESCE(SUM(remaining_amount), 0) total FROM nexora.supplier_payable
                 WHERE company_id = c.id AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE')) ap ON true
             WHERE c.group_id = {groupId}
             ORDER BY c.name

@@ -246,6 +246,27 @@ public sealed class EfPurchasingStore(NexoraDbContext db, ITenantContext tenant)
             WHERE p.id = {payableId} AND p.company_id = {Company}
             """).FirstOrDefaultAsync(ct);
 
+    public async Task<(Guid SupplierId, IReadOnlyDictionary<Guid, decimal> Returnable)?> ReceiptReturnableAsync(Guid receiptId, CancellationToken ct = default)
+    {
+        var supplier = await db.GoodsReceipts.AsNoTracking().Where(r => r.Id == receiptId && r.CompanyId == Company)
+            .Select(r => (Guid?)r.SupplierId).FirstOrDefaultAsync(ct);
+        if (supplier is null) return null;
+        var rows = await db.Database.SqlQuery<ReturnableRow>($"""
+            SELECT grl.product_id AS "ProductId",
+                   SUM(grl.quantity_received)
+                   - COALESCE((SELECT SUM(srl.quantity) FROM nexora.supplier_return_line srl
+                                 JOIN nexora.supplier_return sr ON sr.id = srl.supplier_return_id
+                                WHERE sr.goods_receipt_id = {receiptId} AND sr.status = 'posted'
+                                  AND srl.product_id = grl.product_id), 0) AS "Quantity"
+            FROM nexora.goods_receipt_line grl
+            WHERE grl.goods_receipt_id = {receiptId} AND grl.company_id = {Company}
+            GROUP BY grl.product_id
+            """).ToListAsync(ct);
+        return (supplier.Value, rows.ToDictionary(r => r.ProductId, r => r.Quantity));
+    }
+
+    private sealed record ReturnableRow(Guid ProductId, decimal Quantity);
+
     public async Task AddReceiptAsync(GoodsReceipt receipt, CancellationToken ct = default) => await db.GoodsReceipts.AddAsync(receipt, ct);
 
     public Task<Guid?> FindReceiptByOperationAsync(Guid operationUuid, CancellationToken ct = default)
@@ -315,6 +336,59 @@ public sealed class EfPurchasingStore(NexoraDbContext db, ITenantContext tenant)
 
     public Task<Product?> GetProductAsync(Guid id, CancellationToken ct = default)
         => db.Products.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id, ct);
+
+    // --- Finalisation produit, phase 3 -------------------------------------------------
+
+    public Task<Guid?> CurrencyIdOrNullAsync(string code, CancellationToken ct = default)
+        => db.Currencies.AsNoTracking().Where(c => c.Code == code).Select(c => (Guid?)c.Id).FirstOrDefaultAsync(ct);
+
+    public Task<SupplierPurchasingInfo?> SupplierInfoAsync(Guid supplierId, CancellationToken ct = default)
+        => db.Database.SqlQuery<SupplierPurchasingInfo>($"""
+            SELECT s.id AS "SupplierId", s.status AS "Status", t.days AS "PaymentTermsDays", s.credit_limit AS "CreditLimit"
+            FROM nexora.supplier s
+            LEFT JOIN nexora.supplier_payment_terms t ON t.id = s.payment_terms_id
+            WHERE s.id = {supplierId} AND s.company_id = {Company}
+            """).FirstOrDefaultAsync(ct);
+
+    public Task<decimal?> TaxRateAsync(Guid taxId, CancellationToken ct = default)
+        => db.Database.SqlQuery<decimal?>($"""
+            SELECT rate AS "Value" FROM nexora.tax WHERE id = {taxId} AND company_id = {Company}
+            """).FirstOrDefaultAsync(ct);
+
+    public Task<bool> LocationExistsAsync(Guid locationId, CancellationToken ct = default)
+        => db.Database.SqlQuery<bool>($"""
+            SELECT EXISTS(SELECT 1 FROM nexora.inventory_location WHERE id = {locationId} AND company_id = {Company}) AS "Value"
+            """).FirstAsync(ct);
+
+    public async Task<Guid?> FindInvoiceByOperationAsync(Guid operationUuid, CancellationToken ct = default)
+        => await db.Database.SqlQuery<Guid?>($"""
+            SELECT je.source_id AS "Value" FROM nexora.journal_entry je
+            WHERE je.source_operation_uuid = {operationUuid} AND je.company_id = {Company}
+            LIMIT 1
+            """).FirstOrDefaultAsync(ct);
+
+    public async Task<PurchaseOrder?> GetOrderForUpdateAsync(Guid id, CancellationToken ct = default)
+    {
+        var order = await db.PurchaseOrders.Include(o => o.Lines).FirstOrDefaultAsync(o => o.Id == id && o.CompanyId == Company, ct);
+        // Les transitions de statut passent par ExecuteUpdate : une instance déjà suivie peut porter un statut périmé.
+        if (order is not null) await db.Entry(order).ReloadAsync(ct);
+        return order;
+    }
+
+    public Task ReplaceOrderLinesAsync(PurchaseOrder order, IReadOnlyList<PurchaseOrderLine> lines, CancellationToken ct = default)
+    {
+        db.Set<PurchaseOrderLine>().RemoveRange(order.Lines);
+        order.Lines.Clear();
+        // Clé déjà fixée côté application : sans Add explicite, EF traiterait ces lignes comme « modifiées ».
+        // L'ajout raccroche déjà la ligne à la commande suivie (fixup) : ne pas l'ajouter deux fois.
+        db.Set<PurchaseOrderLine>().AddRange(lines);
+        foreach (var l in lines) if (!order.Lines.Contains(l)) order.Lines.Add(l);
+        return Task.CompletedTask;
+    }
+
+    public async Task SetOrderStatusIfAsync(Guid orderId, string fromStatus, string toStatus, CancellationToken ct = default)
+        => await db.PurchaseOrders.Where(o => o.Id == orderId && o.Status == fromStatus)
+            .ExecuteUpdateAsync(u => u.SetProperty(o => o.Status, toStatus), ct);
 }
 
 public sealed class EfInventoryOpsStore(NexoraDbContext db, ITenantContext tenant) : IInventoryOpsStore

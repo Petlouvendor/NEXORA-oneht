@@ -15,7 +15,8 @@ namespace Nexora.Api.Controllers;
 /// <c>/purchasing/</c> (cohérence modules) — <c>/purchasing/orders</c>, <c>/purchasing/invoices</c>…
 /// </summary>
 [ApiVersion("1.0")]
-public sealed class PurchasingController(PurchasingService purchasing, IPurchasingQueries queries) : ApiControllerBase
+public sealed class PurchasingController(PurchasingService purchasing, IPurchasingQueries queries, IPurchasingDocumentQueries documents)
+    : ApiControllerBase
 {
     [HttpGet("orders")]
     [RequirePermission(Permissions.Purchasing.View)]
@@ -31,9 +32,47 @@ public sealed class PurchasingController(PurchasingService purchasing, IPurchasi
     [RequirePermission(Permissions.Purchasing.View)]
     public async Task<IActionResult> GetOrder(Guid id, CancellationToken ct)
     {
-        var o = await queries.GetPurchaseOrderAsync(id, ct);
+        // Détail complet (phase 3) : lignes en unité de base et unité d'achat, taxes, réceptions, factures.
+        var o = await documents.OrderAsync(id, ct);
         return o is null ? NotFound() : Ok(o);
     }
+
+    /// <summary>Modification d'une commande en brouillon ou soumise (avant approbation).</summary>
+    [HttpPut("orders/{id:guid}")]
+    [RequirePermission(Permissions.Purchasing.Order)]
+    public async Task<IActionResult> UpdateOrder(Guid id, [FromBody] CreatePurchaseOrderCommand c, CancellationToken ct)
+        => FromResult(await purchasing.UpdateOrderAsync(id, c, ct));
+
+    /// <summary>Solde d'une commande partiellement reçue (reliquat abandonné).</summary>
+    [HttpPost("orders/{id:guid}/close")]
+    [RequirePermission(Permissions.Purchasing.Order)]
+    public async Task<IActionResult> CloseOrder(Guid id, CancellationToken ct)
+        => FromResult(await purchasing.CloseOrderAsync(id, ct));
+
+    [HttpGet("receipts")]
+    [RequirePermission(Permissions.Purchasing.View)]
+    public async Task<IActionResult> Receipts([FromQuery] Guid? supplierId, [FromQuery] Guid? purchaseOrderId, [FromQuery] int limit = 100, CancellationToken ct = default)
+        => Ok(await documents.ReceiptsAsync(supplierId, purchaseOrderId, limit, ct));
+
+    [HttpGet("receipts/{id:guid}")]
+    [RequirePermission(Permissions.Purchasing.View)]
+    public async Task<IActionResult> Receipt(Guid id, CancellationToken ct)
+        => await documents.ReceiptAsync(id, ct) is { } r ? Ok(r) : NotFound();
+
+    [HttpGet("invoices")]
+    [RequirePermission(Permissions.Purchasing.ViewPayables)]
+    public async Task<IActionResult> Invoices([FromQuery] Guid? supplierId, [FromQuery] string? status, [FromQuery] int limit = 100, CancellationToken ct = default)
+        => Ok(await documents.InvoicesAsync(supplierId, status, limit, ct));
+
+    [HttpGet("invoices/{id:guid}")]
+    [RequirePermission(Permissions.Purchasing.ViewPayables)]
+    public async Task<IActionResult> Invoice(Guid id, CancellationToken ct)
+        => await documents.InvoiceAsync(id, ct) is { } i ? Ok(i) : NotFound();
+
+    [HttpGet("returns")]
+    [RequirePermission(Permissions.Purchasing.View)]
+    public async Task<IActionResult> Returns([FromQuery] Guid? supplierId, [FromQuery] int limit = 100, CancellationToken ct = default)
+        => Ok(await documents.ReturnsAsync(supplierId, limit, ct));
 
     [HttpPost("orders/{id:guid}/submit")]
     [RequirePermission(Permissions.Purchasing.Order)]
@@ -109,8 +148,30 @@ public sealed class PayablesController(
 /// ajoutées par la recette Phase 55 ACH-001).</summary>
 [ApiVersion("1.0")]
 [Route("api/v{version:apiVersion}/suppliers")]
-public sealed class SuppliersController(IPurchasingQueries queries, ISupplierService suppliers) : ApiControllerBase
+public sealed class SuppliersController(
+    IPurchasingQueries queries, ISupplierService suppliers, IPurchasingDocumentQueries documents, ISupplierTermsService terms) : ApiControllerBase
 {
+    /// <summary>Synthèse : volume d'achat, dettes, conditions, historique des prix d'achat.</summary>
+    [HttpGet("{id:guid}/overview")]
+    [RequirePermission(Permissions.Suppliers.View)]
+    public async Task<IActionResult> Overview(Guid id, CancellationToken ct)
+        => await documents.SupplierOverviewAsync(id, ct) is { } o ? Ok(o) : NotFound();
+
+    /// <summary>Conditions commerciales : limite de crédit, conditions de paiement, contact, notes.</summary>
+    [HttpPut("{id:guid}/terms")]
+    [RequirePermission(Permissions.Suppliers.Update)]
+    public async Task<IActionResult> SetTerms(Guid id, [FromBody] SupplierTermsRequest r, CancellationToken ct)
+        => FromResult(await terms.SetSupplierTermsAsync(id, r, ct));
+
+    [HttpGet("payment-terms")]
+    [RequirePermission(Permissions.Suppliers.View)]
+    public async Task<IActionResult> PaymentTerms(CancellationToken ct) => Ok(await documents.PaymentTermsAsync(ct));
+
+    [HttpPost("payment-terms")]
+    [RequirePermission(Permissions.Suppliers.Update)]
+    public async Task<IActionResult> CreatePaymentTerms([FromBody] SavePaymentTermsRequest r, CancellationToken ct)
+        => FromResult(await terms.CreatePaymentTermsAsync(r, ct));
+
     [HttpGet]
     [RequirePermission(Permissions.Purchasing.View)]
     public async Task<IActionResult> List(CancellationToken ct) => Ok(await queries.ListSuppliersAsync(ct));

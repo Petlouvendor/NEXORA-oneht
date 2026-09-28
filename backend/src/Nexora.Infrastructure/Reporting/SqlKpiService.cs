@@ -58,11 +58,11 @@ public sealed class SqlKpiService(
               AND account_type IN ('cash','bank','mobile_money')
             """, ct);
         var receivables = await Money($"""
-            SELECT COALESCE(SUM(original_amount - paid_amount),0) AS "Value" FROM nexora.customer_receivable
+            SELECT COALESCE(SUM(remaining_amount),0) AS "Value" FROM nexora.customer_receivable
             WHERE company_id = {Company} AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE')
             """, ct);
         var payables = await Money($"""
-            SELECT COALESCE(SUM(original_amount - paid_amount),0) AS "Value" FROM nexora.supplier_payable
+            SELECT COALESCE(SUM(remaining_amount),0) AS "Value" FROM nexora.supplier_payable
             WHERE company_id = {Company} AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE')
             """, ct);
         var stockValue = await Money($"""
@@ -236,7 +236,7 @@ public sealed class SqlKpiService(
             """).ToListAsync(ct);
 
         var openReceivables = await Money($"""
-            SELECT COALESCE(SUM(original_amount - paid_amount),0) AS "Value" FROM nexora.customer_receivable
+            SELECT COALESCE(SUM(remaining_amount),0) AS "Value" FROM nexora.customer_receivable
             WHERE company_id = {Company} AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE')
             """, ct);
         var expenses = await Money($"""
@@ -314,11 +314,11 @@ public sealed class SqlKpiService(
                     WHERE company_id = {c.Id} AND status = 'active' AND account_type IN ('cash','bank','mobile_money')
                     """, ct);
                 var recv = await Money($"""
-                    SELECT COALESCE(SUM(original_amount - paid_amount),0) AS "Value" FROM nexora.customer_receivable
+                    SELECT COALESCE(SUM(remaining_amount),0) AS "Value" FROM nexora.customer_receivable
                     WHERE company_id = {c.Id} AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE')
                     """, ct);
                 var pay = await Money($"""
-                    SELECT COALESCE(SUM(original_amount - paid_amount),0) AS "Value" FROM nexora.supplier_payable
+                    SELECT COALESCE(SUM(remaining_amount),0) AS "Value" FROM nexora.supplier_payable
                     WHERE company_id = {c.Id} AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE')
                     """, ct);
 

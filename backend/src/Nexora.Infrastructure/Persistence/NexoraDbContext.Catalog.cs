@@ -273,7 +273,8 @@ public sealed partial class NexoraDbContext
             Cols(e, ("Id", "id"), ("PurchaseOrderId", "purchase_order_id"), ("CompanyId", "company_id"),
                 ("ProductId", "product_id"), ("QuantityOrdered", "quantity_ordered"),
                 ("QuantityReceived", "quantity_received"), ("UnitPrice", "unit_price"), ("TaxId", "tax_id"),
-                ("Discount", "discount"), ("LineTotal", "line_total"));
+                ("Discount", "discount"), ("LineTotal", "line_total"), ("TaxAmount", "tax_amount"),
+                ("PurchaseUnitId", "purchase_unit_id"), ("PurchaseQuantity", "purchase_quantity"));
             Timestamps(e);
         });
 
@@ -294,7 +295,9 @@ public sealed partial class NexoraDbContext
             e.HasKey(x => x.Id);
             Cols(e, ("Id", "id"), ("GoodsReceiptId", "goods_receipt_id"), ("CompanyId", "company_id"),
                 ("PurchaseOrderLineId", "purchase_order_line_id"), ("ProductId", "product_id"),
-                ("QuantityReceived", "quantity_received"), ("UnitCost", "unit_cost"), ("LotId", "lot_id"));
+                ("QuantityReceived", "quantity_received"), ("UnitCost", "unit_cost"), ("LotId", "lot_id"),
+                ("PurchaseUnitId", "purchase_unit_id"), ("PurchaseQuantity", "purchase_quantity"),
+                ("QuantityRejected", "quantity_rejected"), ("RejectionReason", "rejection_reason"));
             Timestamps(e);
         });
 
@@ -303,7 +306,7 @@ public sealed partial class NexoraDbContext
             e.ToTable("supplier_return");
             e.HasKey(x => x.Id);
             Cols(e, ("Id", "id"), ("CompanyId", "company_id"), ("SupplierId", "supplier_id"),
-                ("GoodsReceiptId", "goods_receipt_id"), ("SupplierInvoiceId", "supplier_invoice_id"),
+                ("GoodsReceiptId", "goods_receipt_id"), ("SupplierInvoiceId", "supplier_invoice_id"), ("PayableId", "payable_id"),
                 ("WarehouseLocationId", "warehouse_location_id"), ("DocumentNumber", "document_number"),
                 ("Status", "status"), ("Reason", "reason"), ("CurrencyId", "currency_id"),
                 ("Subtotal", "subtotal"), ("TaxTotal", "tax_total"), ("Total", "total"),

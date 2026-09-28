@@ -97,7 +97,7 @@ public sealed class SqlKpiReconciliation(NexoraDbContext db, ITenantContext tena
 
         // 3. Créances : sous-livre clients vs compte 4111 (§46)
         var opAr = await Val($"""
-            SELECT COALESCE(SUM(original_amount - paid_amount), 0) AS "Value" FROM nexora.customer_receivable
+            SELECT COALESCE(SUM(remaining_amount), 0) AS "Value" FROM nexora.customer_receivable
             WHERE company_id = {Company} AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE','IN_DISPUTE')
             """, ct);
         var glAr = await GlByKey("accounts_receivable", to, debitNormal: true, ct);
@@ -107,7 +107,7 @@ public sealed class SqlKpiReconciliation(NexoraDbContext db, ITenantContext tena
 
         // 4. Dettes : sous-livre fournisseurs vs compte 4011 (§46)
         var opAp = await Val($"""
-            SELECT COALESCE(SUM(original_amount - paid_amount), 0) AS "Value" FROM nexora.supplier_payable
+            SELECT COALESCE(SUM(remaining_amount), 0) AS "Value" FROM nexora.supplier_payable
             WHERE company_id = {Company} AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE')
             """, ct);
         var glAp = await GlByKey("accounts_payable", to, debitNormal: false, ct);

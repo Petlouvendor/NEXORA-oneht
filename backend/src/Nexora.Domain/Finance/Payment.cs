@@ -95,9 +95,11 @@ public sealed class SupplierPayable : AuditableEntity
     public Guid CurrencyId { get; set; }
     public decimal OriginalAmount { get; set; }
     public decimal PaidAmount { get; set; }
+    /// <summary>Avoirs : retours fournisseur comptabilisés imputés sur la dette (V082, tenu par la base).</summary>
+    public decimal CreditedAmount { get; set; }
     public DateOnly IssueDate { get; set; }
     public DateOnly? DueDate { get; set; }
     public string Status { get; set; } = ReceivableStatus.Open;
 
-    public decimal RemainingAmount => OriginalAmount - PaidAmount;
+    public decimal RemainingAmount => OriginalAmount - PaidAmount - CreditedAmount;
 }
