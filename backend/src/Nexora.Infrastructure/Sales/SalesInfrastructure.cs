@@ -288,6 +288,27 @@ public sealed class EfSalesStore(NexoraDbContext db, ITenantContext tenant) : IS
                   join cr in db.CashRegisters.AsNoTracking() on cs.CashRegisterId equals cr.Id
                   where cs.Id == sessionId
                   select cr.FinancialAccountId).FirstOrDefaultAsync(ct);
+
+    public async Task<IReadOnlyList<TenderAccountInfo>> TenderAccountsAsync(IReadOnlyCollection<Guid> ids, CancellationToken ct = default)
+    {
+        var list = ids.ToArray();
+        return await db.Database.SqlQuery<TenderAccountInfo>($"""
+            SELECT fa.id AS "Id", fa.name AS "Name", fa.account_type AS "AccountType", cur.code AS "Currency", fa.status AS "Status"
+            FROM nexora.financial_account fa JOIN nexora.currency cur ON cur.id = fa.currency_id
+            WHERE fa.company_id = {Company} AND fa.id = ANY({list})
+            """).ToListAsync(ct);
+    }
+
+    public async Task<IReadOnlyList<TenderMethodInfo>> TenderMethodsAsync(IReadOnlyCollection<Guid> ids, CancellationToken ct = default)
+    {
+        var list = ids.ToArray();
+        return await db.Database.SqlQuery<TenderMethodInfo>($"""
+            SELECT pm.id AS "Id", pm.name AS "Name", pm.type AS "Type", cur.code AS "Currency",
+                   pm.requires_reference AS "RequiresReference", pm.status AS "Status"
+            FROM nexora.payment_method pm LEFT JOIN nexora.currency cur ON cur.id = pm.currency_id
+            WHERE pm.company_id = {Company} AND pm.id = ANY({list})
+            """).ToListAsync(ct);
+    }
 }
 
 public sealed class EfSalesReturnStore(NexoraDbContext db, ITenantContext tenant) : ISalesReturnStore

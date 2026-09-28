@@ -6,6 +6,12 @@ public sealed record CheckoutLine(
 public sealed record TenderInput(
     Guid FinancialAccountId, Guid? PaymentMethodId, decimal Amount, string? Reference);
 
+/// <summary>Compte d'encaissement vu par le contrôle des paiements (phase 5).</summary>
+public sealed record TenderAccountInfo(Guid Id, string Name, string AccountType, string Currency, string Status);
+
+/// <summary>Moyen de paiement vu par le contrôle des paiements (phase 5).</summary>
+public sealed record TenderMethodInfo(Guid Id, string Name, string Type, string? Currency, bool RequiresReference, string Status);
+
 public sealed record CheckoutCommand(
     Guid OperationUuid,
     Guid InventoryLocationId,

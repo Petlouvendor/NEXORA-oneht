@@ -22,8 +22,15 @@ public sealed class PosController(
     IDiscountRequestService discountRequests,
     ICashSessionQueries sessionQueries,
     IPosCatalogQueries products,
-    IManagerOverrideService managerOverride) : ApiControllerBase
+    IManagerOverrideService managerOverride,
+    ITenderOptionsQuery tenderOptions) : ApiControllerBase
 {
+    /// <summary>Moyens d'encaissement (espèces, carte, mobile money…) et comptes compatibles, sans solde (phase 5).</summary>
+    [HttpGet("tender-options")]
+    [RequirePermission(Permissions.Pos.Sell)]
+    public async Task<IActionResult> TenderOptions([FromQuery] string currency = "HTG", CancellationToken ct = default)
+        => Ok(await tenderOptions.ListAsync(currency, ct));
+
     /// <summary>
     /// Validation sur place (guide §10, §12, §13) : le responsable saisit ses identifiants au poste du
     /// caissier. Le poste n'a besoin que de <c>pos.sell</c> ; c'est le responsable dont on vérifie
