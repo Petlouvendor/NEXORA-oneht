@@ -22,6 +22,10 @@ import { Badge, Button, Card, ConfirmDialog, Field, IconButton, Modal, StatePill
 import { Icon } from "@/shared/icons";
 import { money, relative } from "@/shared/format";
 import { printDocument } from "@/shared/printApi";
+import { TenderPanel } from "@/pos/TenderPanel";
+import {
+  getTenderOptions, newTenderLine, summarizeTenders, toTenderInputs, type TenderLine, type TenderMethodOption,
+} from "@/pos/tenders";
 
 /**
  * Écran POS (guide fonctionnel développeur §7-§13, §21, §24). Un outil de vente rapide et contrôlé :
@@ -98,7 +102,9 @@ function SaleScreen({ limits, session, onSessionChanged }: {
   // UUID d'opération du panier : clé d'idempotence de l'encaissement et lien des remises validées.
   const [cartId, setCartId] = useState(() => crypto.randomUUID());
   const [approvals, setApprovals] = useState<Record<string, DiscountRequest>>({});
-  const [tendered, setTendered] = useState<number>(0);
+  // Phase 5 : encaissement en plusieurs moyens (espèces, carte, mobile money…).
+  const [tenderMethods, setTenderMethods] = useState<TenderMethodOption[]>([]);
+  const [tenderLines, setTenderLines] = useState<TenderLine[]>(() => [newTenderLine(null)]);
   const [busy, setBusy] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [receipt, setReceipt] = useState<CheckoutResult | null>(null);
@@ -119,6 +125,21 @@ function SaleScreen({ limits, session, onSessionChanged }: {
 
   const currency = session?.currency ?? "HTG";
   const canSell = session?.status === "open" && Boolean(session.inventoryLocationId && session.financialAccountId);
+
+  // Moyens d'encaissement de la devise de la caisse ; hors ligne ou indisponibles → espèces seules.
+  useEffect(() => {
+    if (session?.status !== "open") return;
+    let alive = true;
+    getTenderOptions(currency)
+      .then((m) => {
+        if (!alive) return;
+        setTenderMethods(m);
+        const cash = m.find((x) => x.type === "cash") ?? null;
+        setTenderLines((ls) => (ls.length === 1 && !ls[0].amount && ls[0].methodId === null ? [newTenderLine(cash)] : ls));
+      })
+      .catch(() => { /* repli : espèces seules */ });
+    return () => { alive = false; };
+  }, [currency, session?.status]);
 
   // Envoi d'un lot de synchronisation (Phase 10 §14) — jamais de confirmation simulée (§21).
   const sender = useCallback<BatchSender>(async (batch) => {
@@ -184,11 +205,19 @@ function SaleScreen({ limits, session, onSessionChanged }: {
   const availableStore = customer?.availableStoreCredit ?? 0;
   const useStore = Math.round(Math.max(0, Math.min(storeCredit, availableStore, total)) * 100) / 100;
   const due = Math.max(0, Math.round((total - useStore) * 100) / 100);
-  // À crédit, le montant reçu peut être nul (vente entièrement à crédit) ; sinon, défaut = reste à payer.
-  const paid = onCredit ? tendered : tendered || due;
-  const change = Math.max(0, paid - due);
+  // Rien saisi et vente au comptant : paiement exact en espèces (geste le plus fréquent). À crédit, rien
+  // saisi = vente entièrement à crédit.
+  const entered = summarizeTenders(tenderLines, tenderMethods, due);
+  const effectiveLines = entered.paid === 0 && !onCredit && due > 0
+    ? tenderLines.map((l, i) => (i === tenderLines.findIndex((x) => x.methodId === null || tenderMethods.find((m) => m.id === x.methodId)?.type === "cash")
+      ? { ...l, amount: String(due) } : l))
+    : tenderLines;
+  const tenderSummary = summarizeTenders(effectiveLines, tenderMethods, due);
+  const paid = tenderSummary.paid;
+  const change = tenderSummary.change;
   const creditPart = onCredit ? Math.max(0, Math.round((due - paid) * 100) / 100) : 0;
   const insufficient = !onCredit && paid + 0.001 < due;
+  const tenderInvalid = tenderSummary.nonCashOver || tenderSummary.missingReference.length > 0 || tenderSummary.missingAccount.length > 0;
   const overAvailable = onCredit && customer?.availableCredit != null && creditPart > customer.availableCredit + 0.001;
 
   function add(p: PosProduct) {
@@ -210,7 +239,7 @@ function SaleScreen({ limits, session, onSessionChanged }: {
 
   function resetCart() {
     setCart([]);
-    setTendered(0);
+    setTenderLines([newTenderLine(tenderMethods.find((m) => m.type === "cash") ?? null)]);
     setCustomer(null);
     setCreditMode(false);
     setStoreCredit(0);
@@ -233,8 +262,8 @@ function SaleScreen({ limits, session, onSessionChanged }: {
       customerId: customer?.id ?? null,
       currency,
       lines: cart.map((l) => ({ productId: l.productId, quantity: l.quantity, lineDiscount: l.discount })),
-      // Vente à crédit : seul le montant réellement reçu est un encaissement ; le serveur calcule le reste dû.
-      tenders: paid > 0 ? [{ financialAccountId: session.financialAccountId ?? "", paymentMethodId: null, amount: paid }] : [],
+      // Un encaissement par moyen ; à crédit, seul le montant réellement reçu est encaissé (le serveur calcule le reste dû).
+      tenders: toTenderInputs(effectiveLines, tenderMethods, session.financialAccountId ?? ""),
       amountTendered: paid,
       storeCreditAmount: useStore,
     };
@@ -362,11 +391,26 @@ function SaleScreen({ limits, session, onSessionChanged }: {
               <span>Reste à payer</span><b className="nx-numeric">{money(due, currency)}</b>
             </div>
           )}
-          <Field label="Montant reçu">
-            <TextInput type="number" min={0} className="nx-input nx-numeric" value={tendered}
-                       style={{ fontSize: "var(--nx-fs-lg)", textAlign: "right" }}
-                       onChange={(e) => setTendered(Math.max(0, Number(e.target.value) || 0))} />
-          </Field>
+          <TenderPanel lines={tenderLines} onChange={setTenderLines} methods={tenderMethods} due={due} currency={currency}
+                       summary={entered} disabled={busy} />
+          <div style={{ display: "flex", justifyContent: "space-between" }}>
+            <span>Total encaissé</span><b className="nx-numeric">{money(paid, currency)}</b>
+          </div>
+          {tenderSummary.remaining > 0 && !onCredit && (
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <span>Reste à encaisser</span><b className="nx-numeric" style={{ color: "var(--nx-warning)" }}>{money(tenderSummary.remaining, currency)}</b>
+            </div>
+          )}
+          {tenderSummary.nonCashOver && (
+            <div style={{ color: "var(--nx-warning)", fontSize: "var(--nx-fs-sm)" }}>
+              <Icon.Alert size={14} /> Carte, mobile money ou virement dépassent le reste dû : la monnaie ne se rend qu'en espèces.
+            </div>
+          )}
+          {tenderSummary.missingReference.length > 0 && (
+            <div style={{ color: "var(--nx-warning)", fontSize: "var(--nx-fs-sm)" }}>
+              <Icon.Alert size={14} /> Saisissez la référence du paiement (n° d'autorisation ou de transaction).
+            </div>
+          )}
           <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700 }}>
             <span>Rendu monnaie</span>
             <span className="nx-numeric" style={{ color: "var(--nx-brand)" }}>{money(change, currency)}</span>
@@ -434,7 +478,7 @@ function SaleScreen({ limits, session, onSessionChanged }: {
           </Card>
         )}
 
-        <Button block loading={busy} disabled={busy || cart.length === 0 || !canSell || blocked || insufficient}
+        <Button block loading={busy} disabled={busy || cart.length === 0 || !canSell || blocked || insufficient || tenderInvalid}
                 style={{ fontSize: "var(--nx-fs-lg)", minHeight: 56 }} onClick={() => setConfirming(true)}>
           <Icon.Wallet size={18} /> Encaisser {money(total, currency)}
         </Button>
@@ -449,7 +493,13 @@ function SaleScreen({ limits, session, onSessionChanged }: {
           impact={
             <div style={{ display: "grid", gap: 4 }}>
               <div style={{ display: "flex", justifyContent: "space-between" }}><span>Total</span><b className="nx-numeric">{money(total, currency)}</b></div>
-              <div style={{ display: "flex", justifyContent: "space-between" }}><span>Reçu</span><span className="nx-numeric">{money(paid, currency)}</span></div>
+              {toTenderInputs(effectiveLines, tenderMethods, session?.financialAccountId ?? "").map((t, i) => (
+                <div key={i} style={{ display: "flex", justifyContent: "space-between" }}>
+                  <span>{tenderMethods.find((m) => m.id === t.paymentMethodId)?.name ?? "Espèces"}{t.reference ? ` · ${t.reference}` : ""}</span>
+                  <span className="nx-numeric">{money(t.amount, currency)}</span>
+                </div>
+              ))}
+              <div style={{ display: "flex", justifyContent: "space-between" }}><span>Total reçu</span><span className="nx-numeric">{money(paid, currency)}</span></div>
               <div style={{ display: "flex", justifyContent: "space-between" }}><span>Rendu</span><span className="nx-numeric">{money(change, currency)}</span></div>
               {customer && <div style={{ display: "flex", justifyContent: "space-between" }}><span>Client</span><span>{customer.displayName}</span></div>}
               {useStore > 0 && <div style={{ display: "flex", justifyContent: "space-between" }}><span>Payé par avoir</span><span className="nx-numeric">{money(useStore, currency)}</span></div>}
