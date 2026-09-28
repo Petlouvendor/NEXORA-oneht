@@ -59,3 +59,12 @@ public sealed record SaleDto(
     decimal Total, decimal AmountPaid, decimal AmountDue, decimal ChangeGiven,
     Guid? SalesOrderId, Guid? CashSessionId,
     IReadOnlyList<SaleLineDto> Lines, IReadOnlyList<SalePaymentDto> Payments);
+
+// --- Moyens d'encaissement de la caisse (finalisation, phase 5) ---------
+
+public sealed record TenderAccountOptionDto(Guid Id, string Name, string AccountType);
+
+/// <summary>Moyen de paiement proposé à la caisse et comptes sur lesquels il peut être encaissé.</summary>
+public sealed record TenderMethodOptionDto(
+    Guid Id, string Name, string Type, bool RequiresReference,
+    IReadOnlyList<TenderAccountOptionDto> Accounts, Guid? DefaultAccountId);

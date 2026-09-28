@@ -87,6 +87,12 @@ public sealed class SalesService(
         }
         var total = Rounding.Money(subtotal - discountTotal + taxTotal);
 
+        // Phase 5 : chaque encaissement est contrôlé (compte, moyen, référence, espèces ↔ caisse).
+        var sessionCashAccount = cmd.CashSessionId is { } scId ? await store.SessionCashAccountAsync(scId, ct) : null;
+        var tenderCheck = await ClassifyTendersAsync(cmd, sessionCashAccount, ct);
+        if (!tenderCheck.IsSuccess) return tenderCheck.Error!;
+        var isCash = tenderCheck.Value!;
+
         var paid = Rounding.Money(cmd.Tenders.Sum(t => t.Amount));
         var tenders = cmd.Tenders.ToList();
         decimal change = 0m;
@@ -107,13 +113,25 @@ public sealed class SalesService(
         }
         decimal creditAmount = Rounding.Money(total - storeCredit - paid);
 
+        // Seules les espèces rendent la monnaie : carte, virement, mobile money… ne dépassent jamais le reste dû.
+        var nonCash = Rounding.Money(tenders.Where(t => !isCash(t)).Sum(t => t.Amount));
+        if (nonCash > Rounding.Money(total - storeCredit))
+            return Error.Validation("pos.non_cash_overpayment",
+                "Les paiements hors espèces (carte, mobile money, virement…) dépassent le reste dû : aucune monnaie ne peut être rendue sur ces moyens.");
+
         if (creditAmount < 0m)
         {
             change = -creditAmount;
             creditAmount = 0m;
-            // Le rendu monnaie sort de l'espèce : on ramène le dernier moyen au net.
-            var last = tenders[^1];
-            tenders[^1] = last with { Amount = Rounding.Money(last.Amount - change) };
+            // Le rendu monnaie sort des espèces, en partant du dernier encaissement en espèces.
+            var left = change;
+            for (var i = tenders.Count - 1; i >= 0 && left > 0m; i--)
+            {
+                if (!isCash(tenders[i])) continue;
+                var cut = Math.Min(left, tenders[i].Amount);
+                tenders[i] = tenders[i] with { Amount = Rounding.Money(tenders[i].Amount - cut) };
+                left -= cut;
+            }
         }
 
         var overrideApplied = false;
@@ -294,9 +312,6 @@ public sealed class SalesService(
                     await stock.PostManyAsync(movements, token);
                 }
 
-                var sessionCashAccount = cmd.CashSessionId is { } sc
-                    ? await store.SessionCashAccountAsync(sc, token) : null;
-
                 foreach (var t in tenders.Where(t => t.Amount > 0m))
                 {
                     var payment = new Payment
@@ -325,7 +340,9 @@ public sealed class SalesService(
                         PaymentId = payment.Id, Amount = t.Amount, CurrencyId = currencyId, CreatedAt = clock.UtcNow,
                     }, token);
 
-                    if (cmd.CashSessionId is { } sessionId && (t.FinancialAccountId == sessionCashAccount || IsCashLike(t)))
+                    // Seules les espèces entrent dans le tiroir : la carte ou le mobile money ne gonflent pas
+                    // l'attendu de la caisse à la clôture.
+                    if (cmd.CashSessionId is { } sessionId && isCash(t))
                         await sessions.AddMovementAsync(new CashMovement
                         {
                             Id = Guid.NewGuid(), CompanyId = Company, CashSessionId = sessionId,
@@ -444,7 +461,54 @@ public sealed class SalesService(
             "Annuler une vente validée via un retour total (correction traçable) — voir SalesReturnService.");
     }
 
-    private static bool IsCashLike(TenderInput t) => t.PaymentMethodId is null;
+    /// <summary>
+    /// Contrôle des encaissements (phase 5) et classement espèces / hors espèces. Espèces = moyen de type
+    /// « cash », ou sans moyen sur un compte de type caisse (API historique, synchronisation hors ligne).
+    /// </summary>
+    private async Task<Result<Func<TenderInput, bool>>> ClassifyTendersAsync(CheckoutCommand cmd, Guid? sessionCashAccount, CancellationToken ct)
+    {
+        if (cmd.Tenders.Any(t => t.Amount < 0m))
+            return Error.Validation("pos.tender_amount", "Un montant encaissé ne peut être négatif.");
+        // Un encaissement nul (vente entièrement à crédit) est ignoré, comme à l'enregistrement des paiements.
+        var real = cmd.Tenders.Where(t => t.Amount > 0m).ToList();
+        if (real.Count == 0) return Result.Success<Func<TenderInput, bool>>(_ => false);
+
+        var accounts = (await store.TenderAccountsAsync(real.Select(t => t.FinancialAccountId).Distinct().ToList(), ct))
+            .ToDictionary(a => a.Id);
+        var methodIds = real.Where(t => t.PaymentMethodId is not null).Select(t => t.PaymentMethodId!.Value).Distinct().ToList();
+        var methods = methodIds.Count == 0 ? new Dictionary<Guid, TenderMethodInfo>()
+            : (await store.TenderMethodsAsync(methodIds, ct)).ToDictionary(m => m.Id);
+
+        bool Cash(TenderInput t) => t.PaymentMethodId is { } m && methods.TryGetValue(m, out var method)
+            ? method.Type == "cash"
+            : accounts.TryGetValue(t.FinancialAccountId, out var a) && a.AccountType == "cash";
+
+        foreach (var t in real)
+        {
+            if (!accounts.TryGetValue(t.FinancialAccountId, out var account) || account.Status != "active")
+                return Error.Validation("pos.tender_account", "Compte d'encaissement inconnu ou inactif.");
+            if (!string.Equals(account.Currency, cmd.Currency, StringComparison.OrdinalIgnoreCase))
+                return Error.Validation("pos.tender_currency", $"Le compte « {account.Name} » est en {account.Currency}, la vente en {cmd.Currency}.");
+            if (t.PaymentMethodId is { } mid)
+            {
+                if (!methods.TryGetValue(mid, out var method) || method.Status != "active")
+                    return Error.Validation("pos.tender_method", "Moyen de paiement inconnu ou inactif.");
+                if (method.Currency is { } mc && !string.Equals(mc, cmd.Currency, StringComparison.OrdinalIgnoreCase))
+                    return Error.Validation("pos.tender_currency", $"« {method.Name} » n'accepte que le {mc}.");
+                if (method.RequiresReference && string.IsNullOrWhiteSpace(t.Reference))
+                    return Error.Validation("pos.tender_reference", $"« {method.Name} » exige une référence (n° d'autorisation, de transaction…).");
+                var cashAccount = account.AccountType == "cash";
+                if (method.Type == "cash" && !cashAccount)
+                    return Error.Validation("pos.tender_account_type", $"Des espèces s'encaissent dans une caisse, pas sur « {account.Name} ».");
+                if (method.Type != "cash" && cashAccount)
+                    return Error.Validation("pos.tender_account_type",
+                        $"« {method.Name} » ne s'encaisse pas dans la caisse « {account.Name} » : choisissez le compte bancaire ou mobile money.");
+            }
+            if (Cash(t) && sessionCashAccount is { } drawer && t.FinancialAccountId != drawer)
+                return Error.Validation("pos.cash_account_mismatch", "Les espèces vont dans la caisse de la session ouverte.");
+        }
+        return Result.Success<Func<TenderInput, bool>>(Cash);
+    }
 
     /// <summary>Réglage <c>pos.require_cash_session</c> (défaut : non, pour les ventes API / commandes).</summary>
     private async Task<bool> RequiresCashSessionAsync(CancellationToken ct)

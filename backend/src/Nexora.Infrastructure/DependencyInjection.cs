@@ -157,6 +157,7 @@ public static class DependencyInjection
         services.AddScoped<IPosLimits, SqlPosLimits>();
         services.AddScoped<ICreditControl, SqlCreditControl>();
         services.AddScoped<ISalesStore, EfSalesStore>();
+        services.AddScoped<ITenderOptionsQuery, Nexora.Infrastructure.Sales.SqlTenderOptionsQuery>();
         services.AddScoped<ISalesReturnStore, EfSalesReturnStore>();
         // Guide fonctionnel développeur — validations Manager au POS (§10, §12, §13, §20).
         services.AddScoped<IPosApprovalNotifier, PosApprovalNotifier>();
