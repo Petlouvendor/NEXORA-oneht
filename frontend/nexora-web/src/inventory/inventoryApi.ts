@@ -1,3 +1,4 @@
+import { todayIso } from "@/shared/format";
 import { apiFetch } from "@/core/apiClient";
 
 export interface StockAlert {
@@ -116,7 +117,7 @@ export const unblockLot = (lotId: string, reason: string) =>
 export const recallLot = (lotId: string, reference: string, reason: string) =>
   apiFetch<void>(`/stock/lots/${lotId}/recall`, { method: "POST", body: JSON.stringify({ reference, reason }) });
 export const sweepExpiredLots = () =>
-  apiFetch<LotSweepResult>("/stock/expire-lots", { method: "POST", idempotencyKey: `sweep-${new Date().toISOString().slice(0, 10)}` });
+  apiFetch<LotSweepResult>("/stock/expire-lots", { method: "POST", idempotencyKey: `sweep-${todayIso()}` });
 
 export { q as buildStockQuery };
 

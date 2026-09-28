@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ApiError } from "@/core/apiClient";
 import { useToast } from "@/shared/Toast";
 import { Button, Field, Modal, Select, TextInput } from "@/shared/ui";
-import { money } from "@/shared/format";
+import { money, todayIso } from "@/shared/format";
 import { printDocument } from "@/shared/printApi";
 import {
   createExpense, EXPENSE_CATEGORIES, getPaymentOptions, openCredit, recordPaymentOrQueue, requestRefund, scheduleCredit,
@@ -173,7 +173,7 @@ export function ExpenseDialog({ customerId, customerName, currency, onClose, onD
   const [category, setCategory] = useState("delivery");
   const [description, setDescription] = useState("");
   const [amount, setAmount] = useState(0);
-  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(() => todayIso());
   const [billable, setBillable] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -337,7 +337,7 @@ export function ScheduleForm({ credit, onDone, onCancel }: { credit: CustomerCre
   const toast = useToast();
   const [mode, setMode] = useState<"equal" | "custom">("equal");
   const [count, setCount] = useState(3);
-  const [first, setFirst] = useState(() => new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10));
+  const [first, setFirst] = useState(() => todayIso(new Date(Date.now() + 30 * 86400000)));
   const [monthly, setMonthly] = useState(true);
   const [interval, setIntervalDays] = useState(15);
   const [lines, setLines] = useState<Array<{ dueDate: string; amount: number }>>([{ dueDate: first, amount: credit.remainingAmount }]);

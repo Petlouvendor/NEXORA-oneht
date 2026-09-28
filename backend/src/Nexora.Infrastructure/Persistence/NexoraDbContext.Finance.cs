@@ -212,6 +212,7 @@ public sealed partial class NexoraDbContext
             e.Property(x => x.CurrencyId).HasColumnName("currency_id");
             e.Property(x => x.OriginalAmount).HasColumnName("original_amount");
             e.Property(x => x.PaidAmount).HasColumnName("paid_amount").ValueGeneratedOnAddOrUpdate();
+            e.Property(x => x.CreditedAmount).HasColumnName("credited_amount").ValueGeneratedOnAddOrUpdate();
             e.Property(x => x.IssueDate).HasColumnName("issue_date");
             e.Property(x => x.DueDate).HasColumnName("due_date");
             e.Property(x => x.Status).HasColumnName("status");

@@ -20,16 +20,31 @@ export function percent(value: number, maxFrac = 1): string {
   return `${value.toLocaleString(currentLocale, { maximumFractionDigits: maxFrac })} %`;
 }
 
+/**
+ * Lecture d'une date : « AAAA-MM-JJ » (date seule, sans heure) est une date CIVILE locale. `new Date("2026-09-28")`
+ * la lirait comme minuit UTC et l'afficherait la veille à l'ouest de Greenwich (Haïti, UTC−4).
+ */
+export function parseDate(iso: string): Date {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : new Date(iso);
+}
+
+/** Date du jour « AAAA-MM-JJ » dans le fuseau de l'utilisateur (et non en UTC). */
+export function todayIso(d: Date = new Date()): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
 export function dateShort(iso: string | Date | null): string {
   if (!iso) return "—";
-  const d = typeof iso === "string" ? new Date(iso) : iso;
+  const d = typeof iso === "string" ? parseDate(iso) : iso;
   if (Number.isNaN(d.getTime())) return String(iso);
   return d.toLocaleDateString(currentLocale, { day: "2-digit", month: "2-digit", year: "numeric" });
 }
 
 export function dateTime(iso: string | Date | null): string {
   if (!iso) return "—";
-  const d = typeof iso === "string" ? new Date(iso) : iso;
+  const d = typeof iso === "string" ? parseDate(iso) : iso;
   if (Number.isNaN(d.getTime())) return String(iso);
   return d.toLocaleString(currentLocale, { dateStyle: "medium", timeStyle: "short" });
 }

@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
 using Microsoft.AspNetCore.Mvc.Infrastructure;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Options;
 
 namespace Nexora.Api.Security;
 
@@ -24,7 +25,7 @@ public sealed class IdempotentAttribute : Attribute, IFilterFactory
         ActivatorUtilities.CreateInstance<IdempotencyFilter>(serviceProvider);
 }
 
-public sealed class IdempotencyFilter(IMemoryCache cache, ILogger<IdempotencyFilter> logger) : IAsyncActionFilter
+public sealed class IdempotencyFilter(IMemoryCache cache, ILogger<IdempotencyFilter> logger, IOptions<JsonOptions> mvcJson) : IAsyncActionFilter
 {
     public const string HeaderName = "Idempotency-Key";
     public const string ReplayHeader = "Idempotency-Replay";
@@ -85,7 +86,8 @@ public sealed class IdempotencyFilter(IMemoryCache cache, ILogger<IdempotencyFil
             string? contentType = null;
             if (executed.Result is ObjectResult { Value: { } value })
             {
-                body = JsonSerializer.Serialize(value, Json);
+                // Mêmes options que la réponse d'origine (camelCase, énumérations…) : un rejeu est indiscernable.
+                body = JsonSerializer.Serialize(value, value.GetType(), mvcJson.Value.JsonSerializerOptions);
                 contentType = "application/json";
             }
             // Cache borné (SizeLimit, REQ-02) : la taille de l'entrée est obligatoire.

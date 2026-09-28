@@ -1,3 +1,4 @@
+import { todayIso } from "@/shared/format";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ApiError } from "@/core/apiClient";
 import { useAuth } from "@/auth/AuthContext";
@@ -28,7 +29,7 @@ export function LedgerPage() {
   const [drawer, setDrawer] = useState(false);
 
   const [jrn, setJrn] = useState("OD");
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(todayIso());
   const [desc, setDesc] = useState("");
   const [rows, setRows] = useState<DraftRow[]>([
     { accountCode: "", debit: "", credit: "" },
@@ -46,7 +47,7 @@ export function LedgerPage() {
       listEntries().catch(() => [] as JournalEntry[]),
       listJournals().catch(() => [] as Journal[]),
       listPeriods().catch(() => [] as AccountingPeriod[]),
-      getTrialBalance(new Date().toISOString().slice(0, 10)).catch(() => null),
+      getTrialBalance(todayIso()).catch(() => null),
     ])
       .then(([e, j, p, t]) => {
         setEntries(e); setJournals(j); setPeriods(p); setTrial(t);

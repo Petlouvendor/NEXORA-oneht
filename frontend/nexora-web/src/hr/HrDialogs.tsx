@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { ApiError } from "@/core/apiClient";
 import { useToast } from "@/shared/Toast";
 import { Badge, Button, Field, Modal, Select, TextInput } from "@/shared/ui";
-import { money } from "@/shared/format";
+import { money, todayIso } from "@/shared/format";
 import {
   ADVANCE_KINDS, CONTRACT_TYPES, DOCUMENT_TYPES, EXPENSE_CATEGORIES, FREQUENCIES, LEAVE_TYPES, OVERTIME_TYPES, PAY_BASES, PAYMENT_METHODS,
   RECOVERY_METHODS, RULE_BASES, RULE_TYPES, addPayElement, approveAdvance, changeSalary, createContract, createEmployee, createPeriod,
@@ -16,7 +16,7 @@ import {
 export const errorText = (e: unknown, fallback = "Opération refusée") =>
   e instanceof ApiError ? e.problem.detail ?? e.problem.title : fallback;
 
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => todayIso();
 const num = (v: string) => (v.trim() === "" ? null : Number(v.replace(",", ".")));
 const Grid = ({ children, cols = 2 }: { children: ReactNode; cols?: number }) => (
   <div style={{ display: "grid", gridTemplateColumns: `repeat(auto-fit, minmax(${cols > 2 ? 160 : 220}px, 1fr))`, gap: 12 }}>{children}</div>
@@ -432,8 +432,8 @@ export function RescheduleDialog({ advance, onClose, onDone }: { advance: Advanc
 
 export function PeriodDialog({ onClose, onDone }: { onClose: () => void; onDone: (p: PayrollPeriod) => void }) {
   const now = new Date();
-  const firstDay = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
-  const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().slice(0, 10);
+  const firstDay = todayIso(new Date(now.getFullYear(), now.getMonth(), 1));
+  const lastDay = todayIso(new Date(now.getFullYear(), now.getMonth() + 1, 0));
   const [frequency, setFrequency] = useState("monthly");
   const [kind, setKind] = useState("regular");
   const [start, setStart] = useState(firstDay);

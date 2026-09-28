@@ -4,7 +4,7 @@ import { useAuth } from "@/auth/AuthContext";
 import { useToast } from "@/shared/Toast";
 import { Badge, Button, Card, DataTable, EmptyState, Field, KpiCard, Money, SectionLabel, Select, Spinner, Tabs, TextInput, type Column } from "@/shared/ui";
 import { ExportMenu } from "@/shared/ExportMenu";
-import { dateShort, money } from "@/shared/format";
+import { dateShort, money, todayIso } from "@/shared/format";
 import {
   EMPLOYEE_STATUS, FREQUENCIES, PERIOD_STATUS, RULE_BASES, RULE_STATUS, RULE_TYPES, adoptTemplate, calculatePeriod, exportReport,
   listComponents, listEmployees, listPeriods, listRules, payrollDashboard, reportCatalog, retireRule, runReport, validateRule,
@@ -210,7 +210,7 @@ function ReportsPanel() {
   const [catalog, setCatalog] = useState<ReportInfo[]>([]);
   const [key, setKey] = useState("payroll_mass");
   const [from, setFrom] = useState(`${new Date().getFullYear()}-01-01`);
-  const [to, setTo] = useState(new Date().toISOString().slice(0, 10));
+  const [to, setTo] = useState(todayIso());
   const [periods, setPeriods] = useState<PayrollPeriod[]>([]);
   const [periodId, setPeriodId] = useState("");
   const [report, setReport] = useState<PayrollReport | null>(null);
@@ -336,7 +336,7 @@ function SettingsPanel() {
       )}
       {prompt?.action === "retire" && (
         <PromptDialog title={`Retirer ${prompt.rule.code} v${prompt.rule.version}`} label="Dernier jour d'application" type="date"
-                      initial={new Date().toISOString().slice(0, 10)} submitLabel="Retirer la règle" onClose={() => setPrompt(null)}
+                      initial={todayIso()} submitLabel="Retirer la règle" onClose={() => setPrompt(null)}
                       onSubmit={async (date) => { await retireRule(prompt.rule.id, date); setPrompt(null); toast.success("Règle retirée"); load(); }} />
       )}
       {editing && <RuleDialog rule={editing.rule} mode={editing.mode} onClose={() => setEditing(null)} onDone={() => { setEditing(null); toast.success("Règle enregistrée en brouillon"); load(); }} />}
