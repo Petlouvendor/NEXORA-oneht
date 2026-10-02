@@ -53,6 +53,7 @@ public sealed class SchedulerRunner(
     Nexora.Application.Ged.ISignatureService signatures,
     Nexora.Application.Security.ISecurityCertificateService certificates,
     Nexora.Application.Customers.ICreditAlertScanner creditAlerts,
+    Nexora.Application.Credit.CollectionsService collections,
     Nexora.Application.Payroll.IPayrollAlerts payrollAlerts,
     IJobRegistry jobs,
     ILogger<SchedulerRunner> logger)
@@ -85,6 +86,7 @@ public sealed class SchedulerRunner(
         await Run("ged.apply_retention");
         await Run("ged.expire_signatures");
         await Run("security.check_certificates");
+        await Run("credit.settle_promises");
         await Run("credit.scan_alerts");
         await Run("payroll.scan_alerts");
 
@@ -147,6 +149,7 @@ public sealed class SchedulerRunner(
         ["ged.apply_retention"] = token => PerCompanyAsync(companies, gedRetention.ApplyRetentionAsync, "rétention documentaire", token),
         ["ged.expire_signatures"] = token => PerCompanyAsync(companies, signatures.ExpireDueAsync, "expiration signatures", token),
         ["security.check_certificates"] = token => GlobalAsync(() => certificates.RefreshExpiryStatusAsync(token), "certificats"),
+        ["credit.settle_promises"] = token => PerCompanyAsync(companies, collections.SettleDuePromisesAsync, "échéance des promesses", token),
         ["credit.scan_alerts"] = token => PerCompanyAsync(companies, creditAlerts.ScanAsync, "alertes crédit", token),
         ["payroll.scan_alerts"] = token => PerCompanyAsync(companies, payrollAlerts.ScanAsync, "alertes paie", token),
     };

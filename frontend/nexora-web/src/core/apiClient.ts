@@ -114,10 +114,11 @@ async function send(path: string, init: ApiFetchInit, accept: string): Promise<R
 
 export async function apiFetch<T>(path: string, init: ApiFetchInit = {}): Promise<T> {
   const response = await send(path, init, "application/json");
-  if (response.status === 204) return undefined as T;
-  // Un succès peut n'avoir aucun corps (ex. 202 Accepted de « mot de passe oublié ») : ne pas
-  // transformer une réussite en erreur de parsing JSON.
+  // Un succès peut n'avoir aucun corps (204, ou 202 Accepted de « mot de passe oublié ») : ne pas
+  // transformer une réussite en erreur de parsing JSON. Le corps est toujours lu, même vide : une
+  // réponse 204 laissée non lue apparaissait comme requête annulée (net::ERR_ABORTED) dans le navigateur.
   const text = await response.text();
+  if (response.status === 204) return undefined as T;
   return (text ? JSON.parse(text) : undefined) as T;
 }
 

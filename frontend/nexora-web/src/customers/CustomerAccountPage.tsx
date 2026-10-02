@@ -592,6 +592,7 @@ function ReturnsPanel({ id, version, onChanged }: { id: string; version: number;
   const [refunding, setRefunding] = useState<CreditMemo | null>(null);
   const [executing, setExecuting] = useState<CustomerRefund | null>(null);
   const [rejecting, setRejecting] = useState<CustomerRefund | null>(null);
+  const [cancelling, setCancelling] = useState<CustomerRefund | null>(null);
   const load = useCallback(() => {
     listCreditMemos(id).then(setMemos).catch(() => setMemos([]));
     listRefunds(id).then(setRefunds).catch(() => setRefunds([]));
@@ -642,7 +643,7 @@ function ReturnsPanel({ id, version, onChanged }: { id: string; version: number;
           {r.status === "approved" && (hasPermission("credit.refund") || hasPermission("credit.receive_payment"))
             && <Button size="sm" onClick={() => setExecuting(r)}>Décaisser</Button>}
           {["requested", "approved"].includes(r.status) && <Button size="sm" variant="ghost"
-            onClick={() => { const why = window.prompt("Motif d'annulation ?"); if (why) void act(cancelRefund(r.id, why), "Demande annulée."); }}>Annuler</Button>}
+            onClick={() => setCancelling(r)}>Annuler</Button>}
           {(hasPermission("credit.view_portfolio") || hasPermission("credit.refund"))
             && <PrintMenu kind="customer-refund" id={r.id} ticket iconOnly label="Reçu de remboursement" />}
         </div>
@@ -666,6 +667,11 @@ function ReturnsPanel({ id, version, onChanged }: { id: string; version: number;
       </div>
       {refunding && <RefundDialog memo={refunding} onClose={() => setRefunding(null)} onDone={() => { setRefunding(null); onChanged(); load(); }} />}
       {executing && <ExecuteRefundDialog refund={executing} onClose={() => setExecuting(null)} onDone={() => { setExecuting(null); onChanged(); load(); }} />}
+      {cancelling && (
+        <ConfirmDialog title={`Annuler la demande ${cancelling.refundNumber}`} message="L'avoir reste disponible pour le client." requireReason
+                       confirmLabel="Annuler la demande" onCancel={() => setCancelling(null)}
+                       onConfirm={(why) => { void act(cancelRefund(cancelling.id, why), "Demande annulée."); setCancelling(null); }} />
+      )}
       {rejecting && (
         <ConfirmDialog title={`Refuser ${rejecting.refundNumber}`} message="L'avoir reste disponible pour le client." requireReason
                        confirmLabel="Refuser" onCancel={() => setRejecting(null)}
