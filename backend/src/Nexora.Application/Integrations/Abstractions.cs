@@ -60,6 +60,10 @@ public interface IBankReconciliationService
     Task<Result<int>> AutoMatchAsync(Guid statementId, CancellationToken ct = default);
     Task<Result> MatchLineAsync(Guid lineId, MatchLineRequest request, CancellationToken ct = default);
     Task<Result> ValidateAsync(Guid statementId, CancellationToken ct = default);
+    /// <summary>Phase 7 : mouvements du compte rapprochables avec la ligne (même montant, non rapprochés).</summary>
+    Task<Result<IReadOnlyList<StatementCandidateDto>>> CandidatesAsync(Guid lineId, CancellationToken ct = default);
+    /// <summary>Phase 7 : défait un rapprochement (relevé non validé).</summary>
+    Task<Result> UnmatchLineAsync(Guid lineId, CancellationToken ct = default);
 }
 
 /// <summary>

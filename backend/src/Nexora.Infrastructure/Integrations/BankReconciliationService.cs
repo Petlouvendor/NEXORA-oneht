@@ -28,6 +28,13 @@ public sealed class SqlBankReconciliationService(NexoraDbContext db, IUnitOfWork
     public async Task<Result<ImportStatementResult>> ImportStatementAsync(ImportStatementRequest request, CancellationToken ct = default)
     {
         if (request.Lines.Count == 0) return Error.Validation("integrations.statement_empty", "Le relevé ne contient aucune ligne.");
+        if (request.Lines.Any(l => l.Amount == 0m))
+            return Error.Validation("integrations.statement_line_amount", "Une ligne de relevé a un montant nul.");
+        // Phase 7 : un relevé cohérent vérifie solde d'ouverture + mouvements = solde de clôture.
+        var movements = request.Lines.Sum(l => l.Amount);
+        if (Math.Abs(request.OpeningBalance + movements - request.ClosingBalance) > 0.01m)
+            return Error.Validation("integrations.statement_unbalanced",
+                $"Relevé incohérent : {request.OpeningBalance} + {movements} ≠ {request.ClosingBalance}. Vérifiez les soldes ou les lignes.");
 
         var accountOk = await db.Database.SqlQuery<int>($"""
             SELECT COUNT(*)::int AS "Value" FROM nexora.financial_account
@@ -35,9 +42,11 @@ public sealed class SqlBankReconciliationService(NexoraDbContext db, IUnitOfWork
             """).FirstAsync(ct);
         if (accountOk == 0) return Error.NotFound("integrations.financial_account", "Compte financier introuvable.");
 
-        // Doublons déjà présents sur ce compte (n'importe quel relevé) : (date, montant, référence).
+        // Doublons déjà présents sur ce compte (n'importe quel relevé) : (date, montant, référence). Montant au
+        // centime des deux côtés : la base stocke « 100.0000 », l'application écrivait « 100 » — aucun doublon
+        // n'était jamais reconnu d'un relevé à l'autre.
         var existing = await db.Database.SqlQuery<string>($"""
-            SELECT (l.value_date::text || '|' || l.amount::text || '|' || COALESCE(l.reference,'')) AS "Value"
+            SELECT (l.value_date::text || '|' || round(l.amount, 2)::text || '|' || COALESCE(l.reference,'')) AS "Value"
             FROM nexora.bank_statement_line l
             JOIN nexora.bank_statement s ON s.id = l.bank_statement_id
             WHERE s.company_id = {Company} AND s.financial_account_id = {request.FinancialAccountId}
@@ -48,7 +57,7 @@ public sealed class SqlBankReconciliationService(NexoraDbContext db, IUnitOfWork
         var duplicates = 0;
         foreach (var line in request.Lines)
         {
-            var key = $"{line.ValueDate:yyyy-MM-dd}|{line.Amount}|{line.Reference ?? ""}";
+            var key = $"{line.ValueDate:yyyy-MM-dd}|{Math.Round(line.Amount, 2).ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)}|{line.Reference ?? ""}";
             if (!seen.Add(key)) { duplicates++; continue; }
             toInsert.Add(line);
         }
@@ -158,33 +167,95 @@ public sealed class SqlBankReconciliationService(NexoraDbContext db, IUnitOfWork
         return Result.Success(matched);
     }
 
+    private sealed record LineInfo(Guid StatementId, Guid FinancialAccountId, decimal Amount, string Status, string StatementStatus);
+    private sealed record TxnInfo(Guid FinancialAccountId, decimal Amount, bool AlreadyMatched);
+
+    private Task<LineInfo?> LineInfoAsync(Guid lineId, CancellationToken ct)
+        => db.Database.SqlQuery<LineInfo>($"""
+            SELECT l.bank_statement_id AS "StatementId", s.financial_account_id AS "FinancialAccountId", l.amount AS "Amount",
+                   l.status AS "Status", s.status AS "StatementStatus"
+            FROM nexora.bank_statement_line l JOIN nexora.bank_statement s ON s.id = l.bank_statement_id
+            WHERE l.id = {lineId} AND l.company_id = {Company}
+            """).FirstOrDefaultAsync(ct);
+
+    /// <summary>Rapprochement manuel (phase 7) : même compte, même montant, mouvement non déjà rapproché, relevé non validé.
+    /// Avant, n'importe quel mouvement de l'entreprise (autre compte, autre montant, déjà rapproché) était accepté.</summary>
     public async Task<Result> MatchLineAsync(Guid lineId, MatchLineRequest request, CancellationToken ct = default)
     {
-        var line = await db.Database.SqlQuery<Guid>($"""
-            SELECT bank_statement_id AS "Value" FROM nexora.bank_statement_line WHERE id = {lineId} AND company_id = {Company}
-            """).FirstOrDefaultAsync(ct);
-        if (line == Guid.Empty) return Error.NotFound("integrations.statement_line", "Ligne de relevé introuvable.");
+        var line = await LineInfoAsync(lineId, ct);
+        if (line is null) return Error.NotFound("integrations.statement_line", "Ligne de relevé introuvable.");
+        if (line.StatementStatus == "reconciled") return Error.Conflict("integrations.statement_reconciled", "Ce relevé est déjà validé.");
+        if (line.Status == "matched") return Error.Conflict("integrations.line_matched", "Cette ligne est déjà rapprochée : défaites d'abord le rapprochement.");
 
-        var txnOk = await db.Database.SqlQuery<int>($"""
-            SELECT COUNT(*)::int AS "Value" FROM nexora.financial_transaction WHERE id = {request.TransactionId} AND company_id = {Company}
-            """).FirstAsync(ct);
-        if (txnOk == 0) return Error.NotFound("integrations.transaction", "Transaction financière introuvable.");
+        var txn = await db.Database.SqlQuery<TxnInfo>($"""
+            SELECT t.financial_account_id AS "FinancialAccountId", t.amount AS "Amount",
+                   EXISTS(SELECT 1 FROM nexora.bank_statement_line bl WHERE bl.matched_transaction_id = t.id) AS "AlreadyMatched"
+            FROM nexora.financial_transaction t WHERE t.id = {request.TransactionId} AND t.company_id = {Company}
+            """).FirstOrDefaultAsync(ct);
+        if (txn is null) return Error.NotFound("integrations.transaction", "Transaction financière introuvable.");
+        if (txn.FinancialAccountId != line.FinancialAccountId)
+            return Error.Validation("integrations.match_account", "Ce mouvement appartient à un autre compte que le relevé.");
+        if (txn.Amount != line.Amount)
+            return Error.Validation("integrations.match_amount", $"Montants différents : relevé {line.Amount}, mouvement {txn.Amount}.");
+        if (txn.AlreadyMatched) return Error.Conflict("integrations.transaction_matched", "Ce mouvement est déjà rapproché d'une autre ligne.");
 
         await db.Database.ExecuteSqlAsync($"""
             UPDATE nexora.bank_statement_line SET matched_transaction_id = {request.TransactionId}, status = 'matched', updated_at = now()
             WHERE id = {lineId}
             """, ct);
-        await RefreshStatementStatusAsync(line, ct);
+        await RefreshStatementStatusAsync(line.StatementId, ct);
+        await uow.SaveChangesAsync(ct);
         return Result.Success();
     }
 
+    public async Task<Result> UnmatchLineAsync(Guid lineId, CancellationToken ct = default)
+    {
+        var line = await LineInfoAsync(lineId, ct);
+        if (line is null) return Error.NotFound("integrations.statement_line", "Ligne de relevé introuvable.");
+        if (line.StatementStatus == "reconciled") return Error.Conflict("integrations.statement_reconciled", "Ce relevé est déjà validé.");
+        await db.Database.ExecuteSqlAsync($"""
+            UPDATE nexora.bank_statement_line SET matched_transaction_id = NULL, status = 'unmatched', updated_at = now() WHERE id = {lineId}
+            """, ct);
+        await db.Database.ExecuteSqlAsync($"""
+            UPDATE nexora.bank_statement SET status = 'reconciling', updated_at = now() WHERE id = {line.StatementId}
+            """, ct);
+        await uow.SaveChangesAsync(ct);
+        return Result.Success();
+    }
+
+    public async Task<Result<IReadOnlyList<StatementCandidateDto>>> CandidatesAsync(Guid lineId, CancellationToken ct = default)
+    {
+        var line = await LineInfoAsync(lineId, ct);
+        if (line is null) return Error.NotFound("integrations.statement_line", "Ligne de relevé introuvable.");
+        var rows = await db.Database.SqlQuery<StatementCandidateDto>($"""
+            SELECT t.id AS "TransactionId", t.occurred_at AS "OccurredAt", t.amount AS "Amount", t.transaction_type AS "TransactionType",
+                   COALESCE(t.description, t.reference_type) AS "Label"
+            FROM nexora.financial_transaction t
+            WHERE t.company_id = {Company} AND t.financial_account_id = {line.FinancialAccountId} AND t.amount = {line.Amount}
+              AND t.status = 'cleared'
+              AND NOT EXISTS (SELECT 1 FROM nexora.bank_statement_line bl WHERE bl.matched_transaction_id = t.id)
+            ORDER BY t.occurred_at DESC LIMIT 50
+            """).ToListAsync(ct);
+        return Result.Success<IReadOnlyList<StatementCandidateDto>>(rows);
+    }
+
+    /// <summary>Validation (phase 7) : seulement quand toutes les lignes sont rapprochées. Avant, un relevé plein
+    /// d'écarts pouvait être déclaré « rapproché ».</summary>
     public async Task<Result> ValidateAsync(Guid statementId, CancellationToken ct = default)
     {
-        var n = await db.Database.ExecuteSqlAsync($"""
-            UPDATE nexora.bank_statement SET status = 'reconciled', updated_at = now()
-            WHERE id = {statementId} AND company_id = {Company}
+        var unmatched = await db.Database.SqlQuery<int?>($"""
+            SELECT (SELECT COUNT(*)::int FROM nexora.bank_statement_line l WHERE l.bank_statement_id = s.id AND l.status = 'unmatched') AS "Value"
+            FROM nexora.bank_statement s WHERE s.id = {statementId} AND s.company_id = {Company}
+            """).FirstOrDefaultAsync(ct);
+        if (unmatched is null) return Error.NotFound("integrations.statement", "Relevé introuvable.");
+        if (unmatched > 0)
+            return Error.Conflict("integrations.statement_unmatched",
+                $"{unmatched} ligne(s) non rapprochée(s) : enregistrez le mouvement manquant (frais, transfert…) puis rapprochez-la.");
+        await db.Database.ExecuteSqlAsync($"""
+            UPDATE nexora.bank_statement SET status = 'reconciled', updated_at = now() WHERE id = {statementId} AND company_id = {Company}
             """, ct);
-        return n == 0 ? Error.NotFound("integrations.statement", "Relevé introuvable.") : Result.Success();
+        await uow.SaveChangesAsync(ct);
+        return Result.Success();
     }
 
     private Task RefreshStatementStatusAsync(Guid statementId, CancellationToken ct)

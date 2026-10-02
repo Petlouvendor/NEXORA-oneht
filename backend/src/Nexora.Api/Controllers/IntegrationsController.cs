@@ -203,6 +203,14 @@ public sealed class IntegrationsController(
     [RequirePermission(Permissions.Integrations.Bank)]
     public async Task<IActionResult> ValidateStatement(Guid id, CancellationToken ct) => FromResult(await bank.ValidateAsync(id, ct));
 
+    [HttpGet("bank/lines/{lineId:guid}/candidates")]
+    [RequirePermission(Permissions.Integrations.Bank)]
+    public async Task<IActionResult> LineCandidates(Guid lineId, CancellationToken ct) => FromResult(await bank.CandidatesAsync(lineId, ct));
+
+    [HttpPost("bank/lines/{lineId:guid}/unmatch")]
+    [RequirePermission(Permissions.Integrations.Bank)]
+    public async Task<IActionResult> UnmatchLine(Guid lineId, CancellationToken ct) => FromResult(await bank.UnmatchLineAsync(lineId, ct));
+
     [HttpPost("bank/lines/{lineId:guid}/match")]
     [RequirePermission(Permissions.Integrations.Bank)]
     public async Task<IActionResult> MatchLine(Guid lineId, [FromBody] MatchLineRequest r, CancellationToken ct)
