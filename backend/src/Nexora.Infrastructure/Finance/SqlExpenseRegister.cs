@@ -8,6 +8,12 @@ namespace Nexora.Infrastructure.Finance;
 /// <summary>Pièce de dépense payée (recette BUG-016) — voir <see cref="IExpenseRegister"/>.</summary>
 public sealed class SqlExpenseRegister(NexoraDbContext db, ITenantContext tenant) : IExpenseRegister
 {
+    public async Task LinkJournalEntryAsync(Guid expenseId, Guid journalEntryId, CancellationToken ct = default)
+        => await db.Database.ExecuteSqlAsync($"""
+            UPDATE nexora.expense SET journal_entry_id = {journalEntryId}, updated_at = now()
+            WHERE id = {expenseId} AND journal_entry_id IS NULL
+            """, ct);
+
     public async Task RegisterPaidAsync(Guid expenseId, DateOnly date, decimal net, decimal tax, string currency,
         Guid financialAccountId, string? description, CancellationToken ct = default)
     {

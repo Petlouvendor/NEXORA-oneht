@@ -78,6 +78,9 @@ public sealed record StatementLineDto(
 
 public sealed record MatchLineRequest(Guid TransactionId);
 
+/// <summary>Mouvement du compte proposé pour une ligne de relevé : même montant, pas encore rapproché (phase 7).</summary>
+public sealed record StatementCandidateDto(Guid TransactionId, DateTimeOffset OccurredAt, decimal Amount, string TransactionType, string? Label);
+
 // --- Webhooks sortants (§32) --------------------------------------
 
 public sealed record RegisterOutboundWebhookRequest(

@@ -229,7 +229,8 @@ public sealed class IntegrationsEcosystemTests(FinanceEngineFixture fx)
 
         var valueDate = DateOnly.Parse(await TxnDateAsync(intent.Id));
         var import = await bank.ImportStatementAsync(new ImportStatementRequest(
-            SettlementAccount, "REL-" + Guid.NewGuid().ToString("N")[..6], valueDate, 0m, 321m,
+            // Phase 7 : relevé cohérent exigé (ouverture + lignes = clôture : 0 + 321 + 321 + 999).
+            SettlementAccount, "REL-" + Guid.NewGuid().ToString("N")[..6], valueDate, 0m, 1641m,
             [
                 new StatementLineInput(valueDate, 321m, "Encaissement MonCash", intent.ProviderReference),
                 new StatementLineInput(valueDate, 321m, "Encaissement MonCash", intent.ProviderReference), // doublon

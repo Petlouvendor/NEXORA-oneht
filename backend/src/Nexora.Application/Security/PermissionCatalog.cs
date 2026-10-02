@@ -47,6 +47,8 @@ public static class Permissions
         public const string Transfer = "finance.transfer";
         public const string Reconcile = "finance.reconcile";
         public const string Export = "finance.export";
+        /// <summary>Paramétrage de la trésorerie : comptes, catégories de dépense (phase 7 ; permission existante en base).</summary>
+        public const string Update = "finance.update";
 
         // Finance & trésorerie — cockpit de pilotage (Phase 28 §32, §38)
         public const string ClosePeriod = "finance.close_period";

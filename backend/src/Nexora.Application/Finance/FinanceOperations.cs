@@ -32,6 +32,8 @@ public interface IFinanceOperations
 /// </summary>
 public interface IExpenseRegister
 {
+    /// <summary>Rattache l'écriture comptable à la pièce de dépense (phase 7).</summary>
+    Task LinkJournalEntryAsync(Guid expenseId, Guid journalEntryId, CancellationToken ct = default);
     Task RegisterPaidAsync(Guid expenseId, DateOnly date, decimal net, decimal tax, string currency,
         Guid financialAccountId, string? description, CancellationToken ct = default);
 }
@@ -88,7 +90,9 @@ public sealed class FinanceOperations(
                     new Money(r.NetAmount, r.Currency), new Money(r.TaxAmount, r.Currency),
                     r.TenderFinancialAccountId, expenseAccount) { UserId = tenant.UserId }, token);
                 // Écriture refusée → la pièce ne doit pas rester seule : annulation de la transaction.
-                return posted.IsSuccess ? posted : throw new ExpenseNotPostedException(posted.Error!);
+                if (!posted.IsSuccess) throw new ExpenseNotPostedException(posted.Error!);
+                await expenses.LinkJournalEntryAsync(r.ExpenseId, posted.Value!.JournalEntryId, token);
+                return posted;
             }, ct);
         }
         catch (ExpenseNotPostedException ex)
