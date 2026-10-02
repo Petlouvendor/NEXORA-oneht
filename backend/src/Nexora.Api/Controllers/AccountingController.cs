@@ -6,6 +6,7 @@ using Nexora.Application.Finance.Periods;
 using Nexora.Application.Finance.Reports;
 using Nexora.Application.Finance.Reversals;
 using Nexora.Application.Security;
+using Nexora.Domain.Common;
 using Nexora.Contracts.Finance;
 
 namespace Nexora.Api.Controllers;
@@ -52,7 +53,11 @@ public sealed class AccountingController(
     [RequirePermission(Permissions.Accounting.View)]
     public async Task<IActionResult> GeneralLedger(
         [FromQuery] string account, [FromQuery] DateOnly from, [FromQuery] DateOnly to, CancellationToken ct)
-        => Ok(await reports.GeneralLedgerAsync(account, from, to, ct));
+    {
+        // Compte inconnu : 404 explicite (une exception non gérée renvoyait une erreur 500).
+        try { return Ok(await reports.GeneralLedgerAsync(account, from, to, ct)); }
+        catch (InvalidOperationException ex) { throw new DomainException(Error.NotFound("accounting.account_not_found", ex.Message)); }
+    }
 
     [HttpGet("reports/income-statement")]
     [RequirePermission(Permissions.Accounting.View)]

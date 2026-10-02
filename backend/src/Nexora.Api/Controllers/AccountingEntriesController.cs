@@ -17,8 +17,9 @@ public sealed class AccountingEntriesController(IManualJournalService entries) :
 {
     [HttpGet]
     [RequirePermission(Permissions.Accounting.View)]
-    public async Task<IActionResult> List([FromQuery] string? status, [FromQuery] DateOnly? from, [FromQuery] DateOnly? to, CancellationToken ct)
-        => Ok(await entries.ListAsync(status, from, to, ct));
+    public async Task<IActionResult> List([FromQuery] string? status, [FromQuery] DateOnly? from, [FromQuery] DateOnly? to,
+        [FromQuery] string? journal, [FromQuery] string? q, [FromQuery] int limit = 200, CancellationToken ct = default)
+        => Ok(await entries.SearchAsync(status, from, to, journal, q, limit, ct));
 
     [HttpGet("{id:guid}")]
     [RequirePermission(Permissions.Accounting.View)]

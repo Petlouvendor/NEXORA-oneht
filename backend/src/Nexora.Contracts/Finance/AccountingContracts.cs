@@ -31,11 +31,15 @@ public sealed record JournalEntryLineDto(
     decimal Debit, decimal Credit, decimal BaseDebit, decimal BaseCredit,
     string? ThirdPartyType, Guid? ThirdPartyId, Guid? CostCenterId);
 
+/// <summary><c>TotalDebit</c> / <c>TotalCredit</c> sont dans la devise de l'écriture (<c>Currency</c>) ;
+/// <c>BaseTotal</c> = contre-valeur en devise de l'entreprise (<c>FunctionalCurrency</c>), celle de la balance.</summary>
 public sealed record JournalEntryDto(
     Guid Id, string JournalCode, string EntryNumber, DateOnly EntryDate, string Status, string Origin,
     string? Description, string Currency, decimal TotalDebit, decimal TotalCredit, bool IsBalanced,
     Guid? ReversalOfEntryId, DateTimeOffset? PostedAt, DateTimeOffset CreatedAt,
-    IReadOnlyList<JournalEntryLineDto> Lines);
+    IReadOnlyList<JournalEntryLineDto> Lines,
+    decimal BaseTotal = 0m, string? FunctionalCurrency = null, string? SourceType = null, Guid? SourceId = null,
+    string? CreatedByName = null, string? PostedByName = null, Guid? ReversedByEntryId = null);
 
 // --- Contrôles comptables (§47) ---------------------------------------
 
