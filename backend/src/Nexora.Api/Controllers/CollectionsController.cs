@@ -49,6 +49,26 @@ public sealed class CollectionsController(CollectionsService collections, ICredi
     public async Task<IActionResult> SettlePromise(Guid id, CancellationToken ct)
         => FromResult(await collections.SettlePromiseAsync(id, ct));
 
+    [HttpPost("promises/{id:guid}/cancel")]
+    [RequirePermission(Permissions.Credit.Collect)]
+    public async Task<IActionResult> CancelPromise(Guid id, [FromBody] CancelPromiseRequest r, CancellationToken ct)
+        => FromResult(await collections.CancelPromiseAsync(id, r, ct));
+
+    // --- Phase 9 : dossier client, agenda, radiations ----------------
+    [HttpGet("customers/{customerId:guid}/receivables")]
+    [RequirePermission(Permissions.Credit.ViewPortfolio)]
+    public async Task<IActionResult> Receivables(Guid customerId, [FromQuery] bool onlyOpen = true, CancellationToken ct = default)
+        => Ok(await queries.ReceivablesAsync(customerId, onlyOpen, ct));
+
+    [HttpGet("follow-ups")]
+    [RequirePermission(Permissions.Credit.ViewPortfolio)]
+    public async Task<IActionResult> FollowUps(CancellationToken ct) => Ok(await queries.FollowUpsAsync(ct));
+
+    [HttpGet("write-offs")]
+    [RequirePermission(Permissions.Credit.ViewPortfolio)]
+    public async Task<IActionResult> WriteOffs([FromQuery] Guid? customerId, CancellationToken ct)
+        => Ok(await queries.WriteOffsAsync(customerId, ct));
+
     // --- Litiges (§25) --------------------------------------------
     [HttpGet("disputes")]
     [RequirePermission(Permissions.Credit.ViewPortfolio)]
