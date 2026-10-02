@@ -160,40 +160,59 @@ public sealed class SqlManualJournalService(
 
     private sealed record EntryHead(
         Guid Id, string JournalCode, string EntryNumber, DateOnly EntryDate, string Status, string Origin,
-        string? Description, string Currency, Guid? ReversalOfEntryId, DateTimeOffset? PostedAt, DateTimeOffset CreatedAt);
+        string? Description, string Currency, Guid? ReversalOfEntryId, DateTimeOffset? PostedAt, DateTimeOffset CreatedAt,
+        string? SourceType, Guid? SourceId, string? CreatedByName, string? PostedByName, Guid? ReversedByEntryId);
     private sealed record LineRow(
         int LineNumber, string AccountCode, string AccountName, string? Description,
         decimal Debit, decimal Credit, decimal BaseDebit, decimal BaseCredit,
         string? ThirdPartyType, Guid? ThirdPartyId, Guid? CostCenterId);
 
-    public async Task<IReadOnlyList<JournalEntryDto>> ListAsync(string? status, DateOnly? from, DateOnly? to, CancellationToken ct = default)
+    public Task<IReadOnlyList<JournalEntryDto>> ListAsync(string? status, DateOnly? from, DateOnly? to, CancellationToken ct = default)
+        => SearchAsync(status, from, to, null, null, 200, ct);
+
+    /// <summary>Phase 7-8 : recherche par journal et par texte (numéro, libellé), jusqu'à 500 écritures.</summary>
+    public async Task<IReadOnlyList<JournalEntryDto>> SearchAsync(string? status, DateOnly? from, DateOnly? to,
+        string? journal, string? q, int limit, CancellationToken ct = default)
     {
+        limit = Math.Clamp(limit, 1, 500);
+        var term = string.IsNullOrWhiteSpace(q) ? null : q.Trim();
+        var func = await currency.FunctionalCurrencyAsync(ct);
         var heads = await db.Database.SqlQuery<EntryHead>($"""
             SELECT e.id AS "Id", j.code AS "JournalCode", e.entry_number AS "EntryNumber", e.entry_date AS "EntryDate",
                    e.status AS "Status", e.origin AS "Origin", e.description AS "Description",
                    COALESCE((SELECT cur.code FROM nexora.journal_entry_line jl
                              JOIN nexora.currency cur ON cur.id = jl.currency_id
-                             WHERE jl.journal_entry_id = e.id LIMIT 1), 'HTG') AS "Currency",
+                             WHERE jl.journal_entry_id = e.id LIMIT 1), {func}) AS "Currency",
                    e.reversal_of_entry_id AS "ReversalOfEntryId",
-                   e.posted_at AS "PostedAt", e.created_at AS "CreatedAt"
+                   e.posted_at AS "PostedAt", e.created_at AS "CreatedAt",
+                   e.source_type AS "SourceType", e.source_id AS "SourceId",
+                   cu.full_name AS "CreatedByName", pu.full_name AS "PostedByName",
+                   (SELECT r.id FROM nexora.journal_entry r WHERE r.reversal_of_entry_id = e.id LIMIT 1) AS "ReversedByEntryId"
             FROM nexora.journal_entry e JOIN nexora.journal j ON j.id = e.journal_id
+            LEFT JOIN nexora.app_user cu ON cu.id = e.created_by
+            LEFT JOIN nexora.app_user pu ON pu.id = e.posted_by
             WHERE e.company_id = {Company}
               AND ({status}::text IS NULL OR e.status = {status})
               AND ({from}::date IS NULL OR e.entry_date >= {from})
               AND ({to}::date IS NULL OR e.entry_date <= {to})
+              AND ({journal}::text IS NULL OR j.code = {journal})
+              AND ({term}::text IS NULL OR e.entry_number ILIKE '%' || {term} || '%' OR e.description ILIKE '%' || {term} || '%'
+                   OR EXISTS(SELECT 1 FROM nexora.journal_entry_line sl JOIN nexora.account sa ON sa.id = sl.account_id
+                             WHERE sl.journal_entry_id = e.id AND sa.code ILIKE {term} || '%'))
             ORDER BY e.entry_date DESC, e.created_at DESC
-            LIMIT 200
+            LIMIT {limit}
             """).ToListAsync(ct);
 
         var result = new List<JournalEntryDto>();
-        foreach (var h in heads) result.Add(await HydrateAsync(h, ct));
+        foreach (var h in heads) result.Add(await HydrateAsync(h, func, ct));
         return result;
     }
 
     public async Task<Result<JournalEntryDto>> GetAsync(Guid id, CancellationToken ct = default)
     {
         var h = await HeadAsync(id, ct);
-        return h is null ? Error.NotFound("accounting.entry_not_found", "Écriture introuvable.") : Result.Success(await HydrateAsync(h, ct));
+        return h is null ? Error.NotFound("accounting.entry_not_found", "Écriture introuvable.")
+            : Result.Success(await HydrateAsync(h, await currency.FunctionalCurrencyAsync(ct), ct));
     }
 
     public async Task<Result<Guid>> CreateDraftAsync(CreateJournalEntryRequest r, CancellationToken ct = default)
@@ -298,8 +317,10 @@ public sealed class SqlManualJournalService(
             SELECT code AS "Value" FROM nexora.journal WHERE id = {entry.JournalId}
             """).FirstAsync(ct);
         var codeById = await AccountCodesAsync(entry.Lines.Select(l => l.AccountId).ToArray(), ct);
+        // Devise réelle de l'écriture (elle était figée à « HTG » pour les contrôles).
+        var entryCurrency = (await HeadAsync(id, ct))!.Currency;
 
-        var req = new CreateJournalEntryRequest(journalCode, entry.EntryDate, "HTG", entry.Description,
+        var req = new CreateJournalEntryRequest(journalCode, entry.EntryDate, entryCurrency, entry.Description,
             entry.Lines.OrderBy(l => l.LineNumber).Select(l => new JournalEntryLineInput(
                 codeById.GetValueOrDefault(l.AccountId, "?"), l.Debit, l.Credit, l.Description,
                 l.ThirdPartyType, l.ThirdPartyId, l.CostCenterId)).ToList());
@@ -344,6 +365,20 @@ public sealed class SqlManualJournalService(
             SELECT id AS "Value" FROM nexora.journal WHERE company_id = {Company} AND code = {r.JournalCode} AND status = 'active'
             """).FirstOrDefaultAsync(ct);
         if (journalId == Guid.Empty) return Error.Validation("accounting.journal_unknown", $"Journal « {r.JournalCode} » introuvable.");
+        // Phase 8 : ligne invalide refusée avant écriture (la base renvoyait son message brut en 409).
+        var invalid = r.Lines.Select((l, i) => (l, i)).FirstOrDefault(x =>
+            x.l.Debit < 0m || x.l.Credit < 0m || (x.l.Debit == 0m) == (x.l.Credit == 0m));
+        if (invalid.l is not null)
+            return Error.Validation("accounting.line_amount",
+                $"Ligne {invalid.i + 1} : saisissez un montant positif au débit OU au crédit (pas les deux, pas zéro).");
+        if (r.Lines.Any(l => string.IsNullOrWhiteSpace(l.AccountCode)))
+            return Error.Validation("accounting.account_required", "Chaque ligne doit indiquer un compte.");
+        if (r.EntryDate > DateOnly.FromDateTime(DateTime.UtcNow).AddDays(1))
+            return Error.Validation("accounting.future_date", "La date de l'écriture ne peut être dans le futur.");
+        var currencyKnown = await db.Database.SqlQuery<bool>($"""
+            SELECT EXISTS(SELECT 1 FROM nexora.currency WHERE code = {r.Currency}) AS "Value"
+            """).FirstAsync(ct);
+        if (!currencyKnown) return Error.Validation("accounting.currency_unknown", $"Devise « {r.Currency} » inconnue.");
         var missing = new List<string>();
         foreach (var code in r.Lines.Select(l => l.AccountCode).Distinct())
         {
@@ -355,6 +390,14 @@ public sealed class SqlManualJournalService(
         }
         if (missing.Count > 0)
             return Error.Validation("accounting.account_unknown", $"Compte(s) inconnu(s) / non postable(s) : {string.Join(", ", missing)}.");
+        try
+        {
+            await periods.ResolveOpenPeriodAsync(r.EntryDate, ct);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Error.Validation("accounting.period_closed", ex.Message);
+        }
         return null;
     }
 
@@ -435,14 +478,21 @@ public sealed class SqlManualJournalService(
                    e.status AS "Status", e.origin AS "Origin", e.description AS "Description",
                    COALESCE((SELECT cur.code FROM nexora.journal_entry_line jl
                              JOIN nexora.currency cur ON cur.id = jl.currency_id
-                             WHERE jl.journal_entry_id = e.id LIMIT 1), 'HTG') AS "Currency",
+                             WHERE jl.journal_entry_id = e.id LIMIT 1),
+                            (SELECT cur.code FROM nexora.company co JOIN nexora.currency cur ON cur.id = co.default_currency_id
+                             WHERE co.id = e.company_id)) AS "Currency",
                    e.reversal_of_entry_id AS "ReversalOfEntryId",
-                   e.posted_at AS "PostedAt", e.created_at AS "CreatedAt"
+                   e.posted_at AS "PostedAt", e.created_at AS "CreatedAt",
+                   e.source_type AS "SourceType", e.source_id AS "SourceId",
+                   cu.full_name AS "CreatedByName", pu.full_name AS "PostedByName",
+                   (SELECT r.id FROM nexora.journal_entry r WHERE r.reversal_of_entry_id = e.id LIMIT 1) AS "ReversedByEntryId"
             FROM nexora.journal_entry e JOIN nexora.journal j ON j.id = e.journal_id
+            LEFT JOIN nexora.app_user cu ON cu.id = e.created_by
+            LEFT JOIN nexora.app_user pu ON pu.id = e.posted_by
             WHERE e.id = {id} AND e.company_id = {Company}
             """).FirstOrDefaultAsync(ct);
 
-    private async Task<JournalEntryDto> HydrateAsync(EntryHead h, CancellationToken ct)
+    private async Task<JournalEntryDto> HydrateAsync(EntryHead h, string functional, CancellationToken ct)
     {
         var lines = await db.Database.SqlQuery<LineRow>($"""
             SELECT l.line_number AS "LineNumber", a.code AS "AccountCode", a.name AS "AccountName", l.description AS "Description",
@@ -453,15 +503,19 @@ public sealed class SqlManualJournalService(
             ORDER BY l.line_number
             """).ToListAsync(ct);
 
-        var td = lines.Sum(l => l.BaseDebit);
-        var tc = lines.Sum(l => l.BaseCredit);
+        // Totaux dans la devise de l'écriture (10 USD restait affiché « 1 350 USD ») ; équilibre jugé sur la contre-valeur.
+        var td = lines.Sum(l => l.Debit);
+        var tc = lines.Sum(l => l.Credit);
+        var bd = lines.Sum(l => l.BaseDebit);
+        var bc = lines.Sum(l => l.BaseCredit);
         return new JournalEntryDto(
             h.Id, h.JournalCode, h.EntryNumber, h.EntryDate, h.Status, h.Origin, h.Description, h.Currency,
-            Math.Round(td, 2), Math.Round(tc, 2), lines.Count >= 2 && Math.Round(td, 2) == Math.Round(tc, 2),
+            Math.Round(td, 2), Math.Round(tc, 2), lines.Count >= 2 && Math.Round(bd, 2) == Math.Round(bc, 2),
             h.ReversalOfEntryId, h.PostedAt, h.CreatedAt,
             lines.Select(l => new JournalEntryLineDto(
                 l.LineNumber, l.AccountCode, l.AccountName, l.Description, l.Debit, l.Credit,
-                l.BaseDebit, l.BaseCredit, l.ThirdPartyType, l.ThirdPartyId, l.CostCenterId)).ToList());
+                l.BaseDebit, l.BaseCredit, l.ThirdPartyType, l.ThirdPartyId, l.CostCenterId)).ToList(),
+            Math.Round(bd, 2), functional, h.SourceType, h.SourceId, h.CreatedByName, h.PostedByName, h.ReversedByEntryId);
     }
 
     private async Task<Dictionary<Guid, string>> AccountCodesAsync(Guid[] ids, CancellationToken ct)

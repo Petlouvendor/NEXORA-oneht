@@ -59,6 +59,14 @@ export interface JournalEntry {
   postedAt: string | null;
   createdAt: string;
   lines: JournalEntryLine[];
+  /** Contre-valeur en devise de l'entreprise (celle de la balance). */
+  baseTotal: number;
+  functionalCurrency: string | null;
+  sourceType: string | null;
+  sourceId: string | null;
+  createdByName: string | null;
+  postedByName: string | null;
+  reversedByEntryId: string | null;
 }
 
 export interface AccountingControl {
@@ -120,6 +128,16 @@ export const getTrialBalance = (asOf: string) => apiFetch<TrialBalance>(`/trial-
 
 export const listEntries = (status?: string) =>
   apiFetch<JournalEntry[]>(`/accounting-entries${status ? `?status=${status}` : ""}`);
+
+export interface EntryFilters { status?: string; from?: string; to?: string; journal?: string; q?: string; limit?: number }
+const qs = (o: Record<string, string | number | undefined>) => {
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries(o)) if (v !== undefined && v !== "") p.set(k, String(v));
+  const s = p.toString();
+  return s ? `?${s}` : "";
+};
+/** Recherche d'écritures : statut, période, journal, texte (n°, libellé, compte). */
+export const searchEntries = (f: EntryFilters) => apiFetch<JournalEntry[]>(`/accounting-entries${qs({ ...f })}`);
 export const getEntry = (id: string) => apiFetch<JournalEntry>(`/accounting-entries/${id}`);
 
 export const createDraft = (input: {
@@ -135,6 +153,9 @@ export const postEntry = (id: string) =>
     `/accounting-entries/${id}/post`,
     { method: "POST", idempotencyKey: uuid() },
   );
+
+export const updateDraft = (id: string, input: Parameters<typeof createDraft>[0]) =>
+  apiFetch<void>(`/accounting-entries/${id}`, { method: "PUT", body: JSON.stringify(input) });
 
 export const deleteDraft = (id: string) =>
   apiFetch<void>(`/accounting-entries/${id}`, { method: "DELETE" });
@@ -159,3 +180,62 @@ export const generateOpeningBalances = (targetPeriodId: string, fromPeriodId: st
     `/accounting-periods/${targetPeriodId}/opening-balances`,
     { method: "POST", body: JSON.stringify({ fromPeriodId }) },
   );
+
+// --- Phase 8 (finalisation) : plan comptable, états, périodes ----------------------------------
+
+export const ACCOUNT_TYPES: Record<string, string> = {
+  asset: "Actif", liability: "Passif", equity: "Capitaux propres", revenue: "Produit", expense: "Charge",
+};
+
+export interface ChartAccount {
+  id: string;
+  code: string;
+  name: string;
+  accountType: string;
+  isPostable: boolean;
+  status: string;
+  parentAccountId: string | null;
+  parentCode: string | null;
+  currency: string | null;
+  /** Solde débiteur (+) / créditeur (−) en devise de l'entreprise, écritures validées. */
+  balance: number;
+  lineCount: number;
+  usedBy: string[];
+}
+export interface SaveChartAccount {
+  code: string; name: string; accountType: string; isPostable: boolean; parentAccountId: string | null; currency: string | null;
+}
+export interface CurrencyOption { code: string; name: string; isCompanyDefault: boolean }
+
+export const listChartAccounts = () => apiFetch<ChartAccount[]>("/accounts/manage");
+export const listAccountingCurrencies = () => apiFetch<CurrencyOption[]>("/accounting-currencies");
+export const createChartAccount = (body: SaveChartAccount) =>
+  apiFetch<string>("/accounts", { method: "POST", body: JSON.stringify(body) });
+export const updateChartAccount = (id: string, body: SaveChartAccount) =>
+  apiFetch<void>(`/accounts/${id}`, { method: "PUT", body: JSON.stringify(body) });
+export const setChartAccountStatus = (id: string, status: "active" | "inactive", reason: string) =>
+  apiFetch<void>(`/accounts/${id}/status`, { method: "POST", body: JSON.stringify({ status, reason }) });
+
+export interface LedgerLine {
+  date: string; entryNumber: string; journal: string; description: string | null;
+  debit: number; credit: number; runningBalance: number;
+}
+export interface GeneralLedger {
+  accountCode: string; accountName: string; from: string; to: string;
+  openingBalance: number; lines: LedgerLine[]; closingBalance: number;
+}
+export const getGeneralLedger = (account: string, from: string, to: string) =>
+  apiFetch<GeneralLedger>(`/general-ledger${qs({ account, from, to })}`);
+
+export interface StatementSection { title: string; lines: Array<{ label: string; amount: number }>; subtotal: number }
+export interface IncomeStatement { from: string; to: string; currency: string; revenue: StatementSection; expenses: StatementSection; netResult: number }
+export interface BalanceSheet {
+  asOf: string; currency: string; assets: StatementSection; liabilities: StatementSection; equity: StatementSection;
+  result: number; isBalanced: boolean;
+}
+export const getFinancialStatements = (from: string, to: string) =>
+  apiFetch<{ incomeStatement: IncomeStatement; balanceSheet: BalanceSheet }>(`/financial-statements${qs({ from, to })}`);
+
+export const closePeriod = (id: string) => apiFetch<void>(`/accounting-periods/${id}/close`, { method: "POST" });
+export const reopenPeriod = (id: string, reason: string) =>
+  apiFetch<void>(`/accounting-periods/${id}/reopen`, { method: "POST", body: JSON.stringify({ reason, reversalDate: null }) });

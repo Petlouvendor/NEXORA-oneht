@@ -161,6 +161,7 @@ public static class DependencyInjection
         services.AddScoped<IPosOfflineService, Nexora.Infrastructure.Sales.SqlPosOfflineService>();
         services.AddScoped<Nexora.Application.Finance.ITreasuryManagementService, Nexora.Infrastructure.Finance.SqlTreasuryManagementService>();
         services.AddScoped<Nexora.Application.Finance.IExpenseService, Nexora.Infrastructure.Finance.SqlExpenseService>();
+        services.AddScoped<Nexora.Application.Finance.Ledger.IChartManagementService, Nexora.Infrastructure.Finance.SqlChartManagementService>();
         services.AddScoped<ISalesReturnStore, EfSalesReturnStore>();
         // Guide fonctionnel développeur — validations Manager au POS (§10, §12, §13, §20).
         services.AddScoped<IPosApprovalNotifier, PosApprovalNotifier>();
