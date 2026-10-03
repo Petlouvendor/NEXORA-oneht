@@ -270,4 +270,118 @@ public sealed class GedDocumentsTests(FinanceEngineFixture fx)
         confirmedByOther.IsSuccess.Should().BeTrue(confirmedByOther.Error?.Message);
         (await ged.GetAsync(docId)).Error!.Code.Should().Be("document.not_found");
     }
+
+    // ---- Finalisation phase 10 : document → demande → destinataire → signature / refus → archivage ----
+    private static readonly Guid Cashier = Guid.Parse("dce00000-0000-0000-0000-0000000000d3");
+
+    [Fact]
+    public async Task Signature_request_rules_turns_and_version_freeze()
+    {
+        await using var s = Scope();
+        var ged = For<IGedService>(s.ServiceProvider, Direction);
+        var sig = For<ISignatureService>(s.ServiceProvider, Direction);
+        var doc = (await ged.CreateAsync(new CreateDocumentRequest(
+            "Bail commercial", "contract", null, null, null, null, null, null, null, null, Base64("bail v1"), "application/pdf"))).Value!.Document;
+
+        (await sig.CandidatesAsync()).Should().Contain(c => c.Id == Compta).And.NotContain(c => c.Id == Cashier);
+        (await sig.RequestAsync(doc.Id, new CreateSignatureRequestRequest([new CreateSignerInput("user", Cashier, null, null, null, null)])))
+            .Error!.Code.Should().Be("signature.signer_not_allowed");
+        (await sig.RequestAsync(doc.Id, new CreateSignatureRequestRequest([
+            new CreateSignerInput("user", Compta, null, null, null, null), new CreateSignerInput("user", Compta, null, null, null, null)])))
+            .Error!.Code.Should().Be("signature.signer_duplicate");
+        (await sig.RequestAsync(doc.Id, new CreateSignatureRequestRequest([
+            new CreateSignerInput("user", Compta, null, null, null, DateTimeOffset.UtcNow.AddHours(-1))])))
+            .Error!.Code.Should().Be("signature.signer_due");
+
+        var req = await sig.RequestAsync(doc.Id, new CreateSignatureRequestRequest([
+            new CreateSignerInput("user", Compta, null, null, "Comptable", null),
+            new CreateSignerInput("external", null, "M. Bailleur", "bailleur@example.com", "Bailleur", null),
+        ], "Merci de signer avant vendredi"));
+        req.IsSuccess.Should().BeTrue(req.Error?.Message);
+        req.Value!.VersionNo.Should().Be(1);
+        req.Value.DocumentName.Should().Be("Bail commercial");
+        req.Value.CurrentSignerId.Should().Be(req.Value.Signers[0].Id);
+        req.Value.IsMyTurn.Should().BeFalse("c'est au comptable de signer, pas au demandeur");
+        (await sig.RequestAsync(doc.Id, new CreateSignatureRequestRequest([new CreateSignerInput("user", Direction, null, null, null, null)])))
+            .Error!.Code.Should().Be("signature.pending_exists");
+
+        // Le document en signature ne se déverrouille pas, ne s'archive pas, ne reçoit pas de nouvelle version.
+        (await ged.UnlockAsync(doc.Id)).Error!.Code.Should().Be("document.signing");
+        (await ged.ArchiveAsync(doc.Id)).Error!.Code.Should().Be("document.signing");
+        (await ged.AddVersionAsync(doc.Id, new AddDocumentVersionRequest(Base64("bail v2"), "application/pdf", "modif"))).Error!.Code.Should().Be("document.locked");
+
+        // Seul le signataire désigné signe pour lui-même ; le demandeur recueille la signature de l'externe.
+        (await sig.SignAsync(req.Value.Id, req.Value.Signers[0].Id, new SignDocumentRequest(null))).Error!.Code.Should().Be("signature.not_you");
+        await using (var s2 = Scope())
+        {
+            var asCompta = For<ISignatureService>(s2.ServiceProvider, Compta);
+            (await asCompta.ListAsync(null, mine: true)).Should().Contain(r => r.Id == req.Value.Id);
+            (await asCompta.SignAsync(req.Value.Id, req.Value.Signers[1].Id, new SignDocumentRequest(null))).Error!.Code.Should().Be("signature.order");
+            var first = await asCompta.SignAsync(req.Value.Id, req.Value.Signers[0].Id, new SignDocumentRequest("Lu et approuvé"));
+            first.IsSuccess.Should().BeTrue(first.Error?.Message);
+            first.Value!.Status.Should().Be("pending");
+        }
+        var done = await sig.SignAsync(req.Value.Id, req.Value.Signers[1].Id, new SignDocumentRequest("Signé en agence"));
+        done.IsSuccess.Should().BeTrue(done.Error?.Message);
+        done.Value!.Status.Should().Be("completed");
+        done.Value.Signers[1].RecordedByName.Should().NotBeNull("la signature de l'externe est recueillie, et le dossier le dit");
+
+        var signed = (await ged.GetAsync(doc.Id)).Value!;
+        signed.Status.Should().Be("signed");
+        (await ged.UnlockAsync(doc.Id)).Error!.Code.Should().Be("document.signed");
+        (await ged.ArchiveAsync(doc.Id)).IsSuccess.Should().BeTrue("un document signé s'archive");
+        (await ged.RestoreAsync(doc.Id)).Value!.Status.Should().Be("signed", "la restauration ne fait pas perdre le statut signé");
+
+        // La preuve porte sur la version demandée.
+        await using var c = new NpgsqlConnection(fx.TestConnectionString);
+        await c.OpenAsync();
+        await using var cmd = new NpgsqlCommand($"SELECT proof->>'mode' || '|' || (proof->>'documentVersion') FROM nexora.document_signer WHERE id = '{req.Value.Signers[1].Id}'", c);
+        ((string?)await cmd.ExecuteScalarAsync()).Should().Be("recorded_on_behalf|1");
+    }
+
+    [Fact]
+    public async Task Declined_cancelled_or_expired_request_releases_the_document()
+    {
+        await using var s = Scope();
+        var ged = For<IGedService>(s.ServiceProvider, Direction);
+        var sig = For<ISignatureService>(s.ServiceProvider, Direction);
+
+        var a = (await ged.CreateAsync(new CreateDocumentRequest(
+            "Avenant", "contract", null, null, null, null, null, null, null, null, Base64("avenant"), "application/pdf"))).Value!.Document;
+        var r1 = (await sig.RequestAsync(a.Id, new CreateSignatureRequestRequest([new CreateSignerInput("user", Direction, null, null, null, null)]))).Value!;
+        (await sig.DeclineAsync(r1.Id, r1.Signers[0].Id, "")).Error!.Code.Should().Be("signature.decline_reason");
+        var declined = await sig.DeclineAsync(r1.Id, r1.Signers[0].Id, "Clause 4 à revoir");
+        declined.Value!.Status.Should().Be("cancelled");
+        declined.Value.CancelledReason.Should().Contain("Clause 4");
+        (await ged.GetAsync(a.Id)).Value!.Locked.Should().BeFalse("un refus libère le document pour qu'on le corrige");
+        (await ged.AddVersionAsync(a.Id, new AddDocumentVersionRequest(Base64("avenant v2"), "application/pdf", "clause 4 corrigée"))).IsSuccess.Should().BeTrue();
+        (await sig.SignAsync(r1.Id, r1.Signers[0].Id, new SignDocumentRequest(null))).Error!.Code.Should().Be("signature.closed");
+
+        // Nouvelle demande sur la v2 ; un changement de version entre-temps rend la demande caduque.
+        var r2 = (await sig.RequestAsync(a.Id, new CreateSignatureRequestRequest([new CreateSignerInput("user", Direction, null, null, null, null)]))).Value!;
+        r2.VersionNo.Should().Be(2);
+        (await sig.CancelAsync(r2.Id, "")).Error!.Code.Should().Be("signature.cancel_reason");
+        (await sig.CancelAsync(r2.Id, "Mauvais signataire")).IsSuccess.Should().BeTrue();
+        (await ged.GetAsync(a.Id)).Value!.Locked.Should().BeFalse();
+
+        // Verrou posé pour une autre raison : il reste après l'annulation.
+        var b = (await ged.CreateAsync(new CreateDocumentRequest(
+            "Procès-verbal", "internal", null, null, null, null, null, null, null, null, Base64("pv"), "application/pdf"))).Value!.Document;
+        (await ged.LockAsync(b.Id, "Contrôle fiscal")).IsSuccess.Should().BeTrue();
+        var r3 = (await sig.RequestAsync(b.Id, new CreateSignatureRequestRequest([
+            new CreateSignerInput("user", Direction, null, null, null, DateTimeOffset.UtcNow.AddHours(1))]))).Value!;
+        await Sql($"UPDATE nexora.document_signer SET due_at = now() - interval '1 hour' WHERE signature_request_id = '{r3.Id}'");
+        (await sig.ExpireDueAsync()).Should().BeGreaterThanOrEqualTo(1);
+        (await sig.GetAsync(r3.Id)).Value!.Status.Should().Be("expired");
+        var still = (await ged.GetAsync(b.Id)).Value!;
+        still.Locked.Should().BeTrue();
+        still.LockedReason.Should().Be("Contrôle fiscal");
+
+        // Un document en revue doit d'abord être approuvé.
+        var c = (await ged.CreateAsync(new CreateDocumentRequest(
+            "Note interne", "internal", null, null, null, null, null, null, null, null, Base64("note"), "application/pdf"))).Value!.Document;
+        (await ged.SubmitForReviewAsync(c.Id)).IsSuccess.Should().BeTrue();
+        (await sig.RequestAsync(c.Id, new CreateSignatureRequestRequest([new CreateSignerInput("user", Direction, null, null, null, null)])))
+            .Error!.Code.Should().Be("signature.document_status");
+    }
 }

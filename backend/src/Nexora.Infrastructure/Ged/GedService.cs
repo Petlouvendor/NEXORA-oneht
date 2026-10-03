@@ -306,6 +306,16 @@ public sealed class SqlGedService(NexoraDbContext db, ITenantContext tenant, IUn
 
     public async Task<Result<GedDocumentDto>> UnlockAsync(Guid id, CancellationToken ct = default)
     {
+        // Un document signé, ou en cours de signature, ne se déverrouille pas : sinon une nouvelle version
+        // remplacerait le contenu signé (le verrou de signature tombe seul au refus, à l'annulation, à l'expiration).
+        var state = await db.Database.SqlQuery<string?>($"""
+            SELECT CASE WHEN d.status = 'signed' THEN 'signed'
+                        WHEN EXISTS(SELECT 1 FROM nexora.document_signature_request r WHERE r.document_id = d.id AND r.status = 'pending')
+                             THEN 'signing' END AS "Value"
+            FROM nexora.document d WHERE d.id = {id} AND d.company_id = {Company}
+            """).FirstOrDefaultAsync(ct);
+        if (state == "signed") return Error.Conflict("document.signed", "Un document signé ne peut pas être déverrouillé.");
+        if (state == "signing") return Error.Conflict("document.signing", "Document en cours de signature : annulez la demande pour le libérer.");
         var rows = await db.Database.ExecuteSqlAsync($"""
             UPDATE nexora.document SET locked = false, locked_reason = NULL, updated_at = now()
             WHERE id = {id} AND company_id = {Company}
@@ -319,6 +329,11 @@ public sealed class SqlGedService(NexoraDbContext db, ITenantContext tenant, IUn
 
     public async Task<Result<GedDocumentDto>> ArchiveAsync(Guid id, CancellationToken ct = default)
     {
+        if (await db.Database.SqlQuery<bool>($"""
+                SELECT EXISTS(SELECT 1 FROM nexora.document_signature_request
+                              WHERE document_id = {id} AND company_id = {Company} AND status = 'pending') AS "Value"
+                """).FirstAsync(ct))
+            return Error.Conflict("document.signing", "Document en cours de signature : attendez l'issue ou annulez la demande.");
         var rows = await db.Database.ExecuteSqlAsync($"""
             UPDATE nexora.document SET status = 'archived', updated_at = now()
             WHERE id = {id} AND company_id = {Company} AND status <> 'archived'
@@ -331,7 +346,10 @@ public sealed class SqlGedService(NexoraDbContext db, ITenantContext tenant, IUn
     public async Task<Result<GedDocumentDto>> RestoreAsync(Guid id, CancellationToken ct = default)
     {
         var rows = await db.Database.ExecuteSqlAsync($"""
-            UPDATE nexora.document SET status = 'approved', updated_at = now()
+            UPDATE nexora.document d
+               SET status = CASE WHEN EXISTS(SELECT 1 FROM nexora.document_signature_request r
+                                             WHERE r.document_id = d.id AND r.status = 'completed') THEN 'signed' ELSE 'approved' END,
+                   updated_at = now()
             WHERE id = {id} AND company_id = {Company} AND status = 'archived'
             """, ct);
         if (rows == 0) return Error.NotFound("document.not_found", "Document introuvable ou non archivé.");
