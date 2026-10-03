@@ -22,8 +22,13 @@ passaient par `window.prompt` ; il n'y avait ni agenda des relances ni dossier p
 | Pertes | créances passées en perte, avec leur écriture comptable |
 
 L'échéance d'une promesse est évaluée automatiquement par le planificateur (job `credit.settle_promises`), qui se
-déclenche aussi à la main depuis le centre d'exploitation. Plus aucun `window.prompt` dans toute l'application
-(le dernier, l'annulation d'un remboursement dans la fiche client, est remplacé par un dialogue motivé).
+déclenche aussi à la main depuis le centre d'exploitation. Plus aucun `window.prompt` dans le crédit ni dans la
+fiche client (l'annulation d'un remboursement passe par un dialogue motivé).
+
+> **Rectificatif (phase 10)** : ce rapport affirmait d'abord « plus aucun `window.prompt` dans toute l'application ».
+> C'était faux : la vérification ne cherchait que `window.prompt`, alors que plusieurs écrans appellent `prompt(`,
+> `alert(` ou `confirm(` sans préfixe (GED, continuité, sécurité, exploitation, terrain, BI…). L'inventaire complet
+> est tenu dans le rapport de la phase 10.
 
 ## 2. Fichiers créés
 
