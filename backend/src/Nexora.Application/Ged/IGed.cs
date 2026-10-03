@@ -66,7 +66,9 @@ public interface ISignatureService
 {
     Task<Result<SignatureRequestDto>> RequestAsync(Guid documentId, CreateSignatureRequestRequest request, CancellationToken ct = default);
     Task<Result<SignatureRequestDto>> GetAsync(Guid id, CancellationToken ct = default);
-    Task<IReadOnlyList<SignatureRequestDto>> ListAsync(string? status, CancellationToken ct = default);
+    /// <summary><paramref name="mine"/> : seulement les demandes où c'est le tour de l'utilisateur courant.</summary>
+    Task<IReadOnlyList<SignatureRequestDto>> ListAsync(string? status, bool mine = false, Guid? documentId = null, CancellationToken ct = default);
+    Task<IReadOnlyList<SignerCandidateDto>> CandidatesAsync(CancellationToken ct = default);
 
     /// <summary>Signe pour le signataire courant — l'ordre (§21) est respecté : un signataire ne peut
     /// signer que si tous ceux d'un rang antérieur ont déjà signé.</summary>

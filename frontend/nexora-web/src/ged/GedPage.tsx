@@ -1,41 +1,46 @@
 import { useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useAuth } from "@/auth/AuthContext";
-import { Card, Tabs } from "@/shared/ui";
-import { DocumentsSection, GedAuditSection, RetentionSection, SignaturesSection, WorkflowSection } from "@/ged/GedSections";
+import { useAsync } from "@/shared/useAsync";
+import { Card, KpiCard, Tabs } from "@/shared/ui";
+import { listSignatureRequests, listWorkflowQueue } from "@/ged/gedApi";
+import { GedAuditSection, LibrarySection, RetentionSection, ReviewSection, SignaturesSection } from "@/ged/GedSections";
 
-/** GED, documents, archivage & signature (Phase 45 §3-6, §13-31, §39, §45). */
+/** GED : bibliothèque versionnée, signatures (document → demande → destinataire → signature / refus → archivage),
+ * revue, rétention, audit. L'onglet suit l'URL (`?tab=signatures` depuis une notification). */
 export function GedPage() {
   const { hasPermission } = useAuth();
-  const [tab, setTab] = useState("library");
+  const [params, setParams] = useSearchParams();
+  const tab = params.get("tab") ?? "library";
+  const setTab = (t: string) => setParams((p) => { p.set("tab", t); return p; }, { replace: true });
+  const [version, setVersion] = useState(0);
+  const changed = () => setVersion((v) => v + 1);
+  const mine = useAsync(() => listSignatureRequests({ mine: true }), [version]);
+  const pending = useAsync(() => listSignatureRequests({ status: "pending" }), [version]);
+  const review = useAsync(listWorkflowQueue, [version]);
 
-  const canView = hasPermission("ged.view");
-  const canUpload = hasPermission("ged.upload");
-  const canManage = hasPermission("ged.manage");
-  const canSign = hasPermission("ged.sign");
-  const canManageRetention = hasPermission("ged.manage_retention");
+  if (!hasPermission("ged.view")) return <Card>La GED n'est pas accessible avec vos permissions.</Card>;
 
-  if (!canView) {
-    return <Card>La GED requiert la permission <code>ged.view</code>.</Card>;
-  }
-
+  const toSign = mine.data?.length ?? 0;
   return (
     <div style={{ display: "grid", gap: 16 }}>
       <h1 style={{ margin: 0 }}>Documents (GED)</h1>
-      <Tabs
-        tabs={[
-          { id: "library", label: "Bibliothèque" },
-          { id: "workflow", label: "Revue & approbation" },
-          { id: "signatures", label: "Signatures" },
-          { id: "retention", label: "Rétention & suppression" },
-          { id: "audit", label: "Audit" },
-        ]}
-        active={tab}
-        onChange={setTab}
-      />
-      {tab === "library" && <DocumentsSection canUpload={canUpload} canManage={canManage} />}
-      {tab === "workflow" && <WorkflowSection canManage={canManage} />}
-      {tab === "signatures" && <SignaturesSection canSign={canSign} />}
-      {tab === "retention" && <RetentionSection canManage={canManageRetention} />}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12 }}>
+        <KpiCard label="À signer par moi" value={String(toSign)} tone={toSign ? "warning" : undefined} />
+        <KpiCard label="Signatures en cours" value={String(pending.data?.length ?? 0)} />
+        <KpiCard label="Documents en revue" value={String(review.data?.length ?? 0)} />
+      </div>
+      <Tabs active={tab} onChange={setTab} tabs={[
+        { id: "library", label: "Bibliothèque" },
+        { id: "signatures", label: toSign ? `Signatures (${toSign} à signer)` : "Signatures" },
+        { id: "review", label: "Revue" },
+        { id: "retention", label: "Rétention & suppression" },
+        { id: "audit", label: "Audit" },
+      ]} />
+      {tab === "library" && <LibrarySection onChanged={changed} />}
+      {tab === "signatures" && <SignaturesSection onChanged={changed} />}
+      {tab === "review" && <ReviewSection onChanged={changed} />}
+      {tab === "retention" && <RetentionSection />}
       {tab === "audit" && <GedAuditSection />}
     </div>
   );

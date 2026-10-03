@@ -162,7 +162,14 @@ public sealed class GedController(
 
     [HttpGet("signature-requests")]
     [RequirePermission(Permissions.Ged.View)]
-    public async Task<IActionResult> SignatureRequests([FromQuery] string? status, CancellationToken ct) => Ok(await signatures.ListAsync(status, ct));
+    public async Task<IActionResult> SignatureRequests([FromQuery] string? status, [FromQuery] bool mine = false,
+        [FromQuery] Guid? documentId = null, CancellationToken ct = default)
+        => Ok(await signatures.ListAsync(status, mine, documentId, ct));
+
+    /// <summary>Phase 10 : utilisateurs pouvant être désignés signataires.</summary>
+    [HttpGet("signature-candidates")]
+    [RequirePermission(Permissions.Ged.Sign)]
+    public async Task<IActionResult> SignatureCandidates(CancellationToken ct) => Ok(await signatures.CandidatesAsync(ct));
 
     [HttpGet("signature-requests/{id:guid}")]
     [RequirePermission(Permissions.Ged.View)]
