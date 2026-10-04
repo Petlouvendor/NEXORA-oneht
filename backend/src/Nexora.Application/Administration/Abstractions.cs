@@ -24,6 +24,9 @@ public interface ICustomRoleService
     Task<Result> SetPermissionsAsync(Guid roleId, SetRolePermissionsRequest request, CancellationToken ct = default);
     Task<Result<RoleDto>> PreviewAsync(Guid roleId, CancellationToken ct = default);
     Task<Result> DisableAsync(Guid roleId, bool force, CancellationToken ct = default);
+    Task<Result> EnableAsync(Guid roleId, CancellationToken ct = default);
+    Task<Result> UpdateAsync(Guid roleId, UpdateRoleRequest request, CancellationToken ct = default);
+    Task<IReadOnlyList<PermissionCatalogDto>> PermissionCatalogAsync(CancellationToken ct = default);
 }
 
 /// <summary>
@@ -35,6 +38,7 @@ public interface ICustomRoleService
 public interface IWorkflowService
 {
     Task<IReadOnlyList<WorkflowDto>> ListAsync(CancellationToken ct = default);
+    Task<WorkflowCatalogDto> CatalogAsync(CancellationToken ct = default);
     Task<Result<Guid>> UpsertAsync(UpsertWorkflowRequest request, CancellationToken ct = default);
     Task<Result<WorkflowTestResult>> TestAsync(Guid workflowId, WorkflowTestRequest request, CancellationToken ct = default);
     Task<Result> ActivateAsync(Guid workflowId, CancellationToken ct = default);

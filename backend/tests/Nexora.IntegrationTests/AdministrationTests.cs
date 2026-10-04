@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Nexora.Application.Abstractions;
 using Nexora.Application.Administration;
 using Nexora.Application.Catalog;
+using Nexora.Application.Security;
 using Nexora.Contracts.Administration;
 using Nexora.Infrastructure.Persistence;
 
@@ -148,7 +149,7 @@ public sealed class AdministrationTests(FinanceEngineFixture fx)
             "all",
             [new WorkflowConditionDto("amount", "gt", J("3000"))],
             new WorkflowApprovalDto(1, "manager"),
-            ["notify_manager"], ["manager"]);
+            [], []);   // finalisation phase 11 : actions / notifications non exécutées → refusées
         var id = (await wf.UpsertAsync(new UpsertWorkflowRequest(code, "Approbation remise", "discount_applied", def))).Value;
 
         (await wf.ActivateAsync(id)).IsSuccess.Should().BeFalse();   // pas encore testé (§16)
@@ -255,5 +256,112 @@ public sealed class AdministrationTests(FinanceEngineFixture fx)
         task.Should().NotBeNull();
         task!.Count.Should().BeGreaterThanOrEqualTo(1);
         task.Severity.Should().Be("warning");
+    }
+
+    // ---- Finalisation phase 11 : rôles — moindre privilège, rôle inactif sans effet ----
+    [Fact]
+    public async Task Role_cannot_grant_what_the_admin_does_not_hold_and_a_disabled_role_grants_nothing()
+    {
+        await using var s = Scope();
+        var roles = s.ServiceProvider.GetRequiredService<ICustomRoleService>();
+        var perms = s.ServiceProvider.GetRequiredService<IPermissionService>();
+
+        (await roles.CreateAsync(new CreateRoleRequest($"Escalade {Guid.NewGuid():N}"[..20], null, null, ["sales.view", "platform.manage_billing"])))
+            .Error!.Code.Should().Be("roles.escalation");
+        var id = (await roles.CreateAsync(new CreateRoleRequest($"Magasin {Guid.NewGuid():N}"[..20], "Manager magasin", null,
+            ["sales.view", "sales.create", "inventory.view"]))).Value;
+        (await roles.SetPermissionsAsync(id, new SetRolePermissionsRequest(["sales.view", "platform.manage_billing"])))
+            .Error!.Code.Should().Be("roles.escalation", "élargir un rôle (peut-être le sien) au-delà de ses propres droits est refusé");
+        (await roles.SetPermissionsAsync(id, new SetRolePermissionsRequest([]))).Error!.Code.Should().Be("roles.permission");
+        (await roles.SetPermissionsAsync(id, new SetRolePermissionsRequest(["sales.view", "sales.create"]))).IsSuccess.Should().BeTrue();
+
+        (await roles.UpdateAsync(id, new UpdateRoleRequest("manager", null))).Error!.Code.Should().Be("roles.duplicate", "nom d'un rôle système");
+        (await roles.UpdateAsync(id, new UpdateRoleRequest($"Responsable magasin {Guid.NewGuid():N}"[..28], "Ventes"))).IsSuccess.Should().BeTrue();
+
+        var list = await roles.ListAsync();
+        list.Should().Contain(r => r.Name == "manager" && r.SystemRole, "les rôles système sont visibles (base de copie)");
+        list.Should().NotContain(r => r.Name.StartsWith("platform_"));
+        var system = list.First(r => r.Name == "manager");
+        (await roles.SetPermissionsAsync(system.Id, new SetRolePermissionsRequest(["sales.view"]))).IsSuccess.Should().BeFalse();
+        (await roles.PermissionCatalogAsync()).Count.Should().BeGreaterThan(100);
+
+        // Affecté à un utilisateur : désactivé (confirmé), il ne donne plus aucune permission.
+        var user = Guid.NewGuid();
+        var scopeId = Guid.NewGuid();
+        await Exec($"""
+            INSERT INTO nexora.app_user (id, email, full_name, password_hash, status)
+            VALUES ('{user}', 'mag-{user:N}@test.local', 'Test Magasin', 'x', 'active');
+            INSERT INTO nexora.access_scope (id, scope_type, company_id) VALUES ('{scopeId}', 'COMPANY', '{Company}');
+            INSERT INTO nexora.user_role (user_id, role_id, scope_id) VALUES ('{user}', '{id}', '{scopeId}');
+            """);
+        (await perms.LoadProfileAsync(user)).PermissionsFor(Company).Should().Contain("sales.create");
+        (await roles.DisableAsync(id, force: false)).Error!.Code.Should().Be("roles.assigned");
+        (await roles.DisableAsync(id, force: true)).IsSuccess.Should().BeTrue();
+        (await perms.LoadProfileAsync(user)).PermissionsFor(Company).Should().NotContain("sales.create");
+        (await roles.EnableAsync(id)).IsSuccess.Should().BeTrue();
+        (await perms.LoadProfileAsync(user)).PermissionsFor(Company).Should().Contain("sales.create");
+    }
+
+    // ---- Finalisation phase 11 : workflow — validation, seuil réel, désactivation effective, rôle approbateur imposé ----
+    [Fact]
+    public async Task Workflow_rules_threshold_deactivation_and_required_approver_role()
+    {
+        await using var s = Scope();
+        var wf = s.ServiceProvider.GetRequiredService<IWorkflowService>();
+        var approvals = s.ServiceProvider.GetRequiredService<IApprovalWorkflowService>();
+        var tc = (TestTenantContext)s.ServiceProvider.GetRequiredService<ITenantContext>();
+        var code = $"credit-{Guid.NewGuid():N}"[..16];
+        WorkflowDefinitionDto Def(string op, string value, WorkflowApprovalDto? appr, IReadOnlyList<string>? actions = null)
+            => new("all", [new WorkflowConditionDto("amount", op, J(value))], appr, actions ?? [], []);
+
+        (await wf.CatalogAsync()).Triggers.Should().Contain(t => t.Key == "credit_sale" && t.Automatic);
+        (await wf.UpsertAsync(new UpsertWorkflowRequest(code, "x", "pluie", Def("gte", "100", new(1, "manager"))))).Error!.Code.Should().Be("workflow.trigger");
+        (await wf.UpsertAsync(new UpsertWorkflowRequest(code, "x", "credit_sale", Def("gte", "100", null)))).Error!.Code.Should().Be("workflow.approval");
+        (await wf.UpsertAsync(new UpsertWorkflowRequest(code, "x", "credit_sale", Def("gte", "100", new(1, "inexistant"))))).Error!.Code.Should().Be("workflow.approver_role");
+        (await wf.UpsertAsync(new UpsertWorkflowRequest(code, "x", "credit_sale", Def("gte", "100", new(1, "manager"), ["envoyer_sms"])))).Error!.Code.Should().Be("workflow.actions");
+        (await wf.UpsertAsync(new UpsertWorkflowRequest(code, "x", "credit_sale",
+            new WorkflowDefinitionDto("all", [new WorkflowConditionDto("customer_type", "eq", J("\"vip\""))], new(1, "manager"), [], []))))
+            .Error!.Code.Should().Be("workflow.condition", "les opérations réelles ne connaissent que le montant");
+
+        var id = (await wf.UpsertAsync(new UpsertWorkflowRequest(code, "Crédit hors limite", "credit_sale", Def("gte", "50000", new(1, "chief_accountant"))))).Value;
+        (await wf.TestAsync(id, new WorkflowTestRequest(J("""{"amount":60000}""")))).Value!.Matched.Should().BeTrue();
+        (await wf.ActivateAsync(id)).IsSuccess.Should().BeTrue();
+        (await Scalar($"SELECT min_amount::text || '|' || status FROM nexora.approval_policy WHERE configuration->>'workflow' = '{code}'"))
+            .Should().Be("50000.0000|active", "le seuil du workflow devient celui de la règle réellement appliquée");
+        (await wf.UpsertAsync(new UpsertWorkflowRequest(code, "Crédit", "credit_sale", Def("gte", "1", new(1, "manager"))))).Error!.Code.Should().Be("workflow.active");
+
+        // Rôle approbateur imposé : Direction (owner_direction) n'est pas « chief_accountant ».
+        tc.SetUser(ChiefAccountant);
+        var req = await approvals.SubmitAsync(new Nexora.Contracts.Security.SubmitApprovalRequest("credit_sale", "test", Guid.NewGuid(), 60000m, "test"));
+        req.Value!.ApprovalRequired.Should().BeTrue();
+        tc.SetUser(Direction);
+        (await approvals.DecideAsync(req.Value.RequestId!.Value, new Nexora.Contracts.Security.ApprovalDecisionRequest(true, "ok")))
+            .Error!.Code.Should().Be("security.approver_role");
+
+        // Désactivé : la règle cesse de s'appliquer aux opérations réelles.
+        (await wf.SetStatusAsync(id, "inactive")).IsSuccess.Should().BeTrue();
+        (await Scalar($"SELECT status FROM nexora.approval_policy WHERE configuration->>'workflow' = '{code}'")).Should().Be("inactive");
+        (await wf.UpsertAsync(new UpsertWorkflowRequest(code, "Crédit hors limite", "credit_sale", Def("gt", "70000", new(2, "chief_accountant"))))).IsSuccess.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Automation_without_an_executor_cannot_be_created()
+    {
+        await using var s = Scope();
+        var autos = s.ServiceProvider.GetRequiredService<IAutomationService>();
+        (await autos.UpsertAsync(new UpsertAutomationRequest($"rep-{Guid.NewGuid():N}"[..14], "Rapport", "scheduled_report",
+            J("""{"frequency":"daily"}"""), J("{}")))).Error!.Code.Should().Be("automation.kind");
+        (await autos.UpsertAsync(new UpsertAutomationRequest($"exp-{Guid.NewGuid():N}"[..14], "Péremption", "expiry_alert",
+            J("{}"), J("""{"withinDays":15}""")))).Error!.Code.Should().Be("automation.schedule");
+        (await autos.UpsertAsync(new UpsertAutomationRequest($"exp-{Guid.NewGuid():N}"[..14], "Péremption", "expiry_alert",
+            J("""{"frequency":"weekly"}"""), J("""{"withinDays":15}""")))).IsSuccess.Should().BeTrue();
+    }
+
+    private async Task<string?> Scalar(string sql)
+    {
+        await using var c = new Npgsql.NpgsqlConnection(fx.TestConnectionString);
+        await c.OpenAsync();
+        await using var cmd = new Npgsql.NpgsqlCommand(sql, c);
+        return (await cmd.ExecuteScalarAsync())?.ToString();
     }
 }
