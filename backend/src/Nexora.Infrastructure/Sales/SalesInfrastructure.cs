@@ -251,6 +251,7 @@ public sealed class EfSalesStore(NexoraDbContext db, ITenantContext tenant) : IS
         => db.Sales.AsNoTracking().Include(s => s.Lines).FirstOrDefaultAsync(s => s.Id == saleId, ct);
 
     public async Task AddSaleAsync(Sale sale, CancellationToken ct = default) => await db.Sales.AddAsync(sale, ct);
+    public async Task AddSaleLinesAsync(IReadOnlyList<SaleLine> lines, CancellationToken ct = default) => await db.SaleLines.AddRangeAsync(lines, ct);
     public async Task AddPaymentAsync(Payment payment, CancellationToken ct = default) => await db.Payments.AddAsync(payment, ct);
     public async Task AddSalePaymentAsync(SalePayment link, CancellationToken ct = default) => await db.SalePayments.AddAsync(link, ct);
     public async Task AddSalePromotionAsync(SalePromotion promo, CancellationToken ct = default) => await db.SalePromotions.AddAsync(promo, ct);

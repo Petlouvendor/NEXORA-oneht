@@ -11,7 +11,7 @@ export function NexoraAiButton() {
   return (
     <button type="button" className="nx-iconbtn nx-ai-launch" onClick={() => openNexoraAi()}
             aria-label="Ouvrir NEXORA AI (Ctrl+J)" title="NEXORA AI (Ctrl+J)">
-      <Icon.Sparkles size={15} /> <span>NEXORA AI</span>
+      <Icon.Sparkles size={15} /> <span className="nx-hide-sm">NEXORA AI</span>
     </button>
   );
 }

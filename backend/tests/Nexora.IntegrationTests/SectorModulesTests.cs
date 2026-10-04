@@ -236,4 +236,95 @@ public sealed class SectorModulesTests(FinanceEngineFixture fx)
         var fields = await s2.ServiceProvider.GetRequiredService<ICustomFieldService>().ListAsync("product");
         fields.Should().NotContain(f => f.FieldKey == key);
     }
+
+    // ---- Finalisation phase 13 : salle, vagues, précisions, annulation, règlement idempotent, recettes contrôlées ----
+    [Fact]
+    public async Task Restaurant_order_lifecycle_adds_items_keeps_modifiers_and_settles_once()
+    {
+        await using var s = Scope();
+        var sp = s.ServiceProvider;
+        var restaurant = sp.GetRequiredService<IRestaurantService>();
+        var db = sp.GetRequiredService<NexoraDbContext>();
+        (await sp.GetRequiredService<ISectorConfigService>().SetModuleAsync(new SetModuleRequest("restaurant", true))).IsSuccess.Should().BeTrue();
+        var dish = await SellableProduct(sp, "service", "BOISSON", price: 100m);
+
+        var code = $"Z-{Guid.NewGuid():N}"[..8];
+        var area = (await restaurant.CreateAreaAsync(new CreateAreaRequest(Establishment, "Terrasse", code))).Value;
+        (await restaurant.CreateAreaAsync(new CreateAreaRequest(Establishment, "Doublon", code.ToLowerInvariant()))).Error!.Code.Should().Be("restaurant.code_exists");
+        (await restaurant.CreateTableAsync(new CreateTableRequest(Establishment, area, "T", $"X-{Guid.NewGuid():N}"[..8], 0))).Error!.Code.Should().Be("restaurant.seats");
+        var table = (await restaurant.CreateTableAsync(new CreateTableRequest(Establishment, area, "Table 9", $"T-{Guid.NewGuid():N}"[..8], 4))).Value;
+        (await restaurant.ListAreasAsync()).Should().Contain(a => a.Id == area && a.TableCount == 1);
+
+        (await restaurant.PlaceOrderAsync(new PlaceOrderRequest(table, 2, null, null, [new OrderItemInput(dish, 0m, 0m, null)])))
+            .Error!.Code.Should().Be("restaurant.quantity");
+        var order = (await restaurant.PlaceOrderAsync(new PlaceOrderRequest(table, 2, null, "Anniversaire",
+            [new OrderItemInput(dish, 2m, 0m, ["Sans glace", "Citron"])]))).Value!;
+        order.Lines.Single().Modifiers.Should().BeEquivalentTo(["Sans glace", "Citron"], "les précisions de cuisine étaient ignorées");
+        (await restaurant.PlaceOrderAsync(new PlaceOrderRequest(table, 2, null, null, [new OrderItemInput(dish, 1m, 0m, null)])))
+            .Error!.Code.Should().Be("restaurant.table_busy");
+        var t = (await restaurant.ListTablesAsync()).Single(x => x.Id == table);
+        t.Status.Should().Be("occupied");
+        t.RunningTotal.Should().Be(200m);
+        t.AreaName.Should().Be("Terrasse");
+
+        // Servie, puis nouvelle vague : le ticket revient en cuisine.
+        await restaurant.AdvanceKitchenAsync(new KitchenAdvanceRequest(order.SaleId, "preparing"));
+        await restaurant.AdvanceKitchenAsync(new KitchenAdvanceRequest(order.SaleId, "served"));
+        var more = await restaurant.AddItemsAsync(new AddOrderItemsRequest(order.SaleId, [new OrderItemInput(dish, 1m, 0m, ["Bien fraîche"])]));
+        more.IsSuccess.Should().BeTrue(more.Error?.Message);
+        more.Value!.Lines.Should().HaveCount(2);
+        more.Value.KitchenStatus.Should().Be("pending");
+        more.Value.RunningTotal.Should().Be(300m);
+        (await restaurant.KitchenBoardAsync()).Should().Contain(o => o.SaleId == order.SaleId);
+
+        // Règlement : un second essai ne crée jamais une seconde vente.
+        var req = new CloseOrderRequest(order.SaleId, [new OrderTenderInput(CashAccount, CashMethod, 300m, null)], 300m, 0m, null);
+        var first = await restaurant.CloseOrderAsync(req);
+        first.IsSuccess.Should().BeTrue(first.Error?.Message);
+        first.Value!.Total.Should().Be(300m);
+        await db.Database.ExecuteSqlAsync($"UPDATE nexora.sale SET status = 'parked' WHERE id = {order.SaleId}");   // simule une fin interrompue
+        var again = await restaurant.CloseOrderAsync(req);
+        again.Value!.SaleId.Should().Be(first.Value.SaleId, "le même règlement est retrouvé, pas recréé");
+        (await restaurant.AdvanceKitchenAsync(new KitchenAdvanceRequest(order.SaleId, "served"))).Error!.Code.Should().Be("restaurant.order_closed");
+        (await restaurant.ListTablesAsync()).Single(x => x.Id == table).Status.Should().Be("available");
+
+        // Annulation : motif obligatoire, table libérée, commande sortie de la cuisine.
+        var o2 = (await restaurant.PlaceOrderAsync(new PlaceOrderRequest(table, 1, null, null, [new OrderItemInput(dish, 1m, 0m, null)]))).Value!;
+        (await restaurant.CancelOrderAsync(new CancelOrderRequest(o2.SaleId, ""))).Error!.Code.Should().Be("restaurant.cancel_reason");
+        (await restaurant.CancelOrderAsync(new CancelOrderRequest(o2.SaleId, "Client parti"))).IsSuccess.Should().BeTrue();
+        (await restaurant.ListTablesAsync()).Single(x => x.Id == table).CurrentSaleId.Should().BeNull();
+        (await restaurant.KitchenBoardAsync()).Should().NotContain(o => o.SaleId == o2.SaleId);
+        (await db.Sales.AsNoTracking().Where(x => x.Id == o2.SaleId).Select(x => x.Status).FirstAsync()).Should().Be("void");
+    }
+
+    [Fact]
+    public async Task Recipe_rules_refuse_what_the_sale_would_silently_ignore()
+    {
+        await using var s = Scope();
+        var sp = s.ServiceProvider;
+        var recipes = sp.GetRequiredService<IRecipeService>();
+        var ing = await Ingredient(sp, "C", cost: 5m, qty: 10m);
+        var stockedDish = await SellableProduct(sp, "stockable", "STOCK", price: 50m);
+        var dish = await SellableProduct(sp, "composite", "PLAT2", price: 80m);
+        var otherUnit = await sp.GetRequiredService<NexoraDbContext>().Database
+            .SqlQuery<Guid>($"SELECT id AS \"Value\" FROM nexora.unit WHERE company_id = {Company} AND id <> {BoxUnit} LIMIT 1").FirstOrDefaultAsync();
+
+        (await recipes.DefineAsync(new DefineRecipeRequest(stockedDish, "R", BoxUnit, 1m, [new RecipeComponentInput(ing, 1m, BoxUnit, 0m, null)])))
+            .Error!.Code.Should().Be("recipes.stocked_dish", "sur un produit stocké, la recette n'était jamais appliquée");
+        (await recipes.DefineAsync(new DefineRecipeRequest(dish, "R", BoxUnit, 1m, [new RecipeComponentInput(dish, 1m, BoxUnit, 0m, null)])))
+            .Error!.Code.Should().Be("recipes.self");
+        (await recipes.DefineAsync(new DefineRecipeRequest(dish, "R", BoxUnit, 1m, [new RecipeComponentInput(ing, 1m, BoxUnit, 100m, null)])))
+            .Error!.Code.Should().Be("recipes.wastage");
+        if (otherUnit != Guid.Empty)
+            (await recipes.DefineAsync(new DefineRecipeRequest(dish, "R", BoxUnit, 1m, [new RecipeComponentInput(ing, 1m, otherUnit, 0m, null)])))
+                .Error!.Code.Should().Be("recipes.component_unit", "la sortie de stock n'applique aucune conversion d'unité");
+        (await recipes.DefineAsync(new DefineRecipeRequest(dish, "Plat 2", BoxUnit, 1m, [new RecipeComponentInput(ing, 2m, BoxUnit, 10m, "froid")])))
+            .IsSuccess.Should().BeTrue();
+        var listed = (await recipes.ListAsync()).Single(r => r.ProductId == dish);
+        listed.EstimatedCost.Should().Be(11m);   // 2 × 1,10 × 5
+        listed.Components.Single().UnitCode.Should().NotBeNull();
+        var options = await recipes.OptionsAsync();
+        options.Dishes.Should().Contain(d => d.Id == dish && d.HasRecipe).And.NotContain(d => d.Id == stockedDish);
+        options.Ingredients.Should().Contain(i => i.Id == ing);
+    }
 }

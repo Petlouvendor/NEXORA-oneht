@@ -481,6 +481,12 @@ a:hover { text-decoration: underline; }
   .nx-content { padding: 16px; }
   .nx-menu-toggle { display: inline-flex; }
 }
+/* Téléphone : la barre du haut ne déborde plus (libellés masqués, icônes conservées, retour à la ligne si besoin). */
+@media (max-width: 600px) {
+  .nx-topbar { flex-wrap: wrap; gap: 4px; padding: 8px 10px; }
+  .nx-topbar .nx-context b { max-width: 150px !important; }
+  .nx-hide-sm { display: none !important; }
+}
 
 /* Palette de recherche globale (§23) */
 .nx-palette {
