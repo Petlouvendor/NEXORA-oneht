@@ -33,6 +33,33 @@ public sealed class RestaurantController(
     public async Task<IActionResult> ListTables(CancellationToken ct)
         => Ok(await restaurant.ListTablesAsync(ct));
 
+    // --- Phase 13 : écrans salle / cuisine / recettes -------------
+    [HttpGet("setup")]
+    [RequirePermission(Permissions.Restaurant.Serve)]
+    public async Task<IActionResult> Setup(CancellationToken ct) => Ok(await restaurant.SetupAsync(ct));
+
+    [HttpGet("areas")]
+    [RequirePermission(Permissions.Restaurant.Serve)]
+    public async Task<IActionResult> ListAreas(CancellationToken ct) => Ok(await restaurant.ListAreasAsync(ct));
+
+    [HttpPost("orders/items")]
+    [RequirePermission(Permissions.Restaurant.Serve)]
+    public async Task<IActionResult> AddItems([FromBody] AddOrderItemsRequest r, CancellationToken ct)
+        => FromResult(await restaurant.AddItemsAsync(r, ct));
+
+    [HttpPost("orders/cancel")]
+    [RequirePermission(Permissions.Restaurant.Serve)]
+    public async Task<IActionResult> CancelOrder([FromBody] CancelOrderRequest r, CancellationToken ct)
+        => FromResult(await restaurant.CancelOrderAsync(r, ct));
+
+    [HttpGet("recipes")]
+    [RequirePermission(Permissions.Recipes.Manage)]
+    public async Task<IActionResult> ListRecipes(CancellationToken ct) => Ok(await recipes.ListAsync(ct));
+
+    [HttpGet("recipes/options")]
+    [RequirePermission(Permissions.Recipes.Manage)]
+    public async Task<IActionResult> RecipeOptions(CancellationToken ct) => Ok(await recipes.OptionsAsync(ct));
+
     [HttpPost("orders")]
     [RequirePermission(Permissions.Restaurant.Serve)]
     public async Task<IActionResult> PlaceOrder([FromBody] PlaceOrderRequest r, CancellationToken ct)

@@ -108,6 +108,8 @@ public interface ISalesStore
     Task<Guid?> FindSaleByOperationAsync(Guid operationUuid, CancellationToken ct = default);
     Task<Domain.Sales.Sale?> GetSaleWithLinesAsync(Guid saleId, CancellationToken ct = default);
     Task AddSaleAsync(Domain.Sales.Sale sale, CancellationToken ct = default);
+    /// <summary>Restaurant (phase 13) : lignes ajoutées à une vente en attente.</summary>
+    Task AddSaleLinesAsync(IReadOnlyList<Domain.Sales.SaleLine> lines, CancellationToken ct = default);
     Task AddPaymentAsync(Domain.Finance.Payment payment, CancellationToken ct = default);
     Task AddSalePaymentAsync(Domain.Sales.SalePayment link, CancellationToken ct = default);
     Task AddSalePromotionAsync(Domain.Sales.SalePromotion promo, CancellationToken ct = default);

@@ -469,6 +469,36 @@ public sealed class SalesService(
         return Result.Success(sale.Id);
     }
 
+    /// <summary>Restaurant (finalisation phase 13) : ajoute des articles à une vente en attente — mêmes contrôles de
+    /// produit et même tarification qu'à la mise en attente. Les montants définitifs sont recalculés à l'encaissement.
+    /// Renvoie les identifiants des lignes créées (dans l'ordre des lignes demandées).</summary>
+    public async Task<Result<IReadOnlyList<Guid>>> AddToParkedAsync(Guid saleId, string currency, IReadOnlyList<CheckoutLine> lines, CancellationToken ct = default)
+    {
+        if (lines.Count == 0) return Error.Validation("pos.empty_cart", "Aucun article à ajouter.");
+        var sale = await store.GetSaleWithLinesAsync(saleId, ct);
+        if (sale is null) return Error.NotFound("pos.sale_not_found", "Vente introuvable.");
+        if (sale.Status != SaleStatus.Parked) return Error.Conflict("pos.not_parked", "Cette commande n'est plus ouverte.");
+        if (await pricingGuard.ValidateProductsAsync(lines, ct) is { IsSuccess: false } unsellable)
+            return unsellable.Error!;
+        var location = sale.Lines.Select(l => l.InventoryLocationId).FirstOrDefault(l => l is not null);
+        if (location is null) return Error.Validation("pos.location_required", "Emplacement de stock inconnu pour cette commande.");
+        var priced = await pricing.PriceCartAsync(location.Value, sale.CustomerId, currency, clock.UtcNow, lines, null, ct);
+        var added = priced.Select(p => new SaleLine
+        {
+            Id = Guid.NewGuid(), SaleId = sale.Id, CompanyId = Company, ProductId = p.ProductId,
+            Description = p.Description, Quantity = p.Quantity, UnitPrice = p.UnitPrice,
+            Discount = p.ManualDiscount, TaxId = p.TaxId, LineTotal = Rounding.Money(p.UnitPrice * p.Quantity),
+            CostSnapshot = p.UnitCost, UnitCost = p.UnitCost, InventoryLocationId = location,
+        }).ToList();
+        await store.AddSaleLinesAsync(added, ct);
+        await uow.SaveChangesAsync(ct);
+        return Result.Success<IReadOnlyList<Guid>>(added.Select(l => l.Id).ToList());
+    }
+
+    /// <summary>Lignes d'une vente en attente (création) : identifiants, pour y rattacher des précisions de cuisine.</summary>
+    public async Task<IReadOnlyList<Guid>> ParkedLineIdsAsync(Guid saleId, CancellationToken ct = default)
+        => (await store.GetSaleWithLinesAsync(saleId, ct))?.Lines.Select(l => l.Id).ToList() ?? [];
+
     // --- Annulation contrôlée après validation (§24) ------------------
     public async Task<Result> VoidAsync(Guid saleId, string reason, CancellationToken ct = default)
     {
