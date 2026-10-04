@@ -19,6 +19,7 @@ import { DocumentsPage } from "@/documents/DocumentsPage";
 import { AnalyticsPage } from "@/reports/AnalyticsPage";
 import { IntelligencePage } from "@/intelligence/IntelligencePage";
 import { FieldOpsPage } from "@/mobile/FieldOpsPage";
+import { RestaurantPage } from "@/restaurant/RestaurantPage";
 import { GedPage } from "@/ged/GedPage";
 import { HrPage } from "@/hr/HrPage";
 import { EmployeePage } from "@/hr/EmployeePage";
@@ -68,6 +69,7 @@ export const router = createBrowserRouter([
       { path: "suppliers", element: guarded("/suppliers", <PartiesPage initialTab="suppliers" />) },
       { path: "customers/:id", element: guarded("/customers", <CustomerAccountPage />) },
       { path: "field-ops", element: guarded("/field-ops", <FieldOpsPage />) },
+      { path: "restaurant", element: guarded("/restaurant", <RestaurantPage />) },
       { path: "hr", element: guarded("/hr", <HrPage />) },
       { path: "hr/employees/:id", element: guarded("/hr", <EmployeePage />) },
       { path: "hr/payroll/:runId", element: guarded("/hr", <PayrollRunPage />) },

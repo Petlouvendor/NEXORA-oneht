@@ -31,6 +31,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { to: "/orders", label: "Ventes & commandes", icon: "Cart", permission: "pos.manage_order" },
       { to: "/pos", label: "POS", icon: "Pos", permission: "pos.sell" },
+      { to: "/restaurant", label: "Restaurant", icon: "Utensils", permission: "restaurant.serve" },
       { to: "/documents", label: "Factures & documents", icon: "Ledger", permission: "documents.view" },
       { to: "/customers", label: "Clients", icon: "Users", permission: "customers.view" },
       { to: "/suppliers", label: "Fournisseurs", icon: "Truck", permission: "suppliers.view" },

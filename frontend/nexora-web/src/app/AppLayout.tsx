@@ -118,7 +118,7 @@ export function AppLayout() {
             title={online ? "Connexion active" : "Hors ligne — les ventes sont mises en file"}
           >
             {online ? <Icon.Check size={13} /> : <Icon.Offline size={13} />}
-            {online ? "En ligne" : "Hors ligne"}
+            <span className="nx-hide-sm">{online ? "En ligne" : "Hors ligne"}</span>
             {queued > 0 && (
               <span style={{ color: "var(--nx-info)" }} title={`${queued} opération(s) en file de synchronisation`}>
                 · {queued} en file
@@ -131,7 +131,7 @@ export function AppLayout() {
                   onClick={() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true }))}
                   style={{ width: "auto", padding: "0 10px", gap: 8, border: "1px solid var(--nx-border)" }}>
             <Icon.Search size={16} />
-            <span className="nx-kbd">Ctrl K</span>
+            <span className="nx-kbd nx-hide-sm">Ctrl K</span>
           </button>
           <NexoraAiButton />
 
