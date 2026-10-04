@@ -364,6 +364,12 @@ a:hover { text-decoration: underline; }
   padding: calc(var(--nx-space) * 3);
   animation: nx-pop var(--nx-dur) var(--nx-ease);
 }
+/* Téléphone (finalisation phase 12) : les formulaires de dialogue imposent une largeur minimale pensée pour l'ordinateur ;
+   ajoutée à la marge intérieure, elle faisait déborder la boîte de l'écran. */
+@media (max-width: 600px) {
+  .nx-modal { padding: calc(var(--nx-space) * 2); max-height: 92vh; }
+  .nx-modal [style*="min-width"] { min-width: 0 !important; }
+}
 .nx-drawer-wrap { position: fixed; inset: 0; z-index: 60; }
 /* Le panneau passe au-dessus de son voile (.nx-overlay, z-index 60) — sinon le voile capte tous les clics. */
 .nx-drawer, .nx-ai-panel { z-index: 61; }

@@ -17,3 +17,13 @@ describe("dates civiles (défaut fuseau horaire, phase 3)", () => {
     expect(todayIso(new Date(2026, 0, 5, 0, 1))).toBe("2026-01-05");
   });
 });
+
+describe("langue de formatage (finalisation phase 12)", () => {
+  it("le créole, que le navigateur ne sait pas formater, retombe sur le français d'Haïti — jamais l'anglais", async () => {
+    const { setFormatLocale, formatLocale, dateTime } = await import("@/shared/format");
+    setFormatLocale("ht-HT");
+    expect(formatLocale()).toMatch(/^fr/);
+    expect(dateTime("2026-10-03T20:51:00")).not.toMatch(/Oct|PM/);
+    setFormatLocale("fr-FR");
+  });
+});

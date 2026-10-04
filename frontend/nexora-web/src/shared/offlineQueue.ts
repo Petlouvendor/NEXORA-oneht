@@ -166,6 +166,12 @@ export function enqueue<P>(entry: { id: string; kind: string; payload: P }): Out
   return created;
 }
 
+/** Remplace la charge utile d'une opération en attente (ex. pièces jointes déjà envoyées : on garde leurs identifiants
+ * pour qu'un nouvel essai ne les renvoie pas). Sans effet sur une opération déjà confirmée. */
+export function updateEntryPayload<P>(id: string, payload: P): void {
+  write(read().map((e) => (e.id === id && e.status !== "synced" ? { ...e, payload, updatedAt: new Date().toISOString() } : e)));
+}
+
 export function removeEntry(id: string): void {
   write(read().filter((e) => e.id !== id));
 }
@@ -182,13 +188,14 @@ let flushing = false;
  * Met à jour le statut de chaque entrée selon la réponse. Ne supprime rien : la purge des
  * `synced` est explicite (`pruneSynced`) pour laisser l'UI les afficher.
  */
-export async function flushOutbox(sender: BatchSender): Promise<{ synced: number; conflict: number; failed: number }> {
+export async function flushOutbox(sender: BatchSender, kinds?: string[]): Promise<{ synced: number; conflict: number; failed: number }> {
   if (flushing) return { synced: 0, conflict: 0, failed: 0 };
   flushing = true;
   try {
     await loadOutbox();   // jamais de lot partiel : la file persistée est chargée d'abord
     const entries = read();
-    const toSend = entries.filter((e) => e.status === "pending" || e.status === "failed");
+    // `kinds` : types que l'écran appelant sait synchroniser (la caisse n'envoie pas les preuves terrain).
+    const toSend = entries.filter((e) => (e.status === "pending" || e.status === "failed") && (!kinds || kinds.includes(e.kind)));
     if (toSend.length === 0) return { synced: 0, conflict: 0, failed: 0 };
 
     mutate((e) => (toSend.some((s) => s.id === e.id) ? { ...e, status: "syncing", attempts: e.attempts + 1 } : e));
@@ -225,8 +232,8 @@ function mutate(fn: (e: OutboxEntry) => OutboxEntry): void {
 }
 
 /** Rejoue automatiquement à la reconnexion. Retourne un désabonnement. */
-export function autoFlushOnReconnect(sender: BatchSender): () => void {
-  const handler = () => { void flushOutbox(sender); };
+export function autoFlushOnReconnect(sender: BatchSender, kinds?: string[]): () => void {
+  const handler = () => { void flushOutbox(sender, kinds); };
   window.addEventListener("online", handler);
   return () => window.removeEventListener("online", handler);
 }

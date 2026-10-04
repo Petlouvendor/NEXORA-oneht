@@ -2,9 +2,18 @@
 
 let currentLocale = "fr-FR";
 
+const intlKnows = (l: string) => {
+  try { return Intl.DateTimeFormat.supportedLocalesOf([l]).length > 0; } catch { return false; }
+};
+
+/** Langue de formatage. Une langue que le navigateur ne sait pas formater (le créole `ht-HT`, notamment) retombait sur
+ * l'anglais (« Oct 3, 2026, 8:51 PM ») : on prend alors le français d'Haïti, puis le français. */
 export function setFormatLocale(locale: string | null | undefined) {
-  currentLocale = locale && locale.length >= 2 ? locale : "fr-FR";
+  if (!locale || locale.length < 2) { currentLocale = "fr-FR"; return; }
+  currentLocale = intlKnows(locale) ? locale : intlKnows("fr-HT") ? "fr-HT" : "fr-FR";
 }
+
+export const formatLocale = () => currentLocale;
 
 export function money(value: number, currency = "HTG", opts: { sign?: boolean } = {}): string {
   const s = value.toLocaleString(currentLocale, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
