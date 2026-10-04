@@ -26,6 +26,11 @@ public sealed record CreateRoleRequest(
 
 public sealed record SetRolePermissionsRequest(IReadOnlyList<string> Permissions);
 
+public sealed record UpdateRoleRequest(string Name, string? Description);
+
+/// <summary>Permission du catalogue ; <c>Grantable</c> = l'utilisateur courant la détient, donc peut l'accorder.</summary>
+public sealed record PermissionCatalogDto(string Code, string Name, string Module, string? Action, bool Grantable);
+
 // --- Workflows configurables (§14-16) ----------------------------
 
 public sealed record WorkflowConditionDto(string Field, string Op, JsonElement Value);
@@ -49,6 +54,15 @@ public sealed record ConditionEvalDto(string Field, string Op, JsonElement Expec
 public sealed record WorkflowTestResult(
     bool Matched, string Logic, IReadOnlyList<ConditionEvalDto> Conditions,
     IReadOnlyList<string> PlannedApprovals, IReadOnlyList<string> PlannedActions, IReadOnlyList<string> PlannedNotifications);
+
+/// <summary>Déclencheur d'un workflow : un type d'opération soumis à approbation. <c>Automatic</c> = une opération
+/// réelle de NEXORA consulte la règle d'elle-même (dérogation de crédit à la caisse, avances et prêts au salarié) ;
+/// sinon la règle s'applique aux demandes d'approbation déposées pour ce type d'opération.</summary>
+public sealed record WorkflowTriggerDto(string Key, string Label, bool Automatic, string Detail);
+
+public sealed record WorkflowApproverRoleDto(string Name, string? Description);
+
+public sealed record WorkflowCatalogDto(IReadOnlyList<WorkflowTriggerDto> Triggers, IReadOnlyList<WorkflowApproverRoleDto> ApproverRoles);
 
 public sealed record WorkflowTriggerRequest(string TriggerEvent, JsonElement Context, string? ReferenceType, Guid? ReferenceId);
 

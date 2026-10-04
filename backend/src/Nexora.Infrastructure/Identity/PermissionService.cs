@@ -22,6 +22,7 @@ public sealed class PermissionService(NexoraDbContext db, ITenantContext tenant,
             var assignments = await db.UserRoles.AsNoTracking()
                 .Where(ur => ur.UserId == userId
                     && ur.RevokedAt == null
+                    && ur.Role!.Status == "active"
                     && (ur.ValidFrom == null || ur.ValidFrom <= now)
                     && (ur.ValidUntil == null || ur.ValidUntil > now))
                 .Select(ur => new

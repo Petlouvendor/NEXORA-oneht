@@ -72,6 +72,7 @@ internal static class CustomerAccountRules
             return await db.Database.SqlQuery<Guid>($"""
                 SELECT DISTINCT ur.user_id AS "Value"
                 FROM nexora.user_role ur
+                JOIN nexora.role ro ON ro.id = ur.role_id AND ro.status = 'active'
                 JOIN nexora.role_permission rp ON rp.role_id = ur.role_id
                 JOIN nexora.permission p ON p.id = rp.permission_id
                 JOIN nexora.access_scope sc ON sc.id = ur.scope_id

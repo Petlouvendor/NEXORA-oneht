@@ -50,6 +50,19 @@ public sealed class AdministrationController(
     public async Task<IActionResult> CreateRole([FromBody] CreateRoleRequest r, CancellationToken ct)
         => FromResult(await roles.CreateAsync(r, ct));
 
+    [HttpGet("permissions")]
+    [RequirePermission(Permissions.Admin.Roles)]
+    public async Task<IActionResult> PermissionCatalog(CancellationToken ct) => Ok(await roles.PermissionCatalogAsync(ct));
+
+    [HttpPut("roles/{id:guid}")]
+    [RequirePermission(Permissions.Admin.Roles)]
+    public async Task<IActionResult> UpdateRole(Guid id, [FromBody] UpdateRoleRequest r, CancellationToken ct)
+        => FromResult(await roles.UpdateAsync(id, r, ct));
+
+    [HttpPost("roles/{id:guid}/enable")]
+    [RequirePermission(Permissions.Admin.Roles)]
+    public async Task<IActionResult> EnableRole(Guid id, CancellationToken ct) => FromResult(await roles.EnableAsync(id, ct));
+
     [HttpPut("roles/{id:guid}/permissions")]
     [RequirePermission(Permissions.Admin.Roles)]
     public async Task<IActionResult> SetRolePermissions(Guid id, [FromBody] SetRolePermissionsRequest r, CancellationToken ct)
@@ -69,6 +82,10 @@ public sealed class AdministrationController(
     [HttpGet("workflows")]
     [RequirePermission(Permissions.Admin.Workflows)]
     public async Task<IActionResult> Workflows(CancellationToken ct) => Ok(await workflows.ListAsync(ct));
+
+    [HttpGet("workflows/catalog")]
+    [RequirePermission(Permissions.Admin.Workflows)]
+    public async Task<IActionResult> WorkflowCatalog(CancellationToken ct) => Ok(await workflows.CatalogAsync(ct));
 
     [HttpPost("workflows")]
     [RequirePermission(Permissions.Admin.Workflows)]

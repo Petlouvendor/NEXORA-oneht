@@ -20,6 +20,7 @@ public sealed class SqlApprovalWorkflowService(NexoraDbContext db, IUnitOfWork u
     private sealed record RequestRow(
         Guid Id, string OperationType, string? ReferenceType, Guid? ReferenceId, decimal? Amount, Guid? RequestedBy,
         string Status, short CurrentLevel, short RequiredLevels, DateTimeOffset RequestedAt);
+    private sealed record RoleRequirement(Guid RoleId, string RoleName);
     private sealed record ActionRow(Guid? ApproverId, short Level, string Action, string? Comment, DateTimeOffset At);
 
     public async Task<Result<ApprovalOutcome>> SubmitAsync(SubmitApprovalRequest request, CancellationToken ct = default)
@@ -78,6 +79,23 @@ public sealed class SqlApprovalWorkflowService(NexoraDbContext db, IUnitOfWork u
             """).FirstAsync(ct);
         if (decision.Approve && alreadyApprover)
             return Error.Forbidden("security.duplicate_approver", "Un même approbateur ne peut pas valider deux niveaux (§5).");
+
+        // Finalisation phase 11 : le rôle approbateur d'une règle (workflow) était enregistré mais jamais vérifié.
+        var requiredRole = await db.Database.SqlQuery<RoleRequirement>($"""
+            SELECT p.approver_role_id AS "RoleId", r.name AS "RoleName" FROM nexora.approval_policy p
+            JOIN nexora.role r ON r.id = p.approver_role_id
+            WHERE p.company_id = {Company} AND p.request_type = {req.OperationType} AND p.status = 'active'
+              AND p.min_amount <= {req.Amount ?? 0m}
+            ORDER BY p.min_amount DESC LIMIT 1
+            """).FirstOrDefaultAsync(ct);
+        if (requiredRole is not null && !await db.Database.SqlQuery<bool>($"""
+                SELECT EXISTS(SELECT 1 FROM nexora.user_role ur JOIN nexora.access_scope sc ON sc.id = ur.scope_id
+                              WHERE ur.user_id = {tenant.UserId} AND ur.role_id = {requiredRole.RoleId} AND ur.revoked_at IS NULL
+                                AND (ur.valid_from IS NULL OR ur.valid_from <= now()) AND (ur.valid_until IS NULL OR ur.valid_until > now())
+                                AND (sc.company_id = {Company}
+                                     OR (sc.group_id IS NOT NULL AND sc.group_id = (SELECT group_id FROM nexora.company WHERE id = {Company})))) AS "Value"
+                """).FirstAsync(ct))
+            return Error.Forbidden("security.approver_role", $"Cette demande doit être décidée par un utilisateur ayant le rôle « {requiredRole.RoleName} ».");
 
         await uow.ExecuteInTransactionAsync(async token =>
         {
