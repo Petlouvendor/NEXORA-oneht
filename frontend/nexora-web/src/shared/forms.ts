@@ -34,8 +34,10 @@ export function useSubmit(fields: Record<string, string> = {}) {
     }
   }, []);
 
-  /** Erreur de validation détectée avant l'envoi (même présentation que celles du serveur). */
-  const fail = useCallback((field: string, message: string) => setFieldErrors({ [field]: message }), []);
+  /** Erreur de validation détectée avant l'envoi (même présentation que celles du serveur). Une nouvelle erreur
+   * remplace la précédente : sinon un message périmé restait affiché sous un champ déjà corrigé. */
+  const fail = useCallback((field: string, message: string) => { setError(null); setFieldErrors({ [field]: message }); }, []);
+  const showError = useCallback((message: string | null) => { setFieldErrors({}); setError(message); }, []);
 
   // Le premier champ en erreur peut être hors de vue (long formulaire) : on l'amène à l'écran et on y place le focus.
   useEffect(() => {
@@ -48,7 +50,7 @@ export function useSubmit(fields: Record<string, string> = {}) {
     });
   }, [fieldErrors]);
 
-  return { busy, error, fieldErrors, submit, fail, setError };
+  return { busy, error, fieldErrors, submit, fail, setError: showError };
 }
 
 /** Lit un fichier en base64 (sans l'en-tête data:). */
