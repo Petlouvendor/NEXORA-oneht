@@ -14,6 +14,7 @@ import { CreditOverrideRequestDialog, CreditOverridesPanel, useCreditOverride } 
 import type { CustomerLookup } from "@/customers/customersApi";
 import { ApiError } from "@/core/apiClient";
 import { pushBatch } from "@/sync/syncApi";
+import { kindsFor, toSyncOperations } from "@/shared/syncOperations";
 import { useOnline } from "@/shared/useOnline";
 import { useOutbox } from "@/shared/useOutbox";
 import { autoFlushOnReconnect, enqueue, flushOutbox, outboxProtection, pruneSynced, type BatchSender } from "@/shared/offlineQueue";
@@ -202,11 +203,8 @@ function SaleScreen({ limits, session, onSessionChanged, profile, onProfile }: {
   // Envoi d'un lot de synchronisation (Phase 10 §14) — jamais de confirmation simulée (§21).
   const sender = useCallback<BatchSender>(async (batch) => {
     if (!syncDevice) throw new Error("Appareil de synchronisation non configuré.");
-    const res = await pushBatch(syncDevice, batch.map((e) => ({
-      // Module clients §24 : un versement client hors ligne se rejoue par le même moteur que la vente.
-      operationUuid: e.id, entityType: e.kind === "customer.payment" ? "customer_payment" : "sale", operationType: "create", payload: e.payload,
-      priority: 5, clientCreatedAt: e.createdAt,
-    })));
+    // Phase 12 : traduction commune à la caisse et au terrain (vente, versement client) — jamais un faux type.
+    const res = await pushBatch(syncDevice, await toSyncOperations(batch));
     return res.operations.map((o) => ({
       id: o.operationUuid,
       status: o.status === "SYNCED" ? "synced" : o.status === "CONFLICT" ? "conflict" : "failed",
@@ -214,7 +212,7 @@ function SaleScreen({ limits, session, onSessionChanged, profile, onProfile }: {
     }));
   }, [syncDevice]);
 
-  useEffect(() => autoFlushOnReconnect(sender), [sender]);
+  useEffect(() => autoFlushOnReconnect(sender, kindsFor("pos")), [sender]);
 
   // Suivi des demandes de remise en attente (§12) : le panier se débloque dès la décision du Manager.
   useEffect(() => {
@@ -235,7 +233,7 @@ function SaleScreen({ limits, session, onSessionChanged, profile, onProfile }: {
   async function syncNow() {
     setSyncing(true);
     try {
-      const r = await flushOutbox(sender);
+      const r = await flushOutbox(sender, kindsFor("pos"));
       if (r.synced) toast.success(`${r.synced} vente(s) synchronisée(s).`);
       if (r.conflict) toast.push(`${r.conflict} conflit(s) à traiter dans le centre de synchronisation.`, "warning");
       if (r.failed) toast.error(`${r.failed} opération(s) en échec.`);

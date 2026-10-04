@@ -290,7 +290,10 @@ public sealed class CustomerCollectionsTests(FinanceEngineFixture fx)
         var q = s.ServiceProvider.GetRequiredService<ICreditPortfolioQueries>();
         var rec = (await q.ReceivablesAsync(cust, true)).Single(r => r.Id == rid);
         rec.RemainingAmount.Should().Be(20000m);
-        rec.DaysOverdue.Should().Be(20);
+        // Retard calculé par le service sur sa propre horloge (UTC) : le test ne suppose pas la date locale de PostgreSQL
+        // (entre 20 h et minuit à Haïti, UTC est déjà au lendemain).
+        rec.DaysOverdue.Should().Be(DateOnly.FromDateTime(DateTime.UtcNow).DayNumber - rec.DueDate!.Value.DayNumber);
+        rec.DaysOverdue.Should().BeInRange(20, 21);
         rec.OpenDisputeId.Should().BeNull();
         (await q.DisputesAsync(cust, null)).Single().Status.Should().Be("resolved_company");
     }

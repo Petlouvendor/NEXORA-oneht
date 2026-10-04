@@ -27,8 +27,21 @@ public sealed class MobileController(
     IDeliveryService delivery,
     IFieldInterventionService interventions,
     ITaskService tasks,
-    Nexora.Application.Notifications.INotificationService notifications) : ApiControllerBase
+    Nexora.Application.Notifications.INotificationService notifications,
+    Nexora.Application.Sales.IPosOfflineService devices) : ApiControllerBase
 {
+    /// <summary>Phase 12 : options de saisie terrain (livreurs/techniciens, commandes livrables, caisses, géolocalisation).</summary>
+    [HttpGet("field-ops/options")]
+    [RequirePermission(Permissions.FieldOps.View)]
+    public async Task<IActionResult> FieldOptions(CancellationToken ct) => Ok(await delivery.OptionsAsync(ct));
+
+    /// <summary>Phase 12 : le navigateur du livreur / technicien s'enregistre comme appareil de synchronisation
+    /// (même registre que la caisse, idempotent sur l'identifiant, révocable par un responsable).</summary>
+    [HttpPost("field-ops/device")]
+    [RequirePermission(Permissions.FieldOps.Manage)]
+    public async Task<IActionResult> EnrollFieldDevice([FromBody] Nexora.Contracts.Sales.EnrollPosDeviceRequest r, CancellationToken ct)
+        => FromResult(await devices.EnrollAsync(r with { Name = string.IsNullOrWhiteSpace(r.Name) ? "Terrain (navigateur)" : r.Name }, ct));
+
     // --- §48 Synchronisation & conflits — alias de Phase 10, sans duplication ------
 
     [HttpGet("mobile/sync")]
@@ -36,7 +49,7 @@ public sealed class MobileController(
     public async Task<IActionResult> SyncStatus(CancellationToken ct) => Ok(await sync.SyncCenterAsync(ct));
 
     [HttpPost("mobile/sync/push")]
-    [RequirePermission(Permissions.Pos.Sell)]
+    [RequirePermission(Permissions.Sync.View)]   // chaque opération du lot est contrôlée selon son type (phase 12)
     public async Task<IActionResult> SyncPush([FromBody] PushBatchRequest request, CancellationToken ct)
         => FromResult(await sync.PushBatchAsync(request, ct));
 

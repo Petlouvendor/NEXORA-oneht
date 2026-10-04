@@ -55,8 +55,9 @@ export function storedDeviceId(): string {
 }
 
 /** Enregistre (ou retrouve) l'appareil de synchronisation de ce navigateur. */
-export async function ensureDevice(name: string): Promise<{ id: string; status: string }> {
-  const d = await apiFetch<{ id: string; name: string; status: string }>("/pos/device", {
+/** `endpoint` : la caisse s'enregistre par /pos/device, le terrain par /field-ops/device (même registre, même identifiant). */
+export async function ensureDevice(name: string, endpoint = "/pos/device"): Promise<{ id: string; status: string }> {
+  const d = await apiFetch<{ id: string; name: string; status: string }>(endpoint, {
     method: "POST", body: JSON.stringify({ deviceIdentifier: deviceIdentifier(), name }),
   });
   try { localStorage.setItem(DEVICE_KEY, d.id); } catch { /* stockage indisponible */ }

@@ -1,35 +1,34 @@
-import { useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useAuth } from "@/auth/AuthContext";
+import { useOutbox } from "@/shared/useOutbox";
 import { Card, Tabs } from "@/shared/ui";
-import { DeliveryRoutesSection, InterventionsSection, MobileConfigSection } from "@/mobile/FieldOpsSections";
+import { kindsFor } from "@/shared/syncOperations";
+import { MyInterventionsSection, MyRouteSection, SupervisionSection, SyncSection } from "@/mobile/FieldOpsSections";
 
-/** Mobile, terrain & multi-appareils (Phase 44 §12-13, §25, §46, §48). */
+/** Terrain : assigné → en route → sur place → terminé → preuve → synchronisé. Écran pensé d'abord pour le téléphone. */
 export function FieldOpsPage() {
   const { hasPermission } = useAuth();
-  const [tab, setTab] = useState("deliveries");
+  const [params, setParams] = useSearchParams();
+  const tab = params.get("tab") ?? "mine";
+  const setTab = (t: string) => setParams((p) => { p.set("tab", t); return p; }, { replace: true });
+  const { entries } = useOutbox();
+  const waiting = entries.filter((e) => kindsFor("field").includes(e.kind) && e.status !== "synced").length;
 
-  const canView = hasPermission("field_ops.view");
-  const canManage = hasPermission("field_ops.manage");
-
-  if (!canView) {
-    return <Card>Le terrain requiert la permission <code>field_ops.view</code>.</Card>;
-  }
+  if (!hasPermission("field_ops.view")) return <Card>Le terrain n'est pas accessible avec vos permissions.</Card>;
 
   return (
     <div style={{ display: "grid", gap: 16 }}>
       <h1 style={{ margin: 0 }}>Terrain</h1>
-      <Tabs
-        tabs={[
-          { id: "deliveries", label: "Livraisons" },
-          { id: "interventions", label: "Interventions" },
-          { id: "mobile", label: "Mobile" },
-        ]}
-        active={tab}
-        onChange={setTab}
-      />
-      {tab === "deliveries" && <DeliveryRoutesSection canManage={canManage} />}
-      {tab === "interventions" && <InterventionsSection canManage={canManage} />}
-      {tab === "mobile" && <MobileConfigSection />}
+      <Tabs active={tab} onChange={setTab} tabs={[
+        { id: "mine", label: "Ma tournée" },
+        { id: "interventions", label: "Mes interventions" },
+        { id: "supervision", label: "Supervision" },
+        { id: "sync", label: waiting ? `Synchronisation (${waiting})` : "Synchronisation" },
+      ]} />
+      {tab === "mine" && <MyRouteSection />}
+      {tab === "interventions" && <MyInterventionsSection />}
+      {tab === "supervision" && <SupervisionSection />}
+      {tab === "sync" && <SyncSection />}
     </div>
   );
 }
