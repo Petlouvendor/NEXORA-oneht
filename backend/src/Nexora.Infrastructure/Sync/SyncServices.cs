@@ -138,6 +138,20 @@ public sealed class SqlSyncService(
                 """, ct);
         }
 
+        // Finalisation phase 12 : le lot n'exige plus le droit de vendre (un livreur n'en a pas) — chaque opération est
+        // contrôlée selon son type. Avant, un caissier pouvait conclure une livraison hors ligne sans droit terrain.
+        var required = op.EntityType switch
+        {
+            "sale" => Nexora.Application.Security.Permissions.Pos.Sell,
+            "delivery_stop" or "field_intervention" => Nexora.Application.Security.Permissions.FieldOps.Manage,
+            _ => null,
+        };
+        if (required is not null && !(await permissions.CurrentPermissionsAsync(tenant, ct)).Contains(required))
+        {
+            await FailAsync(opId, "sync.forbidden", $"Permission requise pour cette opération : {required}.", ct);
+            return new SyncOperationResult(op.OperationUuid, "FAILED", null, null, $"Permission requise : {required}.");
+        }
+
         // Dispatch — Phase 10 : la vente est l'opération offline critique (§9).
         if (op is { EntityType: "sale", OperationType: "create" })
             return await ProcessSaleAsync(opId, op, policy, lastSeen, bypassPolicy: false, ct);

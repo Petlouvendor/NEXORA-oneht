@@ -22,6 +22,8 @@ public interface IAttachmentService
 public interface IDeliveryService
 {
     Task<Result<DeliveryRouteDto>> CreateRouteAsync(CreateDeliveryRouteRequest request, CancellationToken ct = default);
+    /// <summary>Options de saisie terrain (agents habilités, commandes livrables, caisses, géolocalisation prévue ou non).</summary>
+    Task<FieldOptionsDto> OptionsAsync(CancellationToken ct = default);
     Task<IReadOnlyList<DeliveryRouteDto>> ListRoutesAsync(DateOnly? date, CancellationToken ct = default);
     Task<Result<DeliveryRouteDto>> GetRouteAsync(Guid id, CancellationToken ct = default);
 

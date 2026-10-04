@@ -32,12 +32,26 @@ public sealed record DeliveryStopDto(
     Guid Id, Guid DeliveryRouteId, int SequenceNo, Guid? SalesOrderId, Guid? CustomerId, string Address,
     decimal? Latitude, decimal? Longitude, string? ContactPhone, string Status,
     Guid? SignatureAttachmentId, Guid? PhotoAttachmentId, decimal? AmountCollected,
-    DateTimeOffset? DeliveredAt, string? FailureReason);
+    DateTimeOffset? DeliveredAt, string? FailureReason,
+    string? CustomerName = null, string? OrderNumber = null, decimal? OrderTotal = null, decimal? OrderDeposit = null,
+    string? Currency = null, DateTimeOffset? EnRouteAt = null, DateTimeOffset? ArrivedAt = null, string? CompletedByName = null,
+    string? DriverName = null, DateOnly? RouteDate = null);
 
 /// <summary><c>status</c> ∈ planned|in_progress|completed|cancelled.</summary>
 public sealed record DeliveryRouteDto(
     Guid Id, Guid? DriverUserId, DateOnly RouteDate, string? Vehicle, string Status,
-    DateTimeOffset? StartedAt, DateTimeOffset? CompletedAt, IReadOnlyList<DeliveryStopDto> Stops);
+    DateTimeOffset? StartedAt, DateTimeOffset? CompletedAt, IReadOnlyList<DeliveryStopDto> Stops,
+    string? DriverName = null);
+
+/// <summary>Options de saisie terrain : livreurs / techniciens habilités, commandes livrables, comptes d'encaissement,
+/// et si la position GPS peut être enregistrée (paramètre <c>field_ops.capture_location</c>).</summary>
+public sealed record FieldOptionsDto(
+    IReadOnlyList<FieldUserOption> Agents, IReadOnlyList<FieldOrderOption> Orders, IReadOnlyList<FieldAccountOption> CashAccounts,
+    bool CaptureLocation);
+public sealed record FieldUserOption(Guid Id, string FullName);
+public sealed record FieldOrderOption(Guid Id, string DocumentNumber, Guid? CustomerId, string? CustomerName, string? DeliveryAddress,
+    decimal Total, decimal Deposit, string Currency, string Status);
+public sealed record FieldAccountOption(Guid Id, string Name, string Currency);
 
 /// <summary>§28 : rejouable hors ligne — <c>OperationUuid</c> = idempotence, comme une vente (Phase 10 §13).
 /// Solde la commande liée via <c>OrderService.CompleteOrderAsync</c> (aucun double moteur, §52).</summary>
@@ -63,7 +77,8 @@ public sealed record CompleteInterventionRequest(
 public sealed record FieldInterventionDto(
     Guid Id, Guid? TechnicianUserId, Guid? CustomerId, string EquipmentDescription,
     JsonElement Checklist, JsonElement PartsUsed, DateTimeOffset? ScheduledAt, DateTimeOffset? StartedAt,
-    DateTimeOffset? CompletedAt, int? TimeSpentMinutes, string Status, Guid? SignatureAttachmentId, string ReportText);
+    DateTimeOffset? CompletedAt, int? TimeSpentMinutes, string Status, Guid? SignatureAttachmentId, string ReportText,
+    string? CustomerName = null, string? TechnicianName = null, string? CompletedByName = null);
 
 // --- §46 Diagnostics minimisés ---------------------------------------------------------------
 
