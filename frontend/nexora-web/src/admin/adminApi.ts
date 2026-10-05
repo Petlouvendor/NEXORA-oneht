@@ -125,7 +125,7 @@ export interface Assignment {
 }
 export const listAssignments = (userId: string) => apiFetch<Assignment[]>(`/users/${userId}/assignments`);
 export const grantAssignment = (userId: string, body: {
-  roleName: string; scopeType: "COMPANY"; companyId: string | null; establishmentId: null;
+  roleName: string; scopeType: "COMPANY" | "GROUP"; companyId: string | null; establishmentId: null;
   validFrom: string | null; validUntil: string | null; reason: string | null;
 }) => apiFetch<string>(`/users/${userId}/assignments`, { method: "POST", body: JSON.stringify(body) });
 export const revokeAssignment = (assignmentId: string, reason: string) =>

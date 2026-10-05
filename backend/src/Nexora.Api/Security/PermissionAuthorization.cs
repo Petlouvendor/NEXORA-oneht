@@ -49,7 +49,11 @@ public sealed class PermissionAuthorizationHandler(
         var profile = await permissions.LoadProfileAsync(userId);
 
         // Périmètre : entreprise active si sélectionnée, sinon n'importe laquelle autorisée.
-        var granted = profile.HasPermission(requirement.Permission, tenant.ActiveCompanyId);
+        // Gouvernance de groupe : le droit doit être détenu sur LE groupe visé, par un rôle de groupe
+        // (finalisation phase 14 — un rôle d'une seule société n'ouvre pas les sociétés sœurs).
+        var granted = Application.Security.Permissions.IsGroupLevel(requirement.Permission)
+            ? HasGroupPermission(profile, requirement.Permission, context.Resource as HttpContext)
+            : profile.HasPermission(requirement.Permission, tenant.ActiveCompanyId);
 
         // Clé d'API (Phase 35 §13) : la requête est en outre bornée aux scopes de la clé —
         // une clé n'accorde jamais plus que ce que son propriétaire détient, ni au-delà de son propre périmètre.
@@ -65,5 +69,15 @@ public sealed class PermissionAuthorizationHandler(
             logger.LogWarning(
                 "Refus : utilisateur {UserId} sans permission {Permission} (entreprise {Company})",
                 userId, requirement.Permission, tenant.ActiveCompanyId);
+    }
+
+    /// <summary>Groupe visé : celui de la route, sinon chacun des groupes du périmètre (routes « à plat »).</summary>
+    private bool HasGroupPermission(UserSecurityProfile profile, string permission, HttpContext? http)
+    {
+        IReadOnlyCollection<Guid> groups =
+            http?.GetRouteValue("groupId") is { } raw && Guid.TryParse(raw.ToString(), out var routeGroup)
+                ? [routeGroup]
+                : tenant.GroupIds;
+        return groups.Count > 0 && groups.All(g => profile.GroupPermissionsFor(g).Contains(permission));
     }
 }

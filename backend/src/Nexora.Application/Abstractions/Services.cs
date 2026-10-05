@@ -36,8 +36,20 @@ public interface IPermissionService
 public sealed record UserSecurityProfile(
     Guid UserId,
     IReadOnlyList<CompanyMembership> Memberships,
-    IReadOnlyCollection<string>? PlatformPermissions = null)
+    IReadOnlyCollection<string>? PlatformPermissions = null,
+    IReadOnlyDictionary<Guid, IReadOnlyCollection<string>>? GroupPermissions = null)
 {
+    /// <summary>
+    /// Permissions de gouvernance de groupe (<c>group.*</c>, <c>consolidation.*</c>) pour ce groupe :
+    /// seules comptent celles d'un rôle attribué au niveau du groupe ou de la plateforme. Un rôle
+    /// attribué à une seule société ne donne jamais accès aux sociétés sœurs (finalisation phase 14).
+    /// </summary>
+    public IReadOnlyCollection<string> GroupPermissionsFor(Guid groupId) =>
+        (GroupPermissions is { } gp && gp.TryGetValue(groupId, out var perms) ? perms : [])
+            .Concat(PlatformPermissions ?? [])
+            .Distinct()
+            .ToArray();
+
     public IReadOnlyCollection<Guid> CompanyIds => Memberships.Select(m => m.CompanyId).Distinct().ToArray();
     public IReadOnlyCollection<Guid> GroupIds => Memberships.Where(m => m.GroupId is not null).Select(m => m.GroupId!.Value).Distinct().ToArray();
 

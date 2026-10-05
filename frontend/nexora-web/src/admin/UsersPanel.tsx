@@ -123,16 +123,19 @@ function CreateUserDialog({ onClose, onDone }: { onClose: () => void; onDone: ()
 
 /** Rôles attribués à un utilisateur dans l'entreprise active : ajout (éventuellement temporaire), retrait motivé. */
 function AssignmentsDrawer({ user, onClose }: { user: UserSummary; onClose: () => void }) {
-  const { activeCompanyId } = useAuth();
+  const { activeCompanyId, user: me } = useAuth();
   const toast = useToast();
   const roles = useAssignableRoles();
+  // Périmètre « Groupe » : toutes les sociétés du groupe de l'entreprise active (seul moyen d'ouvrir la vue groupe).
+  const inGroup = !!me?.companies.find((c) => c.companyId === activeCompanyId)?.groupId;
+  const [scope, setScope] = useState<"COMPANY" | "GROUP">("COMPANY");
   const [version, setVersion] = useState(0);
   const assignments = useAsync(() => listAssignments(user.id), [user.id, version]);
   const [role, setRole] = useState("");
   const [until, setUntil] = useState("");
   const [reason, setReason] = useState("");
   const [revoking, setRevoking] = useState<Assignment | null>(null);
-  const { busy, error, fieldErrors, submit, fail } = useSubmit({ "identity.escalation": "role", "identity.role": "role", "identity.validity": "until" });
+  const { busy, error, fieldErrors, submit, fail } = useSubmit({ "identity.escalation": "role", "identity.role": "role", "identity.validity": "until", "identity.no_group": "scope" });
   const reload = () => setVersion((v) => v + 1);
 
   async function grant(e?: FormEvent) {
@@ -141,10 +144,10 @@ function AssignmentsDrawer({ user, onClose }: { user: UserSummary; onClose: () =
     if (until && until <= todayIso()) return fail("until", "La fin doit être dans le futur.");
     if (reason.trim().length < 3) return fail("reason", "Motif obligatoire.");
     const ok = await submit(() => grantAssignment(user.id, {
-      roleName: role, scopeType: "COMPANY", companyId: activeCompanyId, establishmentId: null,
+      roleName: role, scopeType: scope, companyId: activeCompanyId, establishmentId: null,
       validFrom: null, validUntil: until ? new Date(`${until}T23:59:59`).toISOString() : null, reason: reason.trim(),
     }).then(() => true));
-    if (ok) { toast.success(`Rôle « ${role} » attribué${until ? ` jusqu'au ${dateShort(until)}` : ""}.`); setRole(""); setUntil(""); setReason(""); reload(); }
+    if (ok) { toast.success(`Rôle « ${role} » attribué${scope === "GROUP" ? " pour tout le groupe" : ""}${until ? ` jusqu'au ${dateShort(until)}` : ""}.`); setRole(""); setUntil(""); setReason(""); reload(); }
   }
 
   return (
@@ -171,11 +174,19 @@ function AssignmentsDrawer({ user, onClose }: { user: UserSummary; onClose: () =
                   {roles.map((r) => <option key={r.name} value={r.name}>{r.name}</option>)}
                 </Select>
               </Field>
+              {inGroup && (
+                <Field label="Périmètre" error={fieldErrors.scope} hint="Groupe : toutes les sociétés, et la vue groupe.">
+                  <Select value={scope} onChange={(e) => setScope(e.target.value as "COMPANY" | "GROUP")}>
+                    <option value="COMPANY">Cette entreprise</option>
+                    <option value="GROUP">Tout le groupe</option>
+                  </Select>
+                </Field>
+              )}
               <Field label="Jusqu'au" error={fieldErrors.until} hint="Vide : permanent."><TextInput type="date" min={todayIso()} value={until} onChange={(e) => setUntil(e.target.value)} /></Field>
             </div>
             <Field label="Motif" required error={fieldErrors.reason}><TextInput value={reason} maxLength={300} placeholder="Ex. remplacement pendant les congés" onChange={(e) => setReason(e.target.value)} /></Field>
             <div><Button type="submit" size="sm" disabled={busy}>Attribuer</Button></div>
-            <div style={hint}>Un rôle ne s'attribue que si vous détenez toutes ses permissions. Effet immédiat.</div>
+            <div style={hint}>Un rôle ne s'attribue que si vous détenez toutes ses permissions (au niveau du groupe pour un rôle de groupe). Les droits de groupe d'un rôle attribué à une seule entreprise n'ont pas d'effet. Effet immédiat.</div>
           </form>
       </div>
       {revoking && <ConfirmDialog title={`Retirer le rôle « ${revoking.roleName} »`} requireReason danger confirmLabel="Retirer"

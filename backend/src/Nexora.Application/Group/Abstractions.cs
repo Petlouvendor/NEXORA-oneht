@@ -14,6 +14,8 @@ public interface IGroupLedgerService
     Task<Result<Guid>> UpsertAccountAsync(Guid groupId, UpsertGroupAccountRequest request, CancellationToken ct = default);
     Task<Result> SetMappingAsync(Guid groupId, SetMappingRequest request, CancellationToken ct = default);
     Task<IReadOnlyList<MappingCoverageRow>> MappingCoverageAsync(Guid groupId, CancellationToken ct = default);
+    Task<Result<IReadOnlyList<LocalAccountMappingDto>>> ListMappingsAsync(Guid groupId, Guid companyId, CancellationToken ct = default);
+    Task<GroupOptionsDto> OptionsAsync(Guid groupId, CancellationToken ct = default);
     Task<GroupPolicyDto> GetPolicyAsync(Guid groupId, CancellationToken ct = default);
     Task<Result> SetPolicyAsync(Guid groupId, SetGroupPolicyRequest request, CancellationToken ct = default);
 }
@@ -69,5 +71,5 @@ public interface IGroupTaskService
 public interface ICompanyProvisioningService
 {
     Task<Result<Guid>> ProvisionAsync(ProvisionCompanyRequest request, CancellationToken ct = default);
-    Task<Result> ArchiveAsync(Guid companyId, ArchiveCompanyRequest request, CancellationToken ct = default);
+    Task<Result> ArchiveAsync(Guid groupId, Guid companyId, ArchiveCompanyRequest request, CancellationToken ct = default);
 }

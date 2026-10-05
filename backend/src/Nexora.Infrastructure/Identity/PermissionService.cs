@@ -72,13 +72,23 @@ public sealed class PermissionService(NexoraDbContext db, ITenantContext tenant,
                     (a.Scope.CompanyId == c.Id) ||
                     a.Scope.ScopeTypeValue == ScopeType.Platform).ToList();
 
+                // Les droits de groupe ne viennent que d'un rôle de groupe ou de plateforme : portés par
+                // un rôle d'entreprise, ils ouvriraient les données des sociétés sœurs (phase 14).
                 return new CompanyMembership(
                     c.Id,
                     c.Name,
                     c.GroupId,
                     applicable.Select(a => a.Name).Distinct().ToArray(),
-                    applicable.SelectMany(a => a.Permissions).Distinct().ToArray());
+                    applicable.SelectMany(a => a.Scope.ScopeTypeValue is ScopeType.Group or ScopeType.Platform
+                            ? a.Permissions
+                            : a.Permissions.Where(p => !Application.Security.Permissions.IsGroupLevel(p)))
+                        .Distinct().ToArray());
             }).ToList();
+
+            var groupPermissions = assignments
+                .Where(a => a.Scope.ScopeTypeValue == ScopeType.Group && a.Scope.GroupId is not null)
+                .GroupBy(a => a.Scope.GroupId!.Value)
+                .ToDictionary(g => g.Key, g => (IReadOnlyCollection<string>)g.SelectMany(a => a.Permissions).Distinct().ToArray());
 
             // Rôles à scope PLATFORM (Phase 38 §35) : permissions plateforme sans entreprise de rattachement.
             var platformPermissions = assignments
@@ -87,7 +97,7 @@ public sealed class PermissionService(NexoraDbContext db, ITenantContext tenant,
                 .Distinct()
                 .ToArray();
 
-            return new UserSecurityProfile(userId, memberships, platformPermissions);
+            return new UserSecurityProfile(userId, memberships, platformPermissions, groupPermissions);
         }
     }
 }

@@ -308,6 +308,13 @@ public static class Permissions
         public const string Publish = "consolidation.publish";
     }
 
+    /// <summary>
+    /// Permission de gouvernance de groupe : n'a d'effet que portée par un rôle attribué au niveau
+    /// du groupe (ou de la plateforme). Attribuée dans une seule société, elle reste inerte.
+    /// </summary>
+    public static bool IsGroupLevel(string code) =>
+        code.StartsWith("group.", StringComparison.Ordinal) || code.StartsWith("consolidation.", StringComparison.Ordinal);
+
     /// <summary>Local, Offline, Hybride & Cloud (Phase 10 §30-31).</summary>
     public static class Sync
     {
