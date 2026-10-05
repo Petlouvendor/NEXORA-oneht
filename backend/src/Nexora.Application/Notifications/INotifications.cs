@@ -52,6 +52,28 @@ public interface IMessageTemplateService
 public interface INotificationDispatcher
 {
     Task<int> DispatchDueAsync(CancellationToken ct = default);
+    /// <summary>Traite tout de suite les envois dus d'une seule entreprise (planificateur arrêté).</summary>
+    Task<int> DispatchDueForCompanyAsync(Guid companyId, CancellationToken ct = default);
+    /// <summary>Traite un envoi précis (message de test, relance manuelle).</summary>
+    Task DispatchOneAsync(Guid outboxId, CancellationToken ct = default);
+}
+
+/// <summary>
+/// Administration des envois (finalisation phase 16) : fournisseurs et leur configuration, test réel de
+/// chaque canal, journal des envois et des tentatives, relances. Un canal sans fournisseur configuré
+/// n'envoie rien et le dit (« fournisseur non configuré »).
+/// </summary>
+public interface INotificationDeliveryAdmin
+{
+    Task<IReadOnlyList<ChannelProviderDto>> ProvidersAsync(CancellationToken ct = default);
+    Task<Result<ChannelTestResultDto>> TestChannelAsync(string channel, CancellationToken ct = default);
+    Task<Result<OutboxEntryDto>> SendTestAsync(SendTestMessageRequest request, CancellationToken ct = default);
+    Task<DeliverySummaryDto> SummaryAsync(CancellationToken ct = default);
+    Task<IReadOnlyList<OutboxEntryDto>> ListAsync(string? status, string? channel, CancellationToken ct = default);
+    Task<Result<IReadOnlyList<DeliveryLogDto>>> LogAsync(Guid outboxId, CancellationToken ct = default);
+    Task<Result> RetryAsync(Guid outboxId, CancellationToken ct = default);
+    Task<Result<int>> RequeueNotConfiguredAsync(string channel, CancellationToken ct = default);
+    Task<int> DispatchNowAsync(CancellationToken ct = default);
 }
 
 /// <summary>
@@ -62,14 +84,24 @@ public interface INotificationChannel
 {
     /// <summary>Nom du canal — doit correspondre à <c>notification_outbox.channel</c>.</summary>
     string Channel { get; }
+    /// <summary>Fournisseur derrière le canal (SMTP, Twilio, Firebase…), ou « aucun ».</summary>
+    string ProviderName { get; }
+    /// <summary>Configuration suffisante pour tenter un envoi (sans préjuger qu'il réussira).</summary>
+    bool IsConfigured { get; }
+    /// <summary>Résumé lisible de la configuration, sans aucun secret.</summary>
+    string ConfigurationSummary { get; }
 
     Task<ChannelSendResult> SendAsync(OutboxMessageDto message, CancellationToken ct = default);
+    /// <summary>Test réel du fournisseur (connexion, authentification) sans envoyer de message.</summary>
+    Task<ChannelTestResultDto> TestAsync(CancellationToken ct = default);
 }
 
-/// <summary><paramref name="Transient"/> = réessayable ; sinon échec définitif → dead-letter.</summary>
-public sealed record ChannelSendResult(bool Sent, bool Transient = false, string? Error = null)
+/// <summary><paramref name="Transient"/> = réessayable ; sinon échec définitif → dead-letter.
+/// <paramref name="NotConfigured"/> : rien n'est parti, le fournisseur n'est pas configuré (ni envoyé, ni panne).</summary>
+public sealed record ChannelSendResult(bool Sent, bool Transient = false, string? Error = null, bool NotConfigured = false)
 {
     public static ChannelSendResult Ok() => new(true);
     public static ChannelSendResult Retry(string error) => new(false, true, error);
     public static ChannelSendResult Fail(string error) => new(false, false, error);
+    public static ChannelSendResult Unconfigured(string error) => new(false, false, error, true);
 }

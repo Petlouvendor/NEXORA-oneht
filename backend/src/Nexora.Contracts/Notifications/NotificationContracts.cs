@@ -133,3 +133,26 @@ public sealed record OutboxMessageDto(
     Guid CorrelationId,
     DateTimeOffset CreatedAt,
     DateTimeOffset? SentAt);
+
+// --- Finalisation phase 16 : fournisseurs, tests, journal des envois ---------
+
+/// <summary>Canal et son fournisseur : configuré ou non, résumé sans secret, dernier test réel.</summary>
+public sealed record ChannelProviderDto(
+    string Channel, string Provider, bool Configured, string ConfigurationSummary,
+    string? LastTestStatus, string? LastTestMessage, DateTimeOffset? LastTestedAt, int NotConfiguredWaiting);
+
+/// <summary>Statut : CONNECTED, AUTHENTICATION_FAILED, TIMEOUT, UNAVAILABLE ou NOT_CONFIGURED.</summary>
+public sealed record ChannelTestResultDto(string Channel, string Status, string Message, int LatencyMs);
+
+public sealed record SendTestMessageRequest(string Channel, string Address);
+
+/// <summary>Un envoi (adresse partiellement masquée).</summary>
+public sealed record OutboxEntryDto(
+    Guid Id, string Channel, string Category, string Subject, string? AddressMasked, string? RecipientName,
+    string Status, int Attempts, int MaxAttempts, DateTimeOffset NextAttemptAt, string? LastError, string? Provider,
+    DateTimeOffset? LastAttemptAt, DateTimeOffset CreatedAt, DateTimeOffset? SentAt);
+
+public sealed record DeliveryLogDto(int Attempt, string Status, string? Provider, string? Error, int? DurationMs, DateTimeOffset CreatedAt);
+
+public sealed record DeliverySummaryDto(
+    bool SchedulerEnabled, int Pending, int Sending, int Sent, int Failed, int Dead, int NotConfigured, DateTimeOffset? OldestPendingAt);

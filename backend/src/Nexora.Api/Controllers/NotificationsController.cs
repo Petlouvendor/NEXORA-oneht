@@ -53,10 +53,18 @@ public sealed class NotificationsController(INotificationService notifications) 
 /// <summary>Préférences de notification — canal par catégorie, priorité minimale, heures calmes (§5).</summary>
 [ApiVersion("1.0")]
 [Route("api/v{version:apiVersion}/notification-preferences")]
-public sealed class NotificationPreferencesController(INotificationPreferenceService preferences) : ApiControllerBase
+public sealed class NotificationPreferencesController(
+    INotificationPreferenceService preferences, IEnumerable<INotificationChannel> channels) : ApiControllerBase
 {
     [HttpGet]
     public async Task<IActionResult> List(CancellationToken ct) => Ok(await preferences.ListAsync(ct));
+
+    /// <summary>Canaux externes et présence d'un fournisseur (finalisation phase 16) : la préférence avertit
+    /// l'utilisateur quand un canal choisi n'enverra rien. Aucun détail de configuration n'est exposé.</summary>
+    [HttpGet("channels")]
+    public IActionResult Channels()
+        => Ok(channels.GroupBy(c => c.Channel).Select(g => g.Last())
+            .Select(c => new { channel = c.Channel, configured = c.IsConfigured }));
 
     [HttpPost]
     public async Task<IActionResult> Upsert([FromBody] UpsertNotificationPreferenceRequest r, CancellationToken ct)
