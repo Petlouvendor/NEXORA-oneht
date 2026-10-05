@@ -20,7 +20,10 @@ export const changePassword = (currentPassword: string, newPassword: string) =>
  * Meilleur effort : la déconnexion locale a lieu quoi qu'il arrive.
  */
 export async function revokeServerSession(token: string | null): Promise<void> {
-  if (!token) return;
+  if (!token) {
+    try { await fetch(`${config.apiBaseUrl}/auth/logout`, { method: "POST", credentials: "same-origin", keepalive: true }); } catch { /* hors ligne */ }
+    return;
+  }
   try {
     await fetch(`${config.apiBaseUrl}/me/logout`, {
       method: "POST",
@@ -29,5 +32,11 @@ export async function revokeServerSession(token: string | null): Promise<void> {
     });
   } catch {
     /* hors ligne : le jeton expirera de lui-même */
+  }
+  try {
+    // Le jeton d'accès a pu expirer : la session est aussi fermée par son cookie de rafraîchissement.
+    await fetch(`${config.apiBaseUrl}/auth/logout`, { method: "POST", credentials: "same-origin", keepalive: true });
+  } catch {
+    /* hors ligne */
   }
 }
