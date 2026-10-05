@@ -120,7 +120,8 @@ public sealed class SqlWebhookIngestService(
                 return new WebhookIngestResult("failed", true, eventId, "Transaction inconnue.");
             }
 
-            var confirm = await gateway.ProviderCallbackAsync(intentId, new ProviderCallbackRequest("confirmed", providerAmount, reference), ct);
+            // Paiement réel : l'événement déclenche une vérification auprès du fournisseur, jamais une confirmation aveugle.
+            var confirm = await gateway.ConfirmFromProviderEventAsync(intentId, providerAmount, reference, ct);
             if (!confirm.IsSuccess)
             {
                 await MarkAsync(eventId, "failed", confirm.Error!.Message, ct);

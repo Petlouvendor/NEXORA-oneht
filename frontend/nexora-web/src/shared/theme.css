@@ -358,7 +358,10 @@ a:hover { text-decoration: underline; }
   animation: nx-fade var(--nx-dur) var(--nx-ease);
 }
 .nx-modal {
-  width: min(560px, 100%); max-height: 88vh; overflow: auto;
+  /* Au moins 560 px, mais jamais plus étroite que la largeur minimale de son contenu (formulaires larges),
+     dans la limite de l'écran : les champs débordaient à droite de la fenêtre. */
+  width: min-content; min-width: min(560px, 100%); max-width: min(1100px, 100%);
+  max-height: 88vh; overflow: auto;
   background: var(--nx-surface); border: 1px solid var(--nx-border);
   border-radius: var(--nx-radius-lg); box-shadow: var(--nx-shadow);
   padding: calc(var(--nx-space) * 3);
