@@ -323,6 +323,12 @@ public static class DependencyInjection
 
         // Intégrations, Paiements & Écosystème (Phase 12)
         services.AddSingleton<IOutboundWebhookDispatcher, HttpOutboundWebhookDispatcher>();
+        // Fournisseurs de paiement (finalisation phase 15) : simulation, MonCash, carte — transport HTTP substituable.
+        services.AddSingleton(sp => new ProviderHttp(sp.GetRequiredService<IConfiguration>(), sp.GetService<PaymentProviderHandler>()));
+        services.AddSingleton<IPaymentProvider, SimulatedPaymentProvider>();
+        services.AddSingleton<IPaymentProvider, MonCashPaymentProvider>();
+        services.AddSingleton<IPaymentProvider, CardPaymentProvider>();
+        services.AddSingleton<IPaymentProviderRegistry, PaymentProviderRegistry>();
         services.AddScoped<IIntegrationRegistry, SqlIntegrationRegistry>();
         services.AddScoped<IOutboundWebhookService, SqlOutboundWebhookService>();
         services.AddScoped<IPaymentGateway, SqlPaymentGateway>();

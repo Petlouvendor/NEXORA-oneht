@@ -9,15 +9,24 @@ public sealed record ConnectorDto(
     Guid Id, string Code, string Name, string ConnectorType, string Provider,
     string Environment, string Status, DateTimeOffset? LastSyncAt, string? LastError,
     DateTimeOffset? LastErrorAt, string ConnectorVersion, bool HasSecret,
-    JsonElement Config, DateTimeOffset UpdatedAt);
+    JsonElement Config, DateTimeOffset UpdatedAt,
+    string Mode = "real", bool CredentialsConfigured = false, string? CredentialsHint = null,
+    string? LastTestStatus = null, string? LastTestMessage = null, DateTimeOffset? LastTestedAt = null,
+    bool ProviderSupported = false);
+
+/// <summary>Identifiants fournisseur : écriture seule, chiffrés au repos, jamais renvoyés.</summary>
+public sealed record SetConnectorCredentialsRequest(string ClientId, string ClientSecret);
+
+/// <summary>Fournisseurs de paiement disponibles et ce qu'ils savent faire.</summary>
+public sealed record PaymentProviderInfo(string Key, string Name, bool IsSimulation, bool SupportsRefund, IReadOnlyCollection<string> Currencies);
 
 public sealed record UpsertConnectorRequest(
     string Code, string Name, string ConnectorType, string Provider,
     string Environment, JsonElement? Config);
 
-/// <summary>Résultat d'un test de connexion (§40). Le connecteur simulé répond toujours ; un vrai
-/// adaptateur appellerait le fournisseur.</summary>
-public sealed record ConnectorTestResult(bool Ok, string Detail, int LatencyMs);
+/// <summary>Résultat d'un test de connexion réel (finalisation phase 15) : CONNECTED, AUTHENTICATION_FAILED,
+/// TIMEOUT, UNAVAILABLE ou NOT_CONFIGURED, avec un message compréhensible. <c>Mode</c> : simulation / real.</summary>
+public sealed record ConnectorTestResult(bool Ok, string Detail, int LatencyMs, string Status = "NOT_CONFIGURED", string Mode = "real");
 
 /// <summary>Le secret n'est renvoyé qu'une seule fois, à la rotation (§38).</summary>
 public sealed record RotateSecretResult(string Secret);
@@ -32,7 +41,8 @@ public sealed record CreatePaymentIntentRequest(
 public sealed record PaymentIntentDto(
     Guid Id, Guid ConnectorId, string? ProviderReference, decimal Amount, string Currency,
     string Method, string Purpose, string Status, Guid? PaymentId, decimal RefundedAmount,
-    DateTimeOffset? ExpiresAt, DateTimeOffset? ConfirmedAt, string? FailureReason, DateTimeOffset CreatedAt);
+    DateTimeOffset? ExpiresAt, DateTimeOffset? ConfirmedAt, string? FailureReason, DateTimeOffset CreatedAt,
+    string Mode = "simulation", string? RedirectUrl = null, string? ProviderOrderId = null, Guid? CustomerId = null);
 
 /// <summary>Rappel fournisseur simulé (bac à sable §42) : confirmed / failed / cancelled.</summary>
 public sealed record ProviderCallbackRequest(string Outcome, decimal? ProviderAmount, string? ProviderReference);
