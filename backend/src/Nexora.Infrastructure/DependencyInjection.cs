@@ -290,11 +290,14 @@ public static class DependencyInjection
         services.AddScoped<Nexora.Application.Notifications.INotificationChannel,
             Nexora.Infrastructure.Notifications.TwilioSmsChannel>();
 
-        // Webhook de notification (distinct des webhooks sortants de l'API — Phase 12) :
-        // LoggingWebhookChannel conservé — le canal "webhook" in-app n'a pas de fournisseur
-        // tiers ; c'est l'HttpOutboundWebhookDispatcher qui gère les webhooks sortants.
-        services.AddScoped<Nexora.Application.Notifications.INotificationChannel,
-            Nexora.Infrastructure.Notifications.LoggingWebhookChannel>();
+        // Canaux sans fournisseur intégré (webhook de notification, WhatsApp) : « non configuré », jamais « envoyé ».
+        // Les webhooks sortants de l'API (Phase 12) passent par HttpOutboundWebhookDispatcher, pas par ce canal.
+        services.AddSingleton<Nexora.Application.Notifications.INotificationChannel>(
+            new Nexora.Infrastructure.Notifications.UnavailableChannel("webhook", "webhook de notification"));
+        services.AddSingleton<Nexora.Application.Notifications.INotificationChannel>(
+            new Nexora.Infrastructure.Notifications.UnavailableChannel("whatsapp", "WhatsApp"));
+        services.AddScoped<Nexora.Application.Notifications.INotificationDeliveryAdmin,
+            Nexora.Infrastructure.Notifications.SqlNotificationDeliveryAdmin>();
 
         // Push : FcmPushChannel (Singleton car FirebaseApp est un objet global process-unique).
         // Fail si Notifications:Fcm:Enabled=false.

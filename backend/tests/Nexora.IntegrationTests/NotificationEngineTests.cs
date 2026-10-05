@@ -158,26 +158,95 @@ public sealed class NotificationEngineTests(FinanceEngineFixture fx)
     [Fact]
     public async Task The_dispatcher_dead_letters_after_the_maximum_attempts()
     {
-        await using var s = Scope();
+        // Canal de test en panne temporaire : relance avec délai, puis rejet après le nombre maximal de tentatives.
+        await using var sp = fx.CreateProviderWith(sv => sv.AddSingleton<INotificationChannel>(new FlakyChannel()));
+        await using var s = sp.CreateAsyncScope();
         var uid = await NewUser();
         AsUser(s.ServiceProvider, uid);
         var dispatcher = s.ServiceProvider.GetRequiredService<INotificationDispatcher>();
 
-        // canal webhook sans adresse → échec réessayable ; max 2 tentatives.
         var outboxId = Guid.NewGuid();
         await Sql($"""
-            INSERT INTO nexora.notification_outbox (id, company_id, user_id, channel, category, subject, body, max_attempts, next_attempt_at)
-            VALUES ('{outboxId}', '{Company}', '{uid}', 'webhook', 'low_stock', 'x', 'y', 2, now() - interval '1 minute')
+            INSERT INTO nexora.notification_outbox (id, company_id, user_id, channel, category, subject, body, address, max_attempts, next_attempt_at)
+            VALUES ('{outboxId}', '{Company}', '{uid}', 'whatsapp', 'low_stock', 'x', 'y', '+50937000000', 2, now() - interval '1 minute')
             """);
 
-        await dispatcher.DispatchDueAsync();
+        await dispatcher.DispatchOneAsync(outboxId);
         (await Scalar<string>($"SELECT status FROM nexora.notification_outbox WHERE id='{outboxId}'")).Should().Be("failed");
 
         await Sql($"UPDATE nexora.notification_outbox SET next_attempt_at = now() - interval '1 minute' WHERE id='{outboxId}'");
-        await dispatcher.DispatchDueAsync();
+        await dispatcher.DispatchOneAsync(outboxId);
 
         (await Scalar<string>($"SELECT status FROM nexora.notification_outbox WHERE id='{outboxId}'")).Should().Be("dead");
         (await Scalar<short>($"SELECT attempts FROM nexora.notification_outbox WHERE id='{outboxId}'")).Should().Be((short)2);
+        (await Scalar<long>($"SELECT COUNT(*) FROM nexora.notification_delivery_log WHERE outbox_id='{outboxId}'")).Should().Be(2,
+            "chaque tentative est journalisée");
+        (await Scalar<string>($"SELECT provider FROM nexora.notification_outbox WHERE id='{outboxId}'")).Should().Be("panne simulée");
+    }
+
+    /// <summary>Canal dont le fournisseur est momentanément indisponible (prend la place de WhatsApp dans ce test).</summary>
+    private sealed class FlakyChannel : INotificationChannel
+    {
+        public string Channel => "whatsapp";
+        public string ProviderName => "panne simulée";
+        public bool IsConfigured => true;
+        public string ConfigurationSummary => "Canal de test";
+        public Task<ChannelSendResult> SendAsync(Nexora.Contracts.Notifications.OutboxMessageDto message, CancellationToken ct = default)
+            => Task.FromResult(ChannelSendResult.Retry("Service momentanément indisponible."));
+        public Task<Nexora.Contracts.Notifications.ChannelTestResultDto> TestAsync(CancellationToken ct = default)
+            => Task.FromResult(new Nexora.Contracts.Notifications.ChannelTestResultDto("whatsapp", "UNAVAILABLE", "panne", 0));
+    }
+
+    // ---- Finalisation phase 16 : sans fournisseur, rien n'est « envoyé » et rien n'est escaladé ----
+    [Fact]
+    public async Task Without_a_provider_nothing_is_reported_as_sent_and_nothing_is_escalated()
+    {
+        await using var s = Scope();
+        var uid = await NewUser();
+        AsUser(s.ServiceProvider, uid);
+        var dispatcher = s.ServiceProvider.GetRequiredService<INotificationDispatcher>();
+        var admin = s.ServiceProvider.GetRequiredService<INotificationDeliveryAdmin>();
+
+        var ids = new Dictionary<string, Guid>();
+        foreach (var (channel, address) in new[] { ("webhook", "https://exemple.test/hook"), ("email", "client@exemple.test"), ("sms", "+50937000000"), ("push", "jeton-appareil-0001") })
+        {
+            var id = Guid.NewGuid();
+            ids[channel] = id;
+            await Sql($"""
+                INSERT INTO nexora.notification_outbox (id, company_id, user_id, channel, category, subject, body, address, next_attempt_at)
+                VALUES ('{id}', '{Company}', '{uid}', '{channel}', 'low_stock', 'x', 'y', '{address}', now() - interval '1 minute')
+                """);
+        }
+        var escalationsBefore = await Scalar<long>("SELECT COUNT(*) FROM nexora.notification WHERE category = 'delivery_failed'");
+        foreach (var id in ids.Values) await dispatcher.DispatchOneAsync(id);
+
+        foreach (var (channel, id) in ids)
+        {
+            (await Scalar<string>($"SELECT status FROM nexora.notification_outbox WHERE id='{id}'")).Should().Be("not_configured",
+                $"le canal {channel} n'a pas de fournisseur configuré : le webhook se disait « envoyé », les autres partaient en rejet escaladé");
+            (await Scalar<string>($"SELECT last_error FROM nexora.notification_outbox WHERE id='{id}'")).Should().Contain("n'a pas été envoyé");
+        }
+        (await Scalar<long>("SELECT COUNT(*) FROM nexora.notification WHERE category = 'delivery_failed'")).Should().Be(escalationsBefore);
+
+        // Fournisseurs : état honnête, et relance refusée tant que rien n'est configuré.
+        var providers = await admin.ProvidersAsync();
+        providers.Select(p => p.Channel).Should().Contain(["email", "sms", "push", "webhook"]);
+        providers.Should().OnlyContain(p => !p.Configured);
+        providers.Single(p => p.Channel == "email").NotConfiguredWaiting.Should().BeGreaterThan(0);
+        foreach (var ch in new[] { "email", "sms", "push", "webhook" })
+            (await admin.TestChannelAsync(ch)).Value!.Status.Should().Be("NOT_CONFIGURED");
+        (await admin.RetryAsync(ids["email"])).Error!.Code.Should().Be("notifications.provider_not_configured");
+        (await admin.RequeueNotConfiguredAsync("sms")).Error!.Code.Should().Be("notifications.provider_not_configured");
+
+        var entry = (await admin.ListAsync("not_configured", "email")).Single(e => e.Id == ids["email"]);
+        entry.AddressMasked.Should().Be("cl…@exemple.test", "l'adresse est masquée dans le journal");
+        (await admin.LogAsync(ids["email"])).Value!.Single().Status.Should().Be("not_configured");
+        (await admin.SummaryAsync()).NotConfigured.Should().BeGreaterThanOrEqualTo(4);
+
+        (await admin.SendTestAsync(new Nexora.Contracts.Notifications.SendTestMessageRequest("sms", "50937"))).Error!.Code
+            .Should().Be("notifications.test_address");
+        var test = (await admin.SendTestAsync(new Nexora.Contracts.Notifications.SendTestMessageRequest("email", "admin@exemple.test"))).Value!;
+        test.Status.Should().Be("not_configured", "un message de test sans fournisseur n'est pas « envoyé »");
     }
 
     // ---- §4 : marquer lu met à jour le compteur ; le périmètre par requête reste l'utilisateur ----
@@ -204,5 +273,118 @@ public sealed class NotificationEngineTests(FinanceEngineFixture fx)
 
         AsUser(s.ServiceProvider, bob);
         (await s.ServiceProvider.GetRequiredService<INotificationService>().UnreadCountAsync()).Should().Be(1);
+    }
+
+    // ---- Finalisation phase 16 : canal e-mail testé contre un vrai dialogue SMTP (serveur local) ----
+
+    /// <summary>Serveur SMTP minimal : accueil, EHLO avec AUTH, authentification (mot de passe « bon »), MAIL/RCPT/DATA.</summary>
+    private sealed class FakeSmtpServer : IAsyncDisposable
+    {
+        private readonly System.Net.Sockets.TcpListener _listener = new(System.Net.IPAddress.Loopback, 0);
+        private readonly CancellationTokenSource _stop = new();
+        public int Port { get; }
+        public List<string> Received { get; } = [];
+
+        public FakeSmtpServer()
+        {
+            _listener.Start();
+            Port = ((System.Net.IPEndPoint)_listener.LocalEndpoint).Port;
+            _ = Task.Run(AcceptLoop);
+        }
+
+        private async Task AcceptLoop()
+        {
+            while (!_stop.IsCancellationRequested)
+            {
+                System.Net.Sockets.TcpClient client;
+                try { client = await _listener.AcceptTcpClientAsync(_stop.Token); } catch { return; }
+                _ = Task.Run(() => Serve(client));
+            }
+        }
+
+        private async Task Serve(System.Net.Sockets.TcpClient client)
+        {
+            using var _ = client;
+            var stream = client.GetStream();
+            var reader = new StreamReader(stream, System.Text.Encoding.ASCII);
+            var writer = new StreamWriter(stream, System.Text.Encoding.ASCII) { NewLine = "\r\n", AutoFlush = true };
+            await writer.WriteLineAsync("220 fake.smtp ESMTP");
+            var inData = false;
+            var data = new System.Text.StringBuilder();
+            while (await reader.ReadLineAsync() is { } line)
+            {
+                if (inData)
+                {
+                    if (line == ".") { inData = false; lock (Received) Received.Add(data.ToString()); await writer.WriteLineAsync("250 OK queued"); }
+                    else data.AppendLine(line);
+                    continue;
+                }
+                var cmd = line.ToUpperInvariant();
+                if (cmd.StartsWith("EHLO") || cmd.StartsWith("HELO")) { await writer.WriteLineAsync("250-fake.smtp"); await writer.WriteLineAsync("250 AUTH PLAIN LOGIN"); }
+                else if (cmd.StartsWith("AUTH PLAIN"))
+                {
+                    var decoded = System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(line.Split(' ')[2]));
+                    await writer.WriteLineAsync(decoded.EndsWith("\0bon") ? "235 2.7.0 Authentication successful" : "535 5.7.8 Authentication credentials invalid");
+                }
+                else if (cmd.StartsWith("MAIL FROM") || cmd.StartsWith("RCPT TO")) await writer.WriteLineAsync("250 OK");
+                else if (cmd == "DATA") { inData = true; await writer.WriteLineAsync("354 End data with <CR><LF>.<CR><LF>"); }
+                else if (cmd == "QUIT") { await writer.WriteLineAsync("221 Bye"); return; }
+                else await writer.WriteLineAsync("250 OK");
+            }
+        }
+
+        public ValueTask DisposeAsync() { _stop.Cancel(); _listener.Stop(); return ValueTask.CompletedTask; }
+    }
+
+    private ServiceProvider SmtpProvider(int port, string password) => fx.CreateProviderWith(_ => { }, new Dictionary<string, string?>
+    {
+        ["Notifications:Smtp:Enabled"] = "true",
+        ["Notifications:Smtp:Host"] = "127.0.0.1",
+        ["Notifications:Smtp:Port"] = port.ToString(),
+        ["Notifications:Smtp:UserName"] = "nexora",
+        ["Notifications:Smtp:Password"] = password,
+        ["Notifications:Smtp:FromAddress"] = "no-reply@exemple.test",
+    });
+
+    [Fact]
+    public async Task Email_channel_test_talks_to_a_real_smtp_server()
+    {
+        await using var server = new FakeSmtpServer();
+        var uid = await NewUser();
+
+        await using (var bad = SmtpProvider(server.Port, "mauvais"))
+        await using (var s = bad.CreateAsyncScope())
+        {
+            AsUser(s.ServiceProvider, uid);
+            var r = (await s.ServiceProvider.GetRequiredService<INotificationDeliveryAdmin>().TestChannelAsync("email")).Value!;
+            r.Status.Should().Be("AUTHENTICATION_FAILED");
+        }
+
+        await using (var good = SmtpProvider(server.Port, "bon"))
+        await using (var s = good.CreateAsyncScope())
+        {
+            AsUser(s.ServiceProvider, uid);
+            var admin = s.ServiceProvider.GetRequiredService<INotificationDeliveryAdmin>();
+            (await admin.TestChannelAsync("email")).Value!.Status.Should().Be("CONNECTED");
+            server.Received.Should().BeEmpty("le test de connexion n'envoie aucun message");
+
+            var providers = await admin.ProvidersAsync();
+            var email = providers.Single(p => p.Channel == "email");
+            email.Configured.Should().BeTrue();
+            email.ConfigurationSummary.Should().Contain("127.0.0.1").And.NotContain("bon", "aucun secret affiché");
+            email.LastTestStatus.Should().Be("CONNECTED");
+
+            var sent = (await admin.SendTestAsync(new Nexora.Contracts.Notifications.SendTestMessageRequest("email", "destinataire@exemple.test"))).Value!;
+            sent.Status.Should().Be("sent");
+            sent.Provider.Should().Be("SMTP");
+            server.Received.Should().ContainSingle().Which.Should().Contain("Test d'envoi NEXORA ONE");
+        }
+
+        await using (var down = SmtpProvider(1, "bon"))
+        await using (var s = down.CreateAsyncScope())
+        {
+            AsUser(s.ServiceProvider, uid);
+            (await s.ServiceProvider.GetRequiredService<INotificationDeliveryAdmin>().TestChannelAsync("email")).Value!.Status.Should().Be("UNAVAILABLE");
+        }
     }
 }

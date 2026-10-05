@@ -26,7 +26,13 @@ public sealed class NotificationDispatcher(
         string Subject, string Body, string? Address, short Attempts, short MaxAttempts, Guid CorrelationId,
         DateTimeOffset CreatedAt, DateTimeOffset? SentAt);
 
-    public async Task<int> DispatchDueAsync(CancellationToken ct = default)
+    public Task<int> DispatchDueAsync(CancellationToken ct = default) => DispatchAsync(null, null, ct);
+
+    public Task<int> DispatchDueForCompanyAsync(Guid companyId, CancellationToken ct = default) => DispatchAsync(companyId, null, ct);
+
+    public Task DispatchOneAsync(Guid outboxId, CancellationToken ct = default) => DispatchAsync(null, outboxId, ct);
+
+    private async Task<int> DispatchAsync(Guid? companyId, Guid? outboxId, CancellationToken ct)
     {
         using var _ = tenant.BeginSystemScope();
 
@@ -36,7 +42,10 @@ public sealed class NotificationDispatcher(
                    attempts AS "Attempts", max_attempts AS "MaxAttempts", correlation_id AS "CorrelationId",
                    created_at AS "CreatedAt", sent_at AS "SentAt"
             FROM nexora.notification_outbox
-            WHERE status IN ('pending','failed') AND next_attempt_at <= now()
+            WHERE status IN ('pending','failed')
+              AND ({outboxId}::uuid IS NOT NULL OR next_attempt_at <= now())
+              AND ({outboxId}::uuid IS NULL OR id = {outboxId})
+              AND ({companyId}::uuid IS NULL OR company_id = {companyId})
             ORDER BY priority, next_attempt_at
             LIMIT {BatchSize}
             """).ToListAsync(ct);
@@ -51,33 +60,53 @@ public sealed class NotificationDispatcher(
                 """, ct);
             if (claimed == 0) continue;
 
-            var channel = channels.FirstOrDefault(c => c.Channel == row.Channel);
+            var channel = channels.LastOrDefault(c => c.Channel == row.Channel);   // le dernier enregistré l'emporte (surcharge)
+            var provider = channel?.ProviderName ?? "aucun";
+            var started = System.Diagnostics.Stopwatch.StartNew();
             ChannelSendResult result;
             try
             {
                 result = channel is null
-                    ? ChannelSendResult.Fail($"Canal « {row.Channel} » non configuré.")
+                    ? ChannelSendResult.Unconfigured($"Aucun fournisseur pour le canal « {row.Channel} » : le message n'a pas été envoyé.")
                     : await channel.SendAsync(ToDto(row), ct);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 result = ChannelSendResult.Retry(ex.Message);
             }
+            var duration = (int)started.ElapsedMilliseconds;
 
             var attempts = (short)(row.Attempts + 1);
+            string status;
             if (result.Sent)
             {
+                status = "sent";
                 await db.Database.ExecuteSqlAsync($"""
                     UPDATE nexora.notification_outbox
-                    SET status = 'sent', attempts = {attempts}, sent_at = now(), last_error = NULL, updated_at = now()
+                    SET status = 'sent', attempts = {attempts}, sent_at = now(), last_error = NULL,
+                        provider = {provider}, last_attempt_at = now(), updated_at = now()
+                    WHERE id = {row.Id}
+                    """, ct);
+            }
+            else if (result.NotConfigured)
+            {
+                // Rien n'est parti : ni « envoyé », ni panne à escalader. Le message attend un fournisseur ;
+                // l'administrateur le relance une fois le fournisseur configuré.
+                status = "not_configured";
+                await db.Database.ExecuteSqlAsync($"""
+                    UPDATE nexora.notification_outbox
+                    SET status = 'not_configured', attempts = {attempts}, last_error = {result.Error},
+                        provider = {provider}, last_attempt_at = now(), updated_at = now()
                     WHERE id = {row.Id}
                     """, ct);
             }
             else if (!result.Transient || attempts >= row.MaxAttempts)
             {
+                status = "dead";
                 await db.Database.ExecuteSqlAsync($"""
                     UPDATE nexora.notification_outbox
-                    SET status = 'dead', attempts = {attempts}, last_error = {result.Error}, updated_at = now()
+                    SET status = 'dead', attempts = {attempts}, last_error = {result.Error},
+                        provider = {provider}, last_attempt_at = now(), updated_at = now()
                     WHERE id = {row.Id}
                     """, ct);
                 await NotifyAdminOfFailureAsync(row, attempts, ct);
@@ -86,15 +115,22 @@ public sealed class NotificationDispatcher(
             }
             else
             {
+                status = "failed";
                 var delayMinutes = Math.Min(60, (int)Math.Pow(2, attempts));   // 2, 4, 8, 16, 32, plafond 60
                 var next = clock.UtcNow.AddMinutes(delayMinutes);
                 await db.Database.ExecuteSqlAsync($"""
                     UPDATE nexora.notification_outbox
                     SET status = 'failed', attempts = {attempts}, last_error = {result.Error},
-                        next_attempt_at = {next}, updated_at = now()
+                        next_attempt_at = {next}, provider = {provider}, last_attempt_at = now(), updated_at = now()
                     WHERE id = {row.Id}
                     """, ct);
             }
+
+            // Journal des tentatives : chaque essai est conservé (fournisseur, résultat, erreur, durée).
+            await db.Database.ExecuteSqlAsync($"""
+                INSERT INTO nexora.notification_delivery_log (outbox_id, company_id, attempt, status, provider, error, duration_ms)
+                VALUES ({row.Id}, {row.CompanyId}, {attempts}, {status}, {provider}, {result.Error}, {duration})
+                """, ct);
             handled++;
         }
         return handled;
@@ -103,7 +139,8 @@ public sealed class NotificationDispatcher(
     private async Task NotifyAdminOfFailureAsync(Row row, int attempts, CancellationToken ct)
     {
         // Ne jamais escalader un échec d'escalade (§31 — pas de cascade).
-        if (row.Category == "delivery_failed" || row.CompanyId is not { } company) return;
+        // Un message de test en échec est déjà affiché à l'administrateur qui l'a lancé.
+        if (row.Category is "delivery_failed" or "delivery_test" || row.CompanyId is not { } company) return;
 
         var admins = await db.Database.SqlQuery<Guid>($"""
             SELECT DISTINCT ur.user_id AS "Value"
@@ -140,37 +177,38 @@ public sealed class NotificationDispatcher(
 }
 
 // -----------------------------------------------------------------------------
-// Canaux par défaut (Phase 34 §3) — journalisent la remise. Les fournisseurs réels
-// (SMTP, Twilio, Meta WhatsApp, WebPush…) remplacent ces implémentations sans toucher au moteur.
+// Canaux sans fournisseur intégré (finalisation phase 16). Les anciens canaux « journalisation »
+// renvoyaient « envoyé » sans rien envoyer : un message vers un webhook de notification ou WhatsApp
+// apparaissait comme remis. Ils disent maintenant la vérité : fournisseur non configuré.
 // -----------------------------------------------------------------------------
 
-internal abstract class LoggingChannel(ILogger logger) : INotificationChannel
+public sealed class UnavailableChannel(string channel, string label) : INotificationChannel
 {
-    public abstract string Channel { get; }
-    protected bool RequiresAddress => Channel is "email" or "webhook" or "push";
+    public string Channel => channel;
+    public string ProviderName => "aucun";
+    public bool IsConfigured => false;
+    public string ConfigurationSummary => $"Aucun fournisseur n'est intégré pour le canal {label}.";
 
     public Task<ChannelSendResult> SendAsync(OutboxMessageDto m, CancellationToken ct = default)
-    {
-        if (RequiresAddress && string.IsNullOrWhiteSpace(m.Address))
-            return Task.FromResult(ChannelSendResult.Retry($"Adresse {Channel} absente pour la notification {m.Id}."));
+        => Task.FromResult(ChannelSendResult.Unconfigured($"Aucun fournisseur {label} : le message n'a pas été envoyé."));
 
-        logger.LogInformation("[{Channel}] → {Address} · {Subject}", Channel, m.Address ?? "(interne)", m.Subject);
-        return Task.FromResult(ChannelSendResult.Ok());
-    }
+    public Task<ChannelTestResultDto> TestAsync(CancellationToken ct = default)
+        => Task.FromResult(new ChannelTestResultDto(Channel, Nexora.Application.Integrations.ConnectionStatus.NotConfigured, ConfigurationSummary, 0));
 }
 
-internal sealed class LoggingEmailChannel(ILogger<LoggingEmailChannel> logger) : LoggingChannel(logger)
-{ public override string Channel => "email"; }
+/// <summary>Masquage des données affichées : secrets, adresses e-mail, numéros.</summary>
+public static class NotificationMasks
+{
+    public static string Secret(string value)
+        => string.IsNullOrEmpty(value) ? "" : value.Length <= 6 ? new string('•', value.Length) : $"{value[..4]}…{value[^2..]}";
 
-internal sealed class LoggingSmsChannel(ILogger<LoggingSmsChannel> logger) : LoggingChannel(logger)
-{ public override string Channel => "sms"; }
-
-internal sealed class LoggingWebhookChannel(ILogger<LoggingWebhookChannel> logger) : LoggingChannel(logger)
-{ public override string Channel => "webhook"; }
-
-/// <summary>Canal push (Phase 44 §20) — la colonne `notification_outbox.channel`/`message_template.channel`
-/// autorisait déjà « push » depuis la Phase 34 (V047), jamais implémenté avant cette phase. Journalise
-/// comme les autres canaux : un vrai fournisseur (FCM/APNs/WebPush) remplacera cette implémentation
-/// sans toucher au moteur (§3).</summary>
-internal sealed class LoggingPushChannel(ILogger<LoggingPushChannel> logger) : LoggingChannel(logger)
-{ public override string Channel => "push"; }
+    public static string? Address(string channel, string? address)
+    {
+        if (string.IsNullOrWhiteSpace(address)) return null;
+        var a = address.Trim();
+        if (channel == "email" && a.IndexOf('@') is var at and > 0)
+            return $"{a[..Math.Min(2, at)]}…{a[at..]}";
+        if (channel == "push") return a.Length > 12 ? $"{a[..6]}…{a[^4..]}" : "appareil";
+        return a.Length > 6 ? $"{a[..4]}…{a[^2..]}" : new string('•', a.Length);
+    }
+}

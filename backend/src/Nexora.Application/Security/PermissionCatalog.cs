@@ -369,6 +369,7 @@ public static class Permissions
     public static class Notifications
     {
         public const string ManageTemplates = "notifications.manage_templates";
+        public const string ManageDelivery = "notifications.manage_delivery";
     }
 
     /// <summary>
