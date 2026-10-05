@@ -1,40 +1,34 @@
 import { useCallback, useEffect, useState } from "react";
 import { ApiError } from "@/core/apiClient";
 import { useAuth } from "@/auth/AuthContext";
+import { PaymentsSection } from "@/integrations/PaymentsSection";
 import {
   autoMatchStatement,
   createApiKey,
   deliverDue,
   disableApp,
-  expireStaleIntents,
   getCenter,
   installApp,
   listApiKeys,
   listApps,
-  listConnectors,
   listDeliveries,
   listDeveloperUsage,
   listInstalledApps,
-  listIntents,
   listOutbound,
   listStatements,
   listWebhookEvents,
   retryDelivery,
   revokeApiKey,
   rotateApiKey,
-  setConnectorStatus,
-  testConnector,
   uninstallApp,
   type ApiKey,
   type AppInstallation,
   type BankStatement,
-  type Connector,
   type DeveloperKeyUsage,
   type IntegrationCenter,
   type MarketplaceApp,
   type OutboundDelivery,
   type OutboundWebhook,
-  type PaymentIntent,
   type WebhookEvent,
 } from "@/integrations/integrationsApi";
 
@@ -58,8 +52,6 @@ const tone = (status: string): string | undefined => {
 export function IntegrationsCenterPage() {
   const { activeCompanyId, hasPermission } = useAuth();
   const [center, setCenter] = useState<IntegrationCenter | null>(null);
-  const [connectors, setConnectors] = useState<Connector[]>([]);
-  const [intents, setIntents] = useState<PaymentIntent[]>([]);
   const [events, setEvents] = useState<WebhookEvent[]>([]);
   const [outbound, setOutbound] = useState<OutboundWebhook[]>([]);
   const [deliveries, setDeliveries] = useState<OutboundDelivery[]>([]);
@@ -74,8 +66,6 @@ export function IntegrationsCenterPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const canConfigure = hasPermission("integrations.configure");
-  const canPayments = hasPermission("integrations.payments");
   const canWebhooks = hasPermission("integrations.webhooks");
   const canBank = hasPermission("integrations.bank");
   const canApiKeys = hasPermission("integrations.manage_api_keys");
@@ -85,8 +75,6 @@ export function IntegrationsCenterPage() {
     setError(null);
     Promise.all([
       getCenter(),
-      listConnectors(),
-      canPayments ? listIntents() : Promise.resolve([]),
       canWebhooks ? listWebhookEvents() : Promise.resolve([]),
       canWebhooks ? listOutbound() : Promise.resolve([]),
       canWebhooks ? listDeliveries() : Promise.resolve([]),
@@ -96,13 +84,13 @@ export function IntegrationsCenterPage() {
       canManageApps ? listInstalledApps() : Promise.resolve([]),
       canApiKeys ? listDeveloperUsage() : Promise.resolve([]),
     ])
-      .then(([c, cn, it, ev, ob, dl, st, ak, mp, inst, us]) => {
-        setCenter(c); setConnectors(cn); setIntents(it); setEvents(ev);
+      .then(([c, ev, ob, dl, st, ak, mp, inst, us]) => {
+        setCenter(c); setEvents(ev);
         setOutbound(ob); setDeliveries(dl); setStatements(st); setApiKeys(ak);
         setApps(mp.items); setInstalled(inst); setUsage(us);
       })
       .catch((e) => setError(e instanceof ApiError ? e.message : "Erreur de chargement"));
-  }, [canPayments, canWebhooks, canBank, canApiKeys, canManageApps]);
+  }, [canWebhooks, canBank, canApiKeys, canManageApps]);
 
   useEffect(load, [load, activeCompanyId]);
 
@@ -122,7 +110,7 @@ export function IntegrationsCenterPage() {
   const label: React.CSSProperties = { color: "var(--nx-text-2)", fontSize: 12, textTransform: "uppercase", marginBottom: 8 };
 
   return (
-    <div style={{ display: "grid", gap: 16 }}>
+    <div style={{ display: "grid", gap: 16, gridTemplateColumns: "minmax(0, 1fr)" }}>
       <h1 style={{ margin: 0 }}>Centre des intégrations</h1>
       {error && <div className="nx-error-text">{error}</div>}
       {notice && <div style={{ color: "var(--nx-success)" }}>{notice}</div>}
@@ -156,42 +144,7 @@ export function IntegrationsCenterPage() {
         </>
       )}
 
-      <section className="nx-card">
-        <div style={label}>Connecteurs (§5-6)</div>
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
-            <thead><tr style={{ color: "var(--nx-text-2)" }}>
-              {["Nom", "Type", "Fournisseur", "Env.", "Statut", "Dernier appel", "Dernier webhook", ""].map((h) => <th key={h} style={th}>{h}</th>)}
-            </tr></thead>
-            <tbody>
-              {connectors.map((c) => (
-                <tr key={c.id} style={{ borderTop: "1px solid var(--nx-surface-2)" }}>
-                  <td style={td}>{c.name}</td>
-                  <td style={{ ...td, color: "var(--nx-text-2)" }}>{c.connectorType}</td>
-                  <td style={td}>{c.provider}</td>
-                  <td style={{ ...td, color: "var(--nx-text-2)" }}>{c.environment}</td>
-                  <td style={{ ...td, color: tone(c.status) }}>{c.status}{c.lastError ? ` · ${c.lastError}` : ""}</td>
-                  <td style={td}>{rel(c.lastSyncAt)}</td>
-                  <td style={td}>{rel(center?.connectors.find((h) => h.id === c.id)?.lastWebhookAt ?? null)}</td>
-                  <td style={td}>
-                    {canConfigure && (
-                      <span style={{ display: "flex", gap: 6 }}>
-                        <button className="nx-btn nx-btn--ghost" style={{ padding: "2px 8px", fontSize: 12 }} disabled={busy}
-                                onClick={() => run(() => testConnector(c.id).then((r) => r.detail), "Test effectué")}>Tester</button>
-                        <button className="nx-btn nx-btn--ghost" style={{ padding: "2px 8px", fontSize: 12 }} disabled={busy}
-                                onClick={() => run(() => setConnectorStatus(c.id, c.status === "active" ? "inactive" : "active"), "Statut mis à jour")}>
-                          {c.status === "active" ? "Désactiver" : "Activer"}
-                        </button>
-                      </span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-              {connectors.length === 0 && <tr><td style={{ ...td, color: "var(--nx-text-2)" }} colSpan={8}>Aucun connecteur configuré.</td></tr>}
-            </tbody>
-          </table>
-        </div>
-      </section>
+      <PaymentsSection onChanged={load} />
 
       <section className="nx-card">
         <div style={label}>Marketplace — apps partenaires (§41-44)</div>
@@ -245,39 +198,6 @@ export function IntegrationsCenterPage() {
           immédiatement toute clé d'API émise pour elle (§46).
         </div>
       </section>
-
-      {canPayments && (
-        <section className="nx-card">
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div style={label}>Intentions de paiement (§7-11)</div>
-            <button className="nx-btn nx-btn--ghost" style={{ padding: "2px 10px", fontSize: 12 }} disabled={busy}
-                    onClick={() => run(() => expireStaleIntents().then((r) => `${r.expired} expirée(s)`), "Expiration lancée")}>
-              Expirer les échues
-            </button>
-          </div>
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
-              <thead><tr style={{ color: "var(--nx-text-2)" }}>
-                {["Créée", "Référence", "Montant", "Moyen", "Statut", "Paiement", "Remboursé"].map((h) => <th key={h} style={th}>{h}</th>)}
-              </tr></thead>
-              <tbody>
-                {intents.slice(0, 25).map((i) => (
-                  <tr key={i.id} style={{ borderTop: "1px solid var(--nx-surface-2)" }}>
-                    <td style={td}>{rel(i.createdAt)}</td>
-                    <td style={{ ...td, fontFamily: "monospace", fontSize: 12 }}>{i.providerReference ?? "—"}</td>
-                    <td style={{ ...td }} className="nx-numeric">{i.amount.toLocaleString("fr-FR")} {i.currency}</td>
-                    <td style={{ ...td, color: "var(--nx-text-2)" }}>{i.method}</td>
-                    <td style={{ ...td, color: tone(i.status) }}>{i.status}{i.failureReason ? ` · ${i.failureReason}` : ""}</td>
-                    <td style={{ ...td, color: "var(--nx-text-2)" }}>{i.paymentId ? "lié" : "—"}</td>
-                    <td style={td} className="nx-numeric">{i.refundedAmount > 0 ? i.refundedAmount.toLocaleString("fr-FR") : "—"}</td>
-                  </tr>
-                ))}
-                {intents.length === 0 && <tr><td style={{ ...td, color: "var(--nx-text-2)" }} colSpan={7}>Aucune intention.</td></tr>}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      )}
 
       {canWebhooks && (
         <>
