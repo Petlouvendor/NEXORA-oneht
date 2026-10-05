@@ -8,6 +8,13 @@ public sealed record AuthTokenResponse(
     int ExpiresInSeconds,
     CurrentUserResponse User)
 {
+    /// <summary>Session porteuse du jeton (claim <c>sid</c>) — usage serveur, jamais sérialisée.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public Guid SessionId { get; init; }
+
+    /// <summary>Fin de la session (durée maximale) : au-delà, une nouvelle connexion est nécessaire.</summary>
+    public DateTimeOffset? SessionExpiresAt { get; init; }
+
     // --- Deuxième facteur (Phase 33 §8) : renseignés quand le mot de passe est correct
     //     mais qu'un code TOTP est encore requis. AccessToken est alors vide. ---
 

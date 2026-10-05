@@ -30,11 +30,13 @@ public sealed class AccountingPeriodsController(
         }));
 
     [HttpPost("{id:guid}/close")]
+    [RequireStepUp(StepUpPurposes.AccountingValidation)]
     [RequirePermission(Permissions.Accounting.ClosePeriod)]
     public async Task<IActionResult> Close(Guid id, CancellationToken ct)
         => FromResult(await periodService.CloseAsync(id, ct));
 
     [HttpPost("{id:guid}/reopen")]
+    [RequireStepUp(StepUpPurposes.AccountingValidation)]
     [RequirePermission(Permissions.Accounting.ReopenPeriod)]
     public async Task<IActionResult> Reopen(Guid id, [FromBody] ReverseJournalEntryRequest body, CancellationToken ct)
         => FromResult(await periodService.ReopenAsync(id, body.Reason, ct));
@@ -47,6 +49,7 @@ public sealed class AccountingPeriodsController(
         => FromResult(await fiscalYear.PreviewCloseAsync(id, ct));
 
     [HttpPost("{id:guid}/close-year")]
+    [RequireStepUp(StepUpPurposes.AccountingValidation)]
     [RequirePermission(Permissions.Accounting.CarryForward)]
     public async Task<IActionResult> CloseYear(Guid id, [FromBody] CloseYearRequest? r, CancellationToken ct)
         => FromResult(await fiscalYear.CloseYearAsync(id, r ?? new CloseYearRequest(), ct));

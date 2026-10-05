@@ -70,6 +70,7 @@ public sealed class EmployeesController(
 
     /// <summary>Identifiants bancaires et fiscaux en clair — chaque lecture est journalisée (§35).</summary>
     [HttpGet("employees/{id:guid}/sensitive")]
+    [RequireStepUp(StepUpPurposes.SensitiveData)]
     [RequirePermission(Permissions.Payroll.ViewSensitive)]
     public async Task<IActionResult> Sensitive(Guid id, CancellationToken ct) => FromResult(await employees.SensitiveAsync(id, ct));
 

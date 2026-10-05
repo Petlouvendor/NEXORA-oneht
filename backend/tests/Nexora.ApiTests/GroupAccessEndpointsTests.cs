@@ -31,6 +31,7 @@ public sealed class GroupAccessEndpointsTests(WebApplicationFactory<Program> fac
     public async Task Group_routes_open_only_to_a_role_held_at_group_level()
     {
         var direction = await Login("direction@abc-group.demo", "Nexora!2026");
+        await StepUpTestHelper.AddStepUpAsync(direction, "Nexora!2026", "permission_change");
         var created = await direction.PostAsJsonAsync("/api/v1/users", new
         {
             email = CompanyManager, fullName = "Gérant Pharmacie (test groupe)", password = CompanyManagerPassword,

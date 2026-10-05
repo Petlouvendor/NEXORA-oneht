@@ -77,11 +77,13 @@ public sealed class ConsolidationController(IConsolidationService consolidation,
         => FromResult(await consolidation.ValidateAsync(groupId, runId, ct));
 
     [HttpPost("runs/{runId:guid}/publish")]
+    [RequireStepUp(StepUpPurposes.AccountingValidation)]
     [RequirePermission(Permissions.Consolidation.Publish)]
     public async Task<IActionResult> Publish(Guid groupId, Guid runId, CancellationToken ct)
         => FromResult(await consolidation.PublishAsync(groupId, runId, ct));
 
     [HttpPost("runs/{runId:guid}/reopen")]
+    [RequireStepUp(StepUpPurposes.AccountingValidation)]
     [RequirePermission(Permissions.Consolidation.Validate)]
     public async Task<IActionResult> Reopen(Guid groupId, Guid runId, [FromBody] ReopenRunRequest r, CancellationToken ct)
         => FromResult(await consolidation.ReopenAsync(groupId, runId, r, ct));

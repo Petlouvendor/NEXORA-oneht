@@ -86,8 +86,15 @@ public sealed class SecurityController(
     // --- Ré-authentification renforcée (§7) -------------------
 
     [HttpPost("step-up")]
+    // Limite par adresse plus large que la connexion (bureau partagé) ; le forçage est bloqué par le verrouillage
+    // par utilisateur (5 échecs en 15 minutes).
+    [Microsoft.AspNetCore.RateLimiting.EnableRateLimiting("refresh")]
     public async Task<IActionResult> StepUp([FromBody] StepUpChallengeRequest r, CancellationToken ct)
-        => FromResult(await stepUp.ChallengeAsync(r, ct));
+        => FromResult(await stepUp.ChallengeAsync(r with
+        {
+            SessionId = Guid.TryParse(User.FindFirst("sid")?.Value, out var sid) ? sid : null,
+            IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
+        }, ct));
 
     [HttpPost("step-up/verify")]
     public async Task<IActionResult> StepUpVerify([FromBody] StepUpVerifyRequest r, CancellationToken ct)
@@ -185,11 +192,13 @@ public sealed class SecurityController(
         => Ok(await emergencyAccess.ListAsync(status, ct));
 
     [HttpPost("emergency-access")]
+    [RequireStepUp(StepUpPurposes.PermissionChange)]
     [RequirePermission(Permissions.Security.RequestEmergencyAccess)]
     public async Task<IActionResult> RequestEmergencyAccess([FromBody] RequestEmergencyAccessRequest r, CancellationToken ct)
         => FromResult(await emergencyAccess.RequestAsync(r, ct));
 
     [HttpPost("emergency-access/{id:guid}/decide")]
+    [RequireStepUp(StepUpPurposes.PermissionChange)]
     [RequirePermission(Permissions.Security.ApproveEmergencyAccess)]
     public async Task<IActionResult> DecideEmergencyAccess(Guid id, [FromBody] DecideEmergencyAccessRequest r, CancellationToken ct)
         => FromResult(await emergencyAccess.DecideAsync(id, r, ct));

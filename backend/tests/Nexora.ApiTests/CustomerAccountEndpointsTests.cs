@@ -89,6 +89,9 @@ public sealed class CustomerAccountEndpointsTests(WebApplicationFactory<Program>
     public async Task Voiding_an_unknown_payment_is_not_found_and_a_missing_reason_is_rejected()
     {
         var direction = await Login("direction@abc-group.demo", Pharmacy);
+        await StepUpTestHelper.ShouldRequireStepUpAsync(
+            await direction.PostAsJsonAsync($"/api/v1/payments/{Unknown}/void", new { reason = "Contrôle d'accès" }), "cancellation");
+        await StepUpTestHelper.AddStepUpAsync(direction, "Nexora!2026", "cancellation");
         (await direction.PostAsJsonAsync($"/api/v1/payments/{Unknown}/void", new { reason = "Contrôle d'accès" }))
             .StatusCode.Should().Be(HttpStatusCode.BadRequest, "§23 : opération sensible sans clé d'idempotence refusée");
         direction.DefaultRequestHeaders.Add("Idempotency-Key", Guid.NewGuid().ToString());

@@ -35,7 +35,7 @@ public sealed class AuthController(
     {
         var result = await login.HandleAsync(request, ClientIp(), ct);
         if (result.IsSuccess && result.Value is { MfaRequired: false })
-            await RecordSessionAsync(result.Value!.User.Id, request.CompanyId, result.Value.AccessToken, ct);
+            return Ok(await StartSessionAsync(result.Value!, request.CompanyId, ct));
         return FromResult(result);
     }
 
@@ -47,8 +47,31 @@ public sealed class AuthController(
     {
         var result = await mfaVerify.HandleAsync(request, ClientIp(), ct);
         if (result.IsSuccess)
-            await RecordSessionAsync(result.Value!.User.Id, null, result.Value.AccessToken, ct);
+            return Ok(await StartSessionAsync(result.Value!, null, ct));
         return FromResult(result);
+    }
+
+    /// <summary>
+    /// Rafraîchissement (finalisation phase 17) : le jeton de rafraîchissement voyage dans un cookie
+    /// HttpOnly limité à <c>/api/v1/auth</c> — jamais lisible par le JavaScript de la page. Chaque appel le
+    /// consomme et en remet un nouveau (rotation) ; un jeton déjà consommé ferme toutes les sessions.
+    /// </summary>
+    [HttpPost("refresh")]
+    [EnableRateLimiting("refresh")]
+    [ProducesResponseType<AuthTokenResponse>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    public async Task<IActionResult> Refresh(CancellationToken ct)
+    {
+        var raw = Request.Cookies[RefreshCookie];
+        var outcome = await sessions.RefreshAsync(raw ?? "", ClientIp(), ct);
+        if (!outcome.IsSuccess)
+        {
+            // Un autre onglet vient de renouveler : on garde son cookie (déjà posé) ; sinon on l'efface.
+            if (outcome.Error!.Code != "auth.refresh_race") ClearRefreshCookie(Response);
+            return FromResult(outcome);
+        }
+        SetRefreshCookie(outcome.Value!.RefreshToken, outcome.Value.ExpiresAt);
+        return Ok(outcome.Value.Token);
     }
 
     /// <summary>Mot de passe oublié (recette AUTH-008) : toujours 202, que le compte existe ou non.
@@ -68,17 +91,41 @@ public sealed class AuthController(
 
     private string? ClientIp() => HttpContext.Connection.RemoteIpAddress?.ToString();
 
-    private async Task RecordSessionAsync(Guid userId, Guid? companyId, string accessToken, CancellationToken ct)
+    /// <summary>Déconnexion par le cookie de rafraîchissement — fonctionne même si le jeton d'accès a expiré.</summary>
+    [HttpPost("logout")]
+    [EnableRateLimiting("refresh")]
+    public async Task<IActionResult> Logout(CancellationToken ct)
     {
-        // Registre des sessions (Phase 11 §6, §30) — meilleur effort, ne bloque pas la connexion.
-        // L'identifiant du jeton (jti) lie la session au jeton : révoquer l'une coupe l'autre (AUTH-004).
-        try
-        {
-            Guid? tokenId = Guid.TryParse(new JsonWebToken(accessToken).Id, out var jti) ? jti : null;
-            var ua = Request.Headers.UserAgent.ToString();
-            await sessions.RecordAsync(userId, companyId,
-                string.IsNullOrWhiteSpace(ua) ? null : ua[..Math.Min(ua.Length, 200)], ClientIp(), ua, tokenId, ct);
-        }
-        catch { /* le registre ne doit jamais empêcher l'authentification */ }
+        if (Request.Cookies[RefreshCookie] is { Length: > 0 } raw) await sessions.RevokeByRefreshTokenAsync(raw, ct);
+        ClearRefreshCookie(Response);
+        return NoContent();
     }
+
+    public const string RefreshCookie = "nx_rt";
+    public const string RefreshCookiePath = "/api/v1/auth";
+
+    /// <summary>Ouvre la session portée par le jeton (claim <c>sid</c>) et pose le cookie de rafraîchissement.</summary>
+    private async Task<AuthTokenResponse> StartSessionAsync(AuthTokenResponse token, Guid? companyId, CancellationToken ct)
+    {
+        Guid? tokenId = Guid.TryParse(new JsonWebToken(token.AccessToken).Id, out var jti) ? jti : null;
+        var ua = Request.Headers.UserAgent.ToString();
+        var start = await sessions.StartAsync(token.SessionId, token.User.Id, companyId, ClientIp(),
+            string.IsNullOrWhiteSpace(ua) ? null : ua, tokenId, ct);
+        SetRefreshCookie(start.RefreshToken, start.ExpiresAt);
+        return token with { SessionExpiresAt = start.ExpiresAt };
+    }
+
+    private void SetRefreshCookie(string value, DateTimeOffset expires)
+        => Response.Cookies.Append(RefreshCookie, value, new CookieOptions
+        {
+            HttpOnly = true,
+            Secure = Request.IsHttps,
+            SameSite = SameSiteMode.Strict,
+            Path = RefreshCookiePath,
+            Expires = expires,
+            IsEssential = true,
+        });
+
+    public static void ClearRefreshCookie(HttpResponse response)
+        => response.Cookies.Delete(RefreshCookie, new CookieOptions { Path = RefreshCookiePath, SameSite = SameSiteMode.Strict, HttpOnly = true });
 }

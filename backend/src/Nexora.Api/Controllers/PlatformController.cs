@@ -77,6 +77,7 @@ public sealed class PlatformController(
     public async Task<IActionResult> LinkCompany(Guid id, [FromBody] LinkCompanyRequest r, CancellationToken ct) => FromResult(await customers.LinkCompanyAsync(id, r.CompanyId, ct));
 
     [HttpDelete("customers/{id:guid}/companies/{companyId:guid}")]
+    [RequireStepUp(StepUpPurposes.Deletion)]
     [RequirePermission(Permissions.Platform.ManageCustomers)]
     public async Task<IActionResult> UnlinkCompany(Guid id, Guid companyId, CancellationToken ct) => FromResult(await customers.UnlinkCompanyAsync(id, companyId, ct));
 

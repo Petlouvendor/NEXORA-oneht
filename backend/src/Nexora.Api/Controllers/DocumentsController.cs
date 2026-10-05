@@ -79,6 +79,7 @@ public sealed class DocumentsController(IDocumentService documents, IDocumentQue
         => FromResult(await documents.SendAsync(id, r, ct));
 
     [HttpPost("{id:guid}/cancel")]
+    [RequireStepUp(StepUpPurposes.Cancellation)]
     [RequirePermission(Permissions.Documents.Cancel)]
     public async Task<IActionResult> Cancel(Guid id, [FromBody] CancelDocumentRequest r, CancellationToken ct)
         => FromResult(await documents.CancelAsync(id, r, ct));

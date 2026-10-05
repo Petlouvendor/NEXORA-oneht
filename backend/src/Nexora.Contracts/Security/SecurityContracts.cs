@@ -45,7 +45,15 @@ public sealed record ApprovalDecisionRequest(bool Approve, string? Note);
 
 // --- Ré-authentification renforcée (§7) ----------------------------
 
-public sealed record StepUpChallengeRequest(string Password, string Purpose);
+/// <summary>Réauthentification forte : mot de passe, plus le code de double authentification quand elle est active.</summary>
+public sealed record StepUpChallengeRequest(string Password, string Purpose, string? Code = null)
+{
+    /// <summary>Session de l'appelant, posée par le serveur (jamais lue du corps).</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public Guid? SessionId { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string? IpAddress { get; init; }
+}
 public sealed record StepUpChallengeResponse(string Token, string Purpose, DateTimeOffset ExpiresAt);
 public sealed record StepUpVerifyRequest(string Token, string Purpose);
 
@@ -65,11 +73,11 @@ public sealed record SetDeviceTrustedRequest(bool Trusted);
 
 public sealed record SecurityPolicyDto(
     Guid CompanyId, IReadOnlyList<string> MfaRequiredRoles, int SessionTtlMinutes, int StepUpTtlMinutes,
-    bool SensitiveExportRequiresApproval, bool ExportWatermark, int AuditRetentionDays);
+    bool SensitiveExportRequiresApproval, bool ExportWatermark, int AuditRetentionDays, bool EnforceMfaForCritical = false);
 
 public sealed record SetSecurityPolicyRequest(
     IReadOnlyList<string>? MfaRequiredRoles, int? SessionTtlMinutes, int? StepUpTtlMinutes,
-    bool? SensitiveExportRequiresApproval, bool? ExportWatermark, int? AuditRetentionDays);
+    bool? SensitiveExportRequiresApproval, bool? ExportWatermark, int? AuditRetentionDays, bool? EnforceMfaForCritical = null);
 
 // =============================================================================
 // Sécurité, IAM & Conformité (Phase 47) — vulnérabilités, certificats, conformité auto-évaluée,

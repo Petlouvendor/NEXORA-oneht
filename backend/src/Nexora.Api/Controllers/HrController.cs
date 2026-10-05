@@ -159,6 +159,7 @@ public sealed class HrController(
         => FromResult(await claims.CancelAsync(id, r, ct));
 
     [HttpPost("expense-claims/{id:guid}/pay")]
+    [RequireStepUp(StepUpPurposes.Payment)]
     [RequirePermission(Permissions.Payroll.ExpenseApprove)]
     [Idempotent]
     public async Task<IActionResult> PayExpenseClaim(Guid id, [FromBody] PayExpenseClaimRequest r, CancellationToken ct)
