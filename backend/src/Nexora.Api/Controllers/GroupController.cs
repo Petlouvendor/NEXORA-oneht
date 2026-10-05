@@ -122,6 +122,7 @@ public sealed class GroupController(
         => FromResult(await provisioning.ProvisionAsync(r with { GroupId = groupId }, ct));
 
     [HttpPost("companies/{companyId:guid}/archive")]
+    [RequireStepUp(StepUpPurposes.Deletion)]
     [RequirePermission(Permissions.Group.Companies)]
     public async Task<IActionResult> ArchiveCompany(Guid groupId, Guid companyId, [FromBody] ArchiveCompanyRequest r, CancellationToken ct)
         => FromResult(await provisioning.ArchiveAsync(groupId, companyId, r, ct));

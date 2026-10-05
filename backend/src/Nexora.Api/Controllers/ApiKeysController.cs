@@ -21,14 +21,17 @@ public sealed class ApiKeysController(IApiKeyService keys) : ApiControllerBase
     public async Task<IActionResult> List(CancellationToken ct) => Ok(await keys.ListAsync(ct));
 
     [HttpPost]
+    [RequireStepUp(StepUpPurposes.PermissionChange)]
     public async Task<IActionResult> Create([FromBody] CreateApiKeyRequest r, CancellationToken ct)
         => FromResult(await keys.CreateAsync(r, ct));
 
     [HttpPost("{id:guid}/rotate")]
+    [RequireStepUp(StepUpPurposes.PermissionChange)]
     public async Task<IActionResult> Rotate(Guid id, CancellationToken ct)
         => FromResult(await keys.RotateAsync(id, ct));
 
     [HttpPost("{id:guid}/revoke")]
+    [RequireStepUp(StepUpPurposes.PermissionChange)]
     public async Task<IActionResult> Revoke(Guid id, CancellationToken ct)
         => FromResult(await keys.RevokeAsync(id, ct));
 }

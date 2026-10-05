@@ -269,9 +269,21 @@ public sealed class SqlMfaService(
         }, ct);
     }
 
+    public async Task<bool> VerifyCurrentUserCodeAsync(string code, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(code)) return false;
+        var user = await LoadUserAsync(CurrentUser, ct);
+        return user is { MfaEnabled: true } && await VerifyCodeAsync(CurrentUser, user.MfaSecret, code.Trim(), ct);
+    }
+
+    public async Task<bool> IsEnabledForCurrentUserAsync(CancellationToken ct = default)
+        => (await LoadUserAsync(CurrentUser, ct))?.MfaEnabled == true;
+
     public async Task<bool> PolicyRequiresMfaAsync(Guid userId, CancellationToken ct = default)
     {
         using var _ = tenant.BeginSystemScope();
+        // Un rôle attribué au groupe (la direction, par exemple) relève de la politique de chacune de ses
+        // sociétés : il échappait à l'obligation, la jointure ne regardant que les rôles d'une société.
         return await db.Database.SqlQuery<bool>($"""
             SELECT EXISTS (
                 SELECT 1
@@ -279,11 +291,34 @@ public sealed class SqlMfaService(
                 JOIN nexora.role r          ON r.id = ur.role_id
                 JOIN nexora.access_scope sc ON sc.id = ur.scope_id
                 JOIN nexora.security_policy sp ON sp.company_id = sc.company_id
+                     OR sp.company_id IN (SELECT c.id FROM nexora.company c WHERE c.group_id = sc.group_id)
                 WHERE ur.user_id = {userId}
                   AND ur.revoked_at IS NULL
                   AND (ur.valid_from IS NULL OR ur.valid_from <= now())
                   AND (ur.valid_until IS NULL OR ur.valid_until >= now())
                   AND sp.mfa_required_roles ? r.name
+            ) AS "Value"
+            """).FirstAsync(ct);
+    }
+
+    public async Task<bool> PolicyEnforcesMfaAsync(Guid userId, CancellationToken ct = default)
+    {
+        using var _ = tenant.BeginSystemScope();
+        // Un rôle attribué au groupe (la direction, par exemple) relève de la politique de chacune de ses
+        // sociétés : il échappait à l'obligation, la jointure ne regardant que les rôles d'une société.
+        return await db.Database.SqlQuery<bool>($"""
+            SELECT EXISTS (
+                SELECT 1
+                FROM nexora.user_role ur
+                JOIN nexora.role r          ON r.id = ur.role_id
+                JOIN nexora.access_scope sc ON sc.id = ur.scope_id
+                JOIN nexora.security_policy sp ON sp.company_id = sc.company_id
+                     OR sp.company_id IN (SELECT c.id FROM nexora.company c WHERE c.group_id = sc.group_id)
+                WHERE ur.user_id = {userId}
+                  AND ur.revoked_at IS NULL
+                  AND (ur.valid_from IS NULL OR ur.valid_from <= now())
+                  AND (ur.valid_until IS NULL OR ur.valid_until >= now())
+                  AND sp.mfa_required_roles ? r.name AND sp.enforce_mfa_for_critical
             ) AS "Value"
             """).FirstAsync(ct);
     }

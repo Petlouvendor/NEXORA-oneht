@@ -70,6 +70,10 @@ public sealed class SecurityGovernanceEndpointsTests(WebApplicationFactory<Progr
     public async Task Emergency_access_self_decision_is_rejected_over_http()
     {
         var client = await AuthedClient();
+        var request = new { roleName = "manager", reason = "Vérification du câblage HTTP de l'accès d'urgence.", requestedDurationHours = 1 };
+        await StepUpTestHelper.ShouldRequireStepUpAsync(
+            await client.PostAsJsonAsync("/api/v1/security/emergency-access", request), "permission_change");
+        await StepUpTestHelper.AddStepUpAsync(client, "Nexora!2026", "permission_change");
 
         var requested = await client.PostAsJsonAsync("/api/v1/security/emergency-access", new
         {

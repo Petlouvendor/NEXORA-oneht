@@ -138,6 +138,7 @@ public sealed class PayablesController(
         => Ok((await accounts.PaymentOptionsAsync(ct)).Accounts);
 
     [HttpPost("{id:guid}/payments")]
+    [RequireStepUp(StepUpPurposes.Payment)]
     [RequirePermission(Permissions.Purchasing.Pay)]
     [Idempotent]
     public async Task<IActionResult> Pay(Guid id, [FromBody] PayPayableRequest r, CancellationToken ct)

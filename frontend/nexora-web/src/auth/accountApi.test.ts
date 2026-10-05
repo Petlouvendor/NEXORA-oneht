@@ -29,25 +29,30 @@ describe("accountApi (recette Phase 55 — AUTH-004/007/008)", () => {
     expect(urls[1]).toContain("/me/password");
   });
 
-  it("revokeServerSession sends the token it is given and never throws", async () => {
-    let auth = ""; let method = "";
-    vi.stubGlobal("fetch", vi.fn(async (_u: string, init: RequestInit) => {
-      auth = new Headers(init.headers).get("Authorization") ?? "";
-      method = init.method ?? "";
+  it("revokeServerSession ferme la session par le jeton puis par le cookie, sans jamais lever d'erreur", async () => {
+    const calls: Array<{ url: string; auth: string; credentials?: RequestCredentials }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (u: string, init: RequestInit) => {
+      calls.push({ url: u, auth: new Headers(init.headers).get("Authorization") ?? "", credentials: init.credentials });
       return new Response(null, { status: 401 });   // déjà révoqué : ignoré, pas de boucle onUnauthorized
     }));
 
     await expect(revokeServerSession("jeton-courant")).resolves.toBeUndefined();
-    expect(auth).toBe("Bearer jeton-courant");
-    expect(method).toBe("POST");
+    expect(calls[0].url).toContain("/me/logout");
+    expect(calls[0].auth).toBe("Bearer jeton-courant");
+    // Le jeton d'accès a pu expirer : la session est aussi fermée par son cookie de rafraîchissement.
+    expect(calls[1].url).toContain("/auth/logout");
+    expect(calls[1].credentials).toBe("same-origin");
   });
 
-  it("revokeServerSession does nothing without a token and survives offline", async () => {
-    const f = vi.fn(async () => { throw new TypeError("offline"); });
-    vi.stubGlobal("fetch", f);
-
+  it("revokeServerSession sans jeton ferme la session par le cookie et survit hors ligne", async () => {
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (u: string) => { urls.push(u); return new Response(null, { status: 204 }); }));
     await revokeServerSession(null);
-    expect(f).not.toHaveBeenCalled();
+    expect(urls).toHaveLength(1);
+    expect(urls[0]).toContain("/auth/logout");
+
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("offline"); }));
     await expect(revokeServerSession("t")).resolves.toBeUndefined();
+    await expect(revokeServerSession(null)).resolves.toBeUndefined();
   });
 });

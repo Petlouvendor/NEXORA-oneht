@@ -26,11 +26,13 @@ public sealed class AccountingController(
         => Ok(await periods.ListAsync(ct));
 
     [HttpPost("periods/{id:guid}/close")]
+    [RequireStepUp(StepUpPurposes.AccountingValidation)]
     [RequirePermission(Permissions.Accounting.ClosePeriod)]
     public async Task<IActionResult> Close(Guid id, CancellationToken ct)
         => FromResult(await periodService.CloseAsync(id, ct));
 
     [HttpPost("periods/{id:guid}/reopen")]
+    [RequireStepUp(StepUpPurposes.AccountingValidation)]
     [RequirePermission(Permissions.Accounting.ReopenPeriod)]
     public async Task<IActionResult> Reopen(Guid id, [FromBody] ReverseEntryRequest body, CancellationToken ct)
         => FromResult(await periodService.ReopenAsync(id, body.Reason, ct));
@@ -38,6 +40,7 @@ public sealed class AccountingController(
     // --- Extourne (§28) -------------------------------------------------
 
     [HttpPost("journal-entries/{id:guid}/reverse")]
+    [RequireStepUp(StepUpPurposes.AccountingValidation)]
     [RequirePermission(Permissions.Accounting.Reverse)]
     public async Task<IActionResult> Reverse(Guid id, [FromBody] ReverseEntryRequest body, CancellationToken ct)
         => FromResult(await reversals.ReverseAsync(id, body.Reason, body.ReversalDate, ct));

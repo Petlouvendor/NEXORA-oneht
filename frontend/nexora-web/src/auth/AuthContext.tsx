@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ApiError, apiFetch, configureApiClient } from "@/core/apiClient";
+import { ApiError, apiFetch, clearStepUpTokens, configureApiClient } from "@/core/apiClient";
 import { secureGet, secureSet, secureStoreAvailable } from "@/shared/secureStore";
 import { config } from "@/core/config";
 import type { AuthTokenResponse, CurrentUser } from "@/auth/types";
@@ -39,6 +39,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Recette Phase 55 AUTH-004 : la session serveur est révoquée, plus seulement le navigateur vidé.
     void revokeServerSession(tokenRef.current);
     void clearToken();
+    clearStepUpTokens();
     // Le profil gardé pour le hors ligne part avec la session.
     if (secureStoreAvailable()) void secureSet(PROFILE_CACHE, null).catch(() => {});
     localStorage.removeItem(config.companyStorageKey);
@@ -48,10 +49,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setMfaToken(null);
   }, []);
 
+  // Jeton d'accès court renouvelé par le cookie de rafraîchissement (HttpOnly, jamais lisible ici).
+  const refresh = useCallback(async (): Promise<string | null> => {
+    for (let i = 0; i < 2; i++) {
+      let r: Response;
+      try {
+        r = await fetch(`${config.apiBaseUrl}/auth/refresh`, { method: "POST", credentials: "same-origin", headers: { Accept: "application/json" } });
+      } catch {
+        return null;   // hors ligne : on garde le jeton en place
+      }
+      if (r.ok) {
+        const res = (await r.json()) as AuthTokenResponse;
+        tokenRef.current = res.accessToken;   // la requête rejouée l'utilise tout de suite
+        await saveToken(res.accessToken);
+        setToken(res.accessToken);
+        return res.accessToken;
+      }
+      // Un autre onglet vient de renouveler la session : on réessaie avec son cookie.
+      const body = await r.json().catch(() => null) as { title?: string } | null;
+      if (body?.title !== "auth.refresh_race") return null;
+      await new Promise((ok) => setTimeout(ok, 400));
+    }
+    return null;
+  }, []);
+
   configureApiClient({
-    token: () => token,
+    token: () => tokenRef.current,
     company: () => activeCompanyId,
     onUnauthorized: logout,
+    refresh,
   });
 
   const setActiveCompany = useCallback((companyId: string) => {

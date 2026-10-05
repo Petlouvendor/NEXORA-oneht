@@ -12,7 +12,9 @@ public sealed record IssuedToken(string AccessToken, DateTimeOffset ExpiresAt);
 
 public interface ITokenService
 {
-    IssuedToken IssueAccessToken(AppUser user, IReadOnlyCollection<Guid> companyIds, IReadOnlyCollection<Guid> groupIds);
+    /// <summary>Jeton d'accès court. <paramref name="sessionId"/> (claim <c>sid</c>) lie le jeton à sa session :
+    /// révoquer ou laisser expirer la session coupe tous ses jetons, y compris ceux émis par rafraîchissement.</summary>
+    IssuedToken IssueAccessToken(AppUser user, IReadOnlyCollection<Guid> companyIds, IReadOnlyCollection<Guid> groupIds, Guid? sessionId = null);
 }
 
 public interface IDateTimeProvider

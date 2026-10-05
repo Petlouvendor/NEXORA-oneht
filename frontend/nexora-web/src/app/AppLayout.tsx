@@ -11,6 +11,7 @@ import { PageExportButton, useTableExportRenderer } from "@/shared/ExportMenu";
 import { useOnline } from "@/shared/useOnline";
 import { useOutbox } from "@/shared/useOutbox";
 import { unreadCount } from "@/notifications/notificationsApi";
+import { StepUpHost } from "@/auth/StepUpDialog";
 
 function NavRow({ to, label, icon, end, onNavigate }: {
   to: string; label: string; icon: keyof typeof Icon; end?: boolean; onNavigate: () => void;
@@ -54,6 +55,7 @@ export function AppLayout() {
   return (
     <div className="nx-shell">
       <a href="#nx-main" className="nx-skip">Aller au contenu</a>
+      <StepUpHost />
 
       <aside className={`nx-sidebar${navOpen ? " open" : ""}`}>
         <div className="nx-brandmark">

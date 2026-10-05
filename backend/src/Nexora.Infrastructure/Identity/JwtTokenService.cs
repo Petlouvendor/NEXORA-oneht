@@ -13,6 +13,8 @@ public static class NexoraClaims
     public const string UserId = "nx_uid";
     public const string CompanyIds = "nx_companies";
     public const string GroupIds = "nx_groups";
+    /// <summary>Session porteuse du jeton (finalisation phase 17).</summary>
+    public const string SessionId = "sid";
 }
 
 public sealed class JwtTokenService(IOptions<JwtOptions> options, IDateTimeProvider clock) : ITokenService
@@ -20,7 +22,7 @@ public sealed class JwtTokenService(IOptions<JwtOptions> options, IDateTimeProvi
     private readonly JwtOptions _o = options.Value;
 
     public IssuedToken IssueAccessToken(
-        AppUser user, IReadOnlyCollection<Guid> companyIds, IReadOnlyCollection<Guid> groupIds)
+        AppUser user, IReadOnlyCollection<Guid> companyIds, IReadOnlyCollection<Guid> groupIds, Guid? sessionId = null)
     {
         var now = clock.UtcNow;
         var expires = now.AddMinutes(_o.AccessTokenMinutes);
@@ -35,6 +37,7 @@ public sealed class JwtTokenService(IOptions<JwtOptions> options, IDateTimeProvi
             new(NexoraClaims.CompanyIds, string.Join(",", companyIds)),
             new(NexoraClaims.GroupIds, string.Join(",", groupIds)),
         };
+        if (sessionId is { } sid) claims.Add(new Claim(NexoraClaims.SessionId, sid.ToString()));
 
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_o.SigningKey));
         var descriptor = new SecurityTokenDescriptor

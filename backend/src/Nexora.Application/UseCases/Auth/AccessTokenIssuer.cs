@@ -15,12 +15,18 @@ public sealed class AccessTokenIssuer(
     IDateTimeProvider clock)
 {
     public async Task<AuthTokenResponse> IssueAsync(
-        Nexora.Domain.Identity.AppUser user, Guid? companyId, bool mfaEnrollmentRequired, CancellationToken ct = default)
+        Nexora.Domain.Identity.AppUser user, Guid? companyId, bool mfaEnrollmentRequired, CancellationToken ct = default,
+        Guid? sessionId = null, bool isRefresh = false)
     {
         var profile = await permissions.LoadProfileAsync(user.Id, ct);
-        var token = tokens.IssueAccessToken(user, profile.CompanyIds, profile.GroupIds);
-        await users.ResetFailedLoginsAsync(user.Id, ct);
-        await users.TouchLastLoginAsync(user.Id, clock.UtcNow, ct);
+        // Session : créée à la connexion (nouvel identifiant), conservée au rafraîchissement.
+        var sid = sessionId ?? Guid.NewGuid();
+        var token = tokens.IssueAccessToken(user, profile.CompanyIds, profile.GroupIds, sid);
+        if (!isRefresh)
+        {
+            await users.ResetFailedLoginsAsync(user.Id, ct);
+            await users.TouchLastLoginAsync(user.Id, clock.UtcNow, ct);
+        }
 
         return new AuthTokenResponse(
             token.AccessToken,
@@ -37,6 +43,7 @@ public sealed class AccessTokenIssuer(
                 profile.PermissionsFor(companyId).ToArray()))
         {
             MfaEnrollmentRequired = mfaEnrollmentRequired,
+            SessionId = sid,
         };
     }
 }

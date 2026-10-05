@@ -60,6 +60,7 @@ public sealed class ContinuityController(IContinuityService continuity) : ApiCon
         => FromResult(await continuity.RequestProductionRestoreAsync(r, ct));
 
     [HttpPost("~/api/v{version:apiVersion}/restores/{id:guid}/approve")]
+    [RequireStepUp(StepUpPurposes.Deletion)]
     [RequirePermission(Permissions.Continuity.Restore)]
     public async Task<IActionResult> ApproveRestore(Guid id, CancellationToken ct)
         => FromResult(await continuity.ApproveProductionRestoreAsync(id, ct));

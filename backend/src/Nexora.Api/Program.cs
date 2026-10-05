@@ -101,6 +101,11 @@ builder.Services.AddRateLimiter(options =>
     options.AddPolicy("auth", ctx => RateLimitPartition.GetFixedWindowLimiter(
         ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
         _ => new FixedWindowRateLimiterOptions { PermitLimit = 10, Window = TimeSpan.FromMinutes(1) }));
+    // Rafraîchissement (finalisation phase 17) : plus fréquent que la connexion (bureau partagé derrière une même
+    // adresse), mais borné — une rafale de rafraîchissements est un signal d'abus.
+    options.AddPolicy("refresh", ctx => RateLimitPartition.GetFixedWindowLimiter(
+        ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = 60, Window = TimeSpan.FromMinutes(1) }));
 });
 
 // --- Health checks (Phase 3 §19) -------------------------------------

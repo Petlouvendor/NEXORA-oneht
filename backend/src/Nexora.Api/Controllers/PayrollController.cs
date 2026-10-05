@@ -71,6 +71,7 @@ public sealed class PayrollController(
         => FromResult(await payroll.ValidateAsync(id, r, ct));
 
     [HttpPost("payroll/{id:guid}/approve")]
+    [RequireStepUp(StepUpPurposes.AccountingValidation)]
     [RequirePermission(Permissions.Payroll.Approve)]
     public async Task<IActionResult> Approve(Guid id, [FromBody] WorkflowNoteRequest r, CancellationToken ct)
         => FromResult(await payroll.ApproveAsync(id, r, ct));
@@ -82,11 +83,13 @@ public sealed class PayrollController(
         => FromResult(await payroll.ReturnAsync(id, r, ct));
 
     [HttpPost("payroll/{id:guid}/cancel")]
+    [RequireStepUp(StepUpPurposes.Cancellation)]
     [RequirePermission(Permissions.Payroll.Calculate)]
     public async Task<IActionResult> Cancel(Guid id, [FromBody] CancelRequest r, CancellationToken ct)
         => FromResult(await payroll.CancelAsync(id, r, ct));
 
     [HttpPost("payroll/{id:guid}/close")]
+    [RequireStepUp(StepUpPurposes.AccountingValidation)]
     [RequirePermission(Permissions.Payroll.Close)]
     public async Task<IActionResult> Close(Guid id, [FromBody] WorkflowNoteRequest r, CancellationToken ct)
         => FromResult(await payroll.CloseAsync(id, r, ct));
@@ -98,6 +101,7 @@ public sealed class PayrollController(
     public async Task<IActionResult> PaymentAccounts(CancellationToken ct) => Ok(await payroll.PaymentAccountsAsync(ct));
 
     [HttpPost("payroll/{id:guid}/pay")]
+    [RequireStepUp(StepUpPurposes.Payment)]
     [RequirePermission(Permissions.Payroll.Pay)]
     [Idempotent]
     public async Task<IActionResult> Pay(Guid id, [FromBody] PayRunRequest r, CancellationToken ct) => FromResult(await payroll.PayAsync(id, r, ct));
@@ -107,6 +111,7 @@ public sealed class PayrollController(
     public async Task<IActionResult> Payments(Guid id, CancellationToken ct) => FromResult(await payroll.PaymentsAsync(id, ct));
 
     [HttpPost("salary-payments/{id:guid}/cancel")]
+    [RequireStepUp(StepUpPurposes.Cancellation)]
     [RequirePermission(Permissions.Payroll.Pay)]
     [Idempotent]
     public async Task<IActionResult> CancelPayment(Guid id, [FromBody] CancelRequest r, CancellationToken ct)

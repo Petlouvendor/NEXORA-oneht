@@ -48,6 +48,7 @@ public sealed class AccountingEntriesController(IManualJournalService entries) :
         => FromResult(await entries.PostAsync(id, ct));
 
     [HttpPost("{id:guid}/reverse")]
+    [RequireStepUp(StepUpPurposes.AccountingValidation)]
     [RequirePermission(Permissions.Accounting.Reverse)]
     public async Task<IActionResult> Reverse(Guid id, [FromBody] ReverseJournalEntryRequest r, CancellationToken ct)
         => FromResult(await entries.ReverseAsync(id, r, ct));

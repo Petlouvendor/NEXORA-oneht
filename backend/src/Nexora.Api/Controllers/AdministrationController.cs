@@ -46,6 +46,7 @@ public sealed class AdministrationController(
     public async Task<IActionResult> Roles(CancellationToken ct) => Ok(await roles.ListAsync(ct));
 
     [HttpPost("roles")]
+    [RequireStepUp(StepUpPurposes.PermissionChange)]
     [RequirePermission(Permissions.Admin.Roles)]
     public async Task<IActionResult> CreateRole([FromBody] CreateRoleRequest r, CancellationToken ct)
         => FromResult(await roles.CreateAsync(r, ct));
@@ -55,15 +56,18 @@ public sealed class AdministrationController(
     public async Task<IActionResult> PermissionCatalog(CancellationToken ct) => Ok(await roles.PermissionCatalogAsync(ct));
 
     [HttpPut("roles/{id:guid}")]
+    [RequireStepUp(StepUpPurposes.PermissionChange)]
     [RequirePermission(Permissions.Admin.Roles)]
     public async Task<IActionResult> UpdateRole(Guid id, [FromBody] UpdateRoleRequest r, CancellationToken ct)
         => FromResult(await roles.UpdateAsync(id, r, ct));
 
     [HttpPost("roles/{id:guid}/enable")]
+    [RequireStepUp(StepUpPurposes.PermissionChange)]
     [RequirePermission(Permissions.Admin.Roles)]
     public async Task<IActionResult> EnableRole(Guid id, CancellationToken ct) => FromResult(await roles.EnableAsync(id, ct));
 
     [HttpPut("roles/{id:guid}/permissions")]
+    [RequireStepUp(StepUpPurposes.PermissionChange)]
     [RequirePermission(Permissions.Admin.Roles)]
     public async Task<IActionResult> SetRolePermissions(Guid id, [FromBody] SetRolePermissionsRequest r, CancellationToken ct)
         => FromResult(await roles.SetPermissionsAsync(id, r, ct));
@@ -73,6 +77,7 @@ public sealed class AdministrationController(
     public async Task<IActionResult> PreviewRole(Guid id, CancellationToken ct) => FromResult(await roles.PreviewAsync(id, ct));
 
     [HttpPost("roles/{id:guid}/disable")]
+    [RequireStepUp(StepUpPurposes.PermissionChange)]
     [RequirePermission(Permissions.Admin.Roles)]
     public async Task<IActionResult> DisableRole(Guid id, [FromQuery] bool force, CancellationToken ct)
         => FromResult(await roles.DisableAsync(id, force, ct));

@@ -17,6 +17,15 @@ public interface IMfaService
     /// <summary>Vrai si au moins un rôle actif de l'utilisateur figure dans <c>security_policy.mfa_required_roles</c> (§37).</summary>
     Task<bool> PolicyRequiresMfaAsync(Guid userId, CancellationToken ct = default);
 
+    /// <summary>Rôle soumis à la double authentification dans une entreprise qui l'impose pour les actions critiques.</summary>
+    Task<bool> PolicyEnforcesMfaAsync(Guid userId, CancellationToken ct = default);
+
+    /// <summary>Vérifie un code TOTP (ou de récupération, consommé) de l'utilisateur courant — réauthentification forte.</summary>
+    Task<bool> VerifyCurrentUserCodeAsync(string code, CancellationToken ct = default);
+
+    /// <summary>La double authentification de l'utilisateur courant est-elle active ?</summary>
+    Task<bool> IsEnabledForCurrentUserAsync(CancellationToken ct = default);
+
     /// <summary>Démarre l'enrôlement : génère un secret et l'URI <c>otpauth://</c> (non encore actif).</summary>
     Task<Result<MfaEnrollmentDto>> BeginEnrollmentAsync(CancellationToken ct = default);
 

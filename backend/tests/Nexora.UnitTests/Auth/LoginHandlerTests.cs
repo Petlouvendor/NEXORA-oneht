@@ -117,7 +117,7 @@ public sealed class LoginHandlerTests
         _permissions.LoadProfileAsync(user.Id, Arg.Any<CancellationToken>())
             .Returns(new UserSecurityProfile(user.Id,
                 [new CompanyMembership(companyId, "ACME", null, ["manager"], ["sales.view"])]));
-        _tokens.IssueAccessToken(user, Arg.Any<IReadOnlyCollection<Guid>>(), Arg.Any<IReadOnlyCollection<Guid>>())
+        _tokens.IssueAccessToken(user, Arg.Any<IReadOnlyCollection<Guid>>(), Arg.Any<IReadOnlyCollection<Guid>>(), Arg.Any<Guid?>())
             .Returns(new IssuedToken("jwt", DateTimeOffset.UnixEpoch.AddHours(1)));
 
         var result = await CreateSut().HandleAsync(new LoginRequest("u@x", "good", companyId));

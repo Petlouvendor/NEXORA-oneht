@@ -240,7 +240,9 @@ public sealed class MfaAuthenticationTests(FinanceEngineFixture fx)
     {
         await Sql($"""
             INSERT INTO nexora.security_policy (company_id) VALUES ('{Company}') ON CONFLICT DO NOTHING;
-            UPDATE nexora.security_policy SET mfa_required_roles = '["cashier"]'::jsonb WHERE company_id = '{Company}';
+            -- Toutes les sociétés du groupe : le rôle de groupe de la direction relève de chacune (phase 17).
+            UPDATE nexora.security_policy SET mfa_required_roles = '["cashier"]'::jsonb
+            WHERE company_id IN (SELECT id FROM nexora.company WHERE group_id = (SELECT group_id FROM nexora.company WHERE id = '{Company}'));
             """);
         try
         {
@@ -254,7 +256,7 @@ public sealed class MfaAuthenticationTests(FinanceEngineFixture fx)
             await Sql($"""
                 UPDATE nexora.security_policy
                 SET mfa_required_roles = '["super_administrator","group_administrator","owner_direction","chief_accountant"]'::jsonb
-                WHERE company_id = '{Company}'
+                WHERE company_id IN (SELECT id FROM nexora.company WHERE group_id = (SELECT group_id FROM nexora.company WHERE id = '{Company}'))
                 """);
         }
     }

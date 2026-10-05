@@ -111,6 +111,7 @@ public sealed class ExpensesController(IExpenseService expenses) : ApiController
         => FromResult(await expenses.CancelAsync(id, r, ct));
 
     [HttpPost("{id:guid}/pay")]
+    [RequireStepUp(StepUpPurposes.Payment)]
     [RequirePermission(Permissions.Finance.Pay)]
     [Idempotent]
     public async Task<IActionResult> Pay(Guid id, [FromBody] PayExpenseRequest r, CancellationToken ct)

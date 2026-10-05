@@ -56,9 +56,10 @@ public sealed class TenantResolutionMiddleware(RequestDelegate next)
             {
                 var issuedAt = DateTimeOffset.FromUnixTimeSeconds(iatSeconds);
                 Guid? tokenId = Guid.TryParse(user.FindFirstValue("jti"), out var jti) ? jti : null;
+                Guid? sessionId = Guid.TryParse(user.FindFirstValue("sid"), out var sid) ? sid : null;
 
                 var validity = await ResolveSessionValidityAsync(
-                    userId, tokenId, issuedAt, db, cache, configuration, context.RequestAborted);
+                    userId, tokenId, sessionId, issuedAt, db, cache, configuration, context.RequestAborted);
 
                 if (!validity.IsValid)
                 {
@@ -135,6 +136,7 @@ public sealed class TenantResolutionMiddleware(RequestDelegate next)
     private static async Task<SessionValidity> ResolveSessionValidityAsync(
         Guid userId,
         Guid? tokenId,
+        Guid? sessionId,
         DateTimeOffset issuedAt,
         NexoraDbContext db,
         IMemoryCache cache,
@@ -163,11 +165,24 @@ public sealed class TenantResolutionMiddleware(RequestDelegate next)
         // On lit app_user directement (RLS inactive sur app_user pour cette query anonyme).
         UserSecurityRow? check = await db.Database.SqlQuery<UserSecurityRow>($"""
                 SELECT u.status AS "Status", u.security_epoch AS "Epoch",
-                       ({tokenId}::uuid IS NOT NULL AND EXISTS(
+                       (({tokenId}::uuid IS NOT NULL AND EXISTS(
                            SELECT 1 FROM nexora.user_session s
-                           WHERE s.token_id = {tokenId} AND s.user_id = u.id AND s.revoked_at IS NOT NULL)) AS "SessionRevoked"
+                           WHERE s.token_id = {tokenId} AND s.user_id = u.id AND s.revoked_at IS NOT NULL))
+                        -- Finalisation phase 17 : la session porteuse (claim sid) révoquée ou arrivée à sa durée
+                        -- maximale coupe tous ses jetons, y compris ceux émis par rafraîchissement.
+                        OR ({sessionId}::uuid IS NOT NULL AND EXISTS(
+                           SELECT 1 FROM nexora.user_session s
+                           WHERE s.id = {sessionId} AND s.user_id = u.id AND (s.revoked_at IS NOT NULL OR s.expires_at <= now())))) AS "SessionRevoked"
                 FROM nexora.app_user u WHERE u.id = {userId}
                 """).FirstOrDefaultAsync(ct);
+
+        // Dernière activité de la session (sert au délai d'inactivité du rafraîchissement) — au plus une écriture
+        // par durée de cache, jamais à chaque requête.
+        if (sessionId is { } activeSession && check is { Status: "active", SessionRevoked: false })
+            await db.Database.ExecuteSqlAsync($"""
+                UPDATE nexora.user_session SET last_seen_at = now()
+                WHERE id = {activeSession} AND revoked_at IS NULL AND last_seen_at < now() - interval '30 seconds'
+                """, ct);
 
         var isValid = check is not null
             && check.Status == "active"

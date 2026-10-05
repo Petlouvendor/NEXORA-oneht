@@ -47,6 +47,7 @@ public sealed class FinanceController(IFinanceOperations ops) : ApiControllerBas
         => FromResult(await ops.RecordCustomerPaymentAsync(r, ct));
 
     [HttpPost("supplier-payments")]
+    [RequireStepUp(StepUpPurposes.Payment)]
     [RequirePermission(Permissions.Finance.Pay)]
     [Idempotent]
     public async Task<IActionResult> SupplierPayment([FromBody] RecordPaymentRequest r, CancellationToken ct)

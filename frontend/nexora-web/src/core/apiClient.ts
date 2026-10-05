@@ -27,19 +27,47 @@ export class ApiError extends Error {
 type TokenProvider = () => string | null;
 type CompanyProvider = () => string | null;
 type UnauthorizedHandler = () => void;
+/** Renouvelle le jeton d'accès (cookie de rafraîchissement HttpOnly) ; renvoie le nouveau jeton ou null. */
+type RefreshHandler = () => Promise<string | null>;
+/** Demande une confirmation forte à l'utilisateur ; renvoie le jeton de confirmation ou null (annulé). */
+type StepUpHandler = (purpose: string, detail: string) => Promise<string | null>;
 
 let getToken: TokenProvider = () => null;
 let getCompany: CompanyProvider = () => null;
 let onUnauthorized: UnauthorizedHandler = () => {};
+let refreshSession: RefreshHandler | null = null;
+let stepUpHandler: StepUpHandler | null = null;
 
 export function configureApiClient(opts: {
   token: TokenProvider;
   company: CompanyProvider;
   onUnauthorized: UnauthorizedHandler;
+  refresh?: RefreshHandler;
 }) {
   getToken = opts.token;
   getCompany = opts.company;
   onUnauthorized = opts.onUnauthorized;
+  refreshSession = opts.refresh ?? null;
+}
+
+/** Fenêtre de confirmation forte (montée une fois dans l'application). */
+export function setStepUpHandler(handler: StepUpHandler | null) {
+  stepUpHandler = handler;
+}
+
+// Un seul rafraîchissement à la fois : les requêtes qui expirent ensemble attendent le même renouvellement.
+let refreshing: Promise<string | null> | null = null;
+function refreshOnce(): Promise<string | null> {
+  if (!refreshSession) return Promise.resolve(null);
+  if (!refreshing) refreshing = refreshSession().catch(() => null).finally(() => { refreshing = null; });
+  return refreshing;
+}
+
+// Confirmations fortes obtenues, par catégorie (valables quelques minutes côté serveur).
+const stepUpTokens = new Map<string, string>();
+/** Oublie les confirmations fortes (déconnexion, changement d'utilisateur). */
+export function clearStepUpTokens() {
+  stepUpTokens.clear();
 }
 
 function newCorrelationId(): string {
@@ -55,13 +83,14 @@ export interface ApiFetchInit extends RequestInit {
 
 /** Envoie la requête (en-têtes d'authentification, entreprise, corrélation) et lève une `ApiError`
  * normalisée pour tout statut non 2xx — partagé par `apiFetch` (JSON) et `apiDownload` (fichier). */
-async function send(path: string, init: ApiFetchInit, accept: string): Promise<Response> {
+async function send(path: string, init: ApiFetchInit, accept: string, attempt = 0, stepUpToken?: string): Promise<Response> {
   const { idempotencyKey, ...rest } = init;
   const headers = new Headers(rest.headers);
   headers.set("Accept", accept);
   if (rest.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   headers.set("X-Correlation-Id", newCorrelationId());
   if (idempotencyKey && !headers.has("Idempotency-Key")) headers.set("Idempotency-Key", idempotencyKey);
+  if (stepUpToken) headers.set("X-Step-Up-Token", stepUpToken);
 
   const token = getToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
@@ -84,8 +113,27 @@ async function send(path: string, init: ApiFetchInit, accept: string): Promise<R
   }
 
   if (response.status === 401) {
+    // Jeton d'accès expiré : un renouvellement par le jeton de rafraîchissement, puis un seul nouvel essai.
+    if (attempt === 0 && !path.startsWith("/auth/")) {
+      const renewed = await refreshOnce();
+      if (renewed) return send(path, init, accept, attempt + 1, stepUpToken);
+    }
     onUnauthorized();
     throw new ApiError({ status: 401, title: "session_expired", detail: "Session expirée — reconnectez-vous." });
+  }
+
+  if (response.status === 403 && stepUpHandler && attempt < 3) {
+    // Action critique : confirmation forte de l'identité, puis nouvel essai avec le jeton de confirmation.
+    const body = await response.clone().json().catch(() => null) as { title?: string; purpose?: string; detail?: string } | null;
+    if (body?.title === "security.step_up_required" && body.purpose) {
+      const cached = stepUpTokens.get(body.purpose);
+      if (cached && cached !== stepUpToken) return send(path, init, accept, attempt + 1, cached);
+      stepUpTokens.delete(body.purpose);
+      const granted = await stepUpHandler(body.purpose, body.detail ?? "Confirmez votre identité.");
+      if (!granted) throw new ApiError({ status: 403, title: "security.step_up_cancelled", detail: "Action annulée : identité non confirmée." });
+      stepUpTokens.set(body.purpose, granted);
+      return send(path, init, accept, attempt + 1, granted);
+    }
   }
 
   if (!response.ok) {

@@ -125,6 +125,7 @@ public sealed class IntegrationsController(
     public async Task<IActionResult> VerifyIntent(Guid id, CancellationToken ct) => FromResult(await payments.VerifyAsync(id, ct));
 
     [HttpPost("payments/intents/{id:guid}/refund")]
+    [RequireStepUp(StepUpPurposes.Payment)]
     [RequirePermission(Permissions.Integrations.Payments)]
     [RequirePermission(Permissions.Pos.Refund)]
     public async Task<IActionResult> Refund(Guid id, [FromBody] RefundPaymentRequest r, CancellationToken ct)

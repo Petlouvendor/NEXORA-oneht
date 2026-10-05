@@ -98,6 +98,7 @@ public sealed class CustomerAccountsController(
 
     /// <summary>Annulation contrôlée : contre-écriture, motif obligatoire, audit ; rien n'est supprimé.</summary>
     [HttpPost("payments/{id:guid}/void")]
+    [RequireStepUp(StepUpPurposes.Cancellation)]
     [RequirePermission(Permissions.Credit.VoidPayment)]
     [Idempotent]
     public async Task<IActionResult> VoidPayment(Guid id, [FromBody] VoidPaymentRequest r, CancellationToken ct)
@@ -178,6 +179,7 @@ public sealed class CustomerAccountsController(
     /// <summary>Décaissement d'un remboursement approuvé (<c>credit.refund</c> ou <c>credit.receive_payment</c>,
     /// contrôlé par le service).</summary>
     [HttpPost("customer-refunds/{id:guid}/execute")]
+    [RequireStepUp(StepUpPurposes.Payment)]
     [RequirePermission(Permissions.Customers.View)]
     [Idempotent]
     public async Task<IActionResult> ExecuteRefund(Guid id, [FromBody] ExecuteCustomerRefundRequest r, CancellationToken ct)
