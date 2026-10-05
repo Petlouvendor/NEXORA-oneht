@@ -122,6 +122,10 @@ public sealed class GroupConsolidationTests(FinanceEngineFixture fx)
         var purchase = await ic.RecordAsync(Group, new RecordIntercompanyRequest(
             Resto, Pharma, "sale_purchase", 5000m, "HTG", day, "FAF-IC-1", null));
         purchase.IsSuccess.Should().BeTrue();
+        (await ic.ReconcileAsync(Group, new ReconcileIntercompanyRequest(sale.Value, null))).Error!.Code
+            .Should().Be("intercompany.not_confirmed", "une opération en brouillon ne se rapproche pas");
+        (await ic.ConfirmAsync(Group, sale.Value)).IsSuccess.Should().BeTrue();
+        (await ic.ConfirmAsync(Group, purchase.Value)).IsSuccess.Should().BeTrue();
 
         var match = await ic.ReconcileAsync(Group, new ReconcileIntercompanyRequest(sale.Value, null));
         match.IsSuccess.Should().BeTrue(match.Error?.Message);
@@ -134,6 +138,8 @@ public sealed class GroupConsolidationTests(FinanceEngineFixture fx)
         // Montants asymétriques → statut 'asymmetric'.
         var s2 = await ic.RecordAsync(Group, new RecordIntercompanyRequest(Pharma, Resto, "loan", 5000m, "HTG", day, null, null));
         var c2 = await ic.RecordAsync(Group, new RecordIntercompanyRequest(Resto, Pharma, "loan", 4800m, "HTG", day, null, null));
+        await ic.ConfirmAsync(Group, s2.Value);
+        await ic.ConfirmAsync(Group, c2.Value);
         var m2 = await ic.ReconcileAsync(Group, new ReconcileIntercompanyRequest(s2.Value, c2.Value));
         m2.Value!.Status.Should().Be("asymmetric");
         m2.Value.AmountDifference.Should().Be(200m);
@@ -194,6 +200,8 @@ public sealed class GroupConsolidationTests(FinanceEngineFixture fx)
 
         var sale = await ic.RecordAsync(Group, new RecordIntercompanyRequest(Pharma, Resto, "sale_purchase", 6_000m, "HTG", day, null, null));
         var purchase = await ic.RecordAsync(Group, new RecordIntercompanyRequest(Resto, Pharma, "sale_purchase", 6_000m, "HTG", day, null, null));
+        await ic.ConfirmAsync(Group, sale.Value);
+        await ic.ConfirmAsync(Group, purchase.Value);
         (await ic.ReconcileAsync(Group, new ReconcileIntercompanyRequest(sale.Value, purchase.Value))).Value!.Status.Should().Be("matched");
 
         var run = await consol.CreateRunAsync(Group, new CreateConsolidationRunRequest(
@@ -250,7 +258,7 @@ public sealed class GroupConsolidationTests(FinanceEngineFixture fx)
         summary.Companies.Select(c => c.CompanyId).Should().Contain([Pharma, Resto, Market]);
 
         var taskId = await tasks.CreateAsync(Group, new CreateGroupTaskRequest(
-            "Clôturer mars — Restaurant", null, Resto, fx.UserId, "high", new DateOnly(2026, 4, 15)));
+            "Clôturer mars — Restaurant", null, Resto, fx.UserId, "high", DateOnly.FromDateTime(DateTime.UtcNow).AddDays(15)));
         taskId.IsSuccess.Should().BeTrue(taskId.Error?.Message);
         (await tasks.ListAsync(Group)).Should().Contain(t => t.Id == taskId.Value && t.Priority == "high");
 
@@ -294,8 +302,11 @@ public sealed class GroupConsolidationTests(FinanceEngineFixture fx)
             """).FirstAsync()).Should().BeTrue();
 
         // Archivage : désactive les nouvelles opérations, conserve tout l'historique (§29).
-        (await prov.ArchiveAsync(companyId, new ArchiveCompanyRequest("Cessation d'activité"))).IsSuccess.Should().BeTrue();
-        (await prov.ArchiveAsync(companyId, new ArchiveCompanyRequest(""))).IsSuccess.Should().BeFalse();   // motif requis
+        (await prov.ArchiveAsync(Group, companyId, new ArchiveCompanyRequest(""))).IsSuccess.Should().BeFalse();   // motif requis
+        (await prov.ArchiveAsync(Group, companyId, new ArchiveCompanyRequest("Cessation d'activité"))).IsSuccess.Should().BeTrue();
+        (await prov.ArchiveAsync(Group, companyId, new ArchiveCompanyRequest("Encore"))).Error!.Code.Should().Be("company.already_archived");
+        (await db.Database.SqlQuery<string>($"SELECT archive_reason AS \"Value\" FROM nexora.company WHERE id = {companyId}").FirstAsync())
+            .Should().Be("Cessation d'activité", "le motif d'archivage n'était conservé nulle part");
 
         var archived = await db.Database.SqlQuery<ArchivedState>($"""
             SELECT status AS "Status", (archived_at IS NOT NULL) AS "Stamped",
@@ -327,5 +338,234 @@ public sealed class GroupConsolidationTests(FinanceEngineFixture fx)
         var consol = s.ServiceProvider.GetRequiredService<IConsolidationService>();
         var act2 = async () => await consol.ListRunsAsync(Group);
         await act2.Should().ThrowAsync<DomainException>();
+    }
+
+    // ======================= Finalisation phase 14 : isolation et règles du groupe =======================
+
+    private async Task<Guid> UserWithRoleAsync(string role, string scopeType, Guid? companyId)
+    {
+        await using var s = fx.Provider.CreateAsyncScope();
+        var db = s.ServiceProvider.GetRequiredService<NexoraDbContext>();
+        var userId = Guid.NewGuid();
+        await db.Database.ExecuteSqlAsync($"""
+            INSERT INTO nexora.app_user (id, email, full_name, password_hash, status)
+            VALUES ({userId}, {$"g{userId:N}@test.local"}::citext, 'Test groupe', 'x', 'active')
+            """);
+        var scopeId = Guid.NewGuid();
+        if (scopeType == "GROUP")
+            await db.Database.ExecuteSqlAsync($"INSERT INTO nexora.access_scope (id, scope_type, group_id) VALUES ({scopeId}, 'GROUP', {Group})");
+        else
+            await db.Database.ExecuteSqlAsync($"INSERT INTO nexora.access_scope (id, scope_type, company_id) VALUES ({scopeId}, 'COMPANY', {companyId})");
+        await db.Database.ExecuteSqlAsync($"""
+            INSERT INTO nexora.user_role (user_id, role_id, scope_id)
+            SELECT {userId}, id, {scopeId} FROM nexora.role WHERE name = {role} AND system_role
+            """);
+        return userId;
+    }
+
+    [Fact]
+    public async Task Group_rights_come_only_from_a_role_held_at_group_level()
+    {
+        await using var s = GroupScope();
+        var perms = s.ServiceProvider.GetRequiredService<IPermissionService>();
+
+        // Le gérant d'UNE société (rôle manager, qui porte group.view) ne voit pas les sociétés sœurs.
+        var manager = await perms.LoadProfileAsync(await UserWithRoleAsync("manager", "COMPANY", Market));
+        manager.PermissionsFor(Market).Should().NotContain("group.view", "un rôle de société ouvrait tout le groupe");
+        manager.PermissionsFor(Market).Should().Contain("sales.view");
+        manager.GroupPermissionsFor(Group).Should().BeEmpty();
+
+        // Le même type de droit, attribué au niveau du groupe, vaut pour le groupe entier.
+        var auditor = await perms.LoadProfileAsync(await UserWithRoleAsync("auditor", "GROUP", null));
+        auditor.GroupPermissionsFor(Group).Should().Contain(["group.view", "consolidation.view"]);
+        auditor.PermissionsFor(Resto).Should().Contain("group.view");
+    }
+
+    [Fact]
+    public async Task Group_level_roles_are_granted_and_revoked_from_group_level_only()
+    {
+        var target = await UserWithRoleAsync("cashier", "COMPANY", Market);
+        var companyAdmin = await UserWithRoleAsync("owner_direction", "COMPANY", Market);
+
+        // Direction (rôle de groupe) : attribue un rôle au niveau du groupe.
+        Guid assignment;
+        await using (var s = GroupScope())
+        {
+            var users = s.ServiceProvider.GetRequiredService<Nexora.Application.Identity.IUserAssignmentService>();
+            var granted = await users.GrantAsync(target, new Nexora.Contracts.Identity.GrantAssignmentRequest("auditor", "GROUP", Market, null, null, null, "Audit annuel"));
+            granted.IsSuccess.Should().BeTrue(granted.Error?.Message);
+            assignment = granted.Value;
+            var profile = await s.ServiceProvider.GetRequiredService<IPermissionService>().LoadProfileAsync(target);
+            profile.GroupPermissionsFor(Group).Should().Contain("group.view");
+
+            // Retirée puis rendue : l'identifiant renvoyé est celui de l'affectation réactivée (il n'existait pas).
+            (await users.RevokeAsync(assignment, new Nexora.Contracts.Identity.RevokeAssignmentRequest("Pause"))).IsSuccess.Should().BeTrue();
+            var again = await users.GrantAsync(target, new Nexora.Contracts.Identity.GrantAssignmentRequest("auditor", "GROUP", Market, null, null, null, "Reprise"));
+            again.Value.Should().Be(assignment);
+            (await users.RevokeAsync(again.Value, new Nexora.Contracts.Identity.RevokeAssignmentRequest("Fin"))).IsSuccess.Should().BeTrue();
+            (await users.GrantAsync(target, new Nexora.Contracts.Identity.GrantAssignmentRequest("auditor", "GROUP", Market, null, null, null, "Retour"))).IsSuccess.Should().BeTrue();
+        }
+
+        // Administrateur d'une seule société : ni attribution au niveau du groupe, ni retrait du rôle de groupe.
+        await using (var s = fx.Provider.CreateAsyncScope())
+        {
+            var tc = (TestTenantContext)s.ServiceProvider.GetRequiredService<ITenantContext>();
+            tc.SetUser(companyAdmin);
+            tc.SetScope([Market], [Group], Market);
+            var users = s.ServiceProvider.GetRequiredService<Nexora.Application.Identity.IUserAssignmentService>();
+            (await users.GrantAsync(target, new Nexora.Contracts.Identity.GrantAssignmentRequest("auditor", "GROUP", Market, null, null, null, null)))
+                .Error!.Code.Should().Be("identity.escalation");
+            (await users.RevokeAsync(assignment, new Nexora.Contracts.Identity.RevokeAssignmentRequest("Départ")))
+                .Error!.Code.Should().Be("identity.group_scope", "un administrateur de société retirait l'accès de la direction du groupe");
+            // Au niveau de sa société, il attribue toujours un rôle qui porte des droits de groupe (inertes).
+            (await users.GrantAsync(target, new Nexora.Contracts.Identity.GrantAssignmentRequest("manager", "COMPANY", Market, null, null, null, null)))
+                .IsSuccess.Should().BeTrue();
+        }
+    }
+
+    [Fact]
+    public async Task Intercompany_reconciliation_refuses_double_elimination_and_wrong_direction()
+    {
+        await using var s = GroupScope();
+        var ic = s.ServiceProvider.GetRequiredService<IIntercompanyService>();
+        var day = new DateOnly(2026, 6, 3);
+        (await ic.RecordAsync(Group, new RecordIntercompanyRequest(Pharma, Resto, "loan", 0m, "HTG", day, null, null)))
+            .Error!.Code.Should().Be("intercompany.amount");
+
+        async Task<Guid> Confirmed(Guid from, Guid to, decimal amount, string? doc = null)
+        {
+            var id = (await ic.RecordAsync(Group, new RecordIntercompanyRequest(from, to, "transfer", amount, "HTG", day, doc, null))).Value;
+            (await ic.ConfirmAsync(Group, id)).IsSuccess.Should().BeTrue();
+            return id;
+        }
+        var a = await Confirmed(Pharma, Resto, 900m, "VIR-77");
+        var sameWay = await Confirmed(Pharma, Resto, 900m);
+        var b = await Confirmed(Resto, Pharma, 900m);
+
+        (await ic.ReconcileAsync(Group, new ReconcileIntercompanyRequest(a, sameWay))).Error!.Code
+            .Should().Be("intercompany.direction", "une opération de même sens n'est pas une contrepartie");
+        (await ic.ReconcileAsync(Group, new ReconcileIntercompanyRequest(a, b))).Value!.Status.Should().Be("matched");
+        // Repartir de la contrepartie créait un second rapprochement : la vente aurait été éliminée deux fois.
+        (await ic.ReconcileAsync(Group, new ReconcileIntercompanyRequest(b, null))).Error!.Code.Should().Be("intercompany.already_matched");
+        (await ic.ReconcileAsync(Group, new ReconcileIntercompanyRequest(sameWay, a))).Error!.Code.Should().Be("intercompany.direction");
+
+        var listed = (await ic.ListAsync(Group)).Single(t => t.Id == a);
+        listed.SourceDocument.Should().Be("VIR-77");
+        listed.OccurredAt.Should().Be(day, "la date était relue en heure locale : la veille, après 20 h à Haïti");
+        listed.CounterpartId.Should().Be(b);
+        (await ic.ListAsync(Group)).Single(t => t.Id == b).MatchStatus.Should().Be("matched");
+    }
+
+    [Fact]
+    public async Task Group_policy_and_mappings_are_really_saved_and_consistent()
+    {
+        await using var s = GroupScope();
+        var ledger = s.ServiceProvider.GetRequiredService<IGroupLedgerService>();
+        var db = s.ServiceProvider.GetRequiredService<NexoraDbContext>();
+
+        // Politique absente : la mise à jour seule renvoyait un succès sans rien enregistrer.
+        await db.Database.ExecuteSqlAsync($"DELETE FROM nexora.group_policy WHERE group_id = {Group}");
+        (await ledger.SetPolicyAsync(Group, new SetGroupPolicyRequest(null, null, 25m))).IsSuccess.Should().BeTrue();
+        (await ledger.GetPolicyAsync(Group)).IntercompanyTolerance.Should().Be(25m);
+        (await ledger.SetPolicyAsync(Group, new SetGroupPolicyRequest(null, "average_rate", null))).Error!.Code
+            .Should().Be("group.fx_method_unsupported", "la consolidation n'applique que le taux de clôture");
+
+        (await ledger.SetMappingAsync(Group, new SetMappingRequest(Pharma, "7011", "GA-AR"))).Error!.Code
+            .Should().Be("group.mapping_type", "un produit rattaché à un compte d'actif fausse les états");
+        var mappings = (await ledger.ListMappingsAsync(Group, Pharma)).Value!;
+        var sales = mappings.Single(m => m.Code == "7011");
+        sales.GroupAccountCode.Should().NotBeNull();
+        (await ledger.SetMappingAsync(Group, new SetMappingRequest(Pharma, "7011", sales.GroupAccountCode!))).IsSuccess.Should().BeTrue();
+        (await ledger.ListMappingsAsync(Group, Pharma)).Value!.Single(m => m.Code == "7011").Versions
+            .Should().Be(sales.Versions, "reposer la même correspondance ne crée pas de version");
+        (await ledger.UpsertAccountAsync(Group, new UpsertGroupAccountRequest(sales.GroupAccountCode!, "Ventes", "asset"))).Error!.Code
+            .Should().Be("group.account_type_in_use");
+
+        var options = await ledger.OptionsAsync(Group);
+        options.Companies.Select(c => c.Id).Should().Contain([Pharma, Resto, Market]);
+        options.SupportedFxMethods.Should().Equal("closing_rate");
+        options.Users.Should().Contain(u => u.Id == fx.UserId);
+    }
+
+    [Fact]
+    public async Task Consolidation_without_exchange_rate_cannot_be_validated()
+    {
+        await using var s = GroupScope();
+        var consol = s.ServiceProvider.GetRequiredService<IConsolidationService>();
+        var db = s.ServiceProvider.GetRequiredService<NexoraDbContext>();
+        var day = new DateOnly(2026, 7, 8);
+        await PostEntryAsync(Pharma, day, "Apport", ("5711", 1_000m, 0m), ("1011", 0m, 1_000m));
+        // Consolidation en CAD : aucun taux HTG → CAD.
+        await db.Database.ExecuteSqlAsync($"""
+            UPDATE nexora.group_policy SET consolidation_currency_id = (SELECT id FROM nexora.currency WHERE code = 'CAD')
+            WHERE group_id = {Group}
+            """);
+        try
+        {
+            (await consol.CreateRunAsync(Group, new CreateConsolidationRunRequest(" ", day, day, [Pharma], null))).Error!.Code
+                .Should().Be("consolidation.label");
+            var run = (await consol.CreateRunAsync(Group, new CreateConsolidationRunRequest(
+                "Juillet CAD", new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), [Pharma], null))).Value!;
+            var executed = (await consol.ExecuteAsync(Group, run.Id)).Value!;
+            executed.CoherenceOk.Should().BeFalse("une conversion à 1 donnerait des états faux");
+            executed.Diagnostics.Should().Contain(d => d.Contains("non validable"));
+            (await consol.ValidateAsync(Group, run.Id)).IsSuccess.Should().BeFalse();
+
+            // Taux de clôture saisi : la conversion s'applique et la consolidation devient validable.
+            await db.Database.ExecuteSqlAsync($"""
+                INSERT INTO nexora.exchange_rate (base_currency_id, quote_currency_id, rate, effective_at)
+                SELECT h.id, c.id, 0.0104, '2026-07-31 12:00:00+00' FROM nexora.currency h, nexora.currency c
+                WHERE h.code = 'HTG' AND c.code = 'CAD'
+                """);
+            var converted = (await consol.ExecuteAsync(Group, run.Id)).Value!;
+            converted.Companies.Single().FxRate.Should().Be(0.0104m);
+            converted.CoherenceOk.Should().BeTrue();
+            // D'autres tests de la collection écrivent aussi en juillet chez Pharmacie : on compare au total non converti.
+            converted.TotalDebit.Should().BeApproximately(Math.Round(executed.TotalDebit * 0.0104m, 2), 0.05m);
+            converted.TotalDebit.Should().BeGreaterThanOrEqualTo(10.40m);   // au moins nos 1 000 HTG × 0,0104
+            (await consol.ValidateAsync(Group, run.Id)).Value!.Status.Should().Be("validated");
+        }
+        finally
+        {
+            await db.Database.ExecuteSqlAsync($"""
+                UPDATE nexora.group_policy SET consolidation_currency_id = (SELECT id FROM nexora.currency WHERE code = 'HTG')
+                WHERE group_id = {Group}
+                """);
+        }
+    }
+
+    [Fact]
+    public async Task Archiving_and_tasks_stay_inside_the_group()
+    {
+        await using var s = GroupScope();
+        var prov = s.ServiceProvider.GetRequiredService<ICompanyProvisioningService>();
+        var tasks = s.ServiceProvider.GetRequiredService<IGroupTaskService>();
+        var db = s.ServiceProvider.GetRequiredService<NexoraDbContext>();
+
+        // Une société indépendante (un autre client) ne s'archive pas depuis ce groupe.
+        var outsider = Guid.NewGuid();
+        await db.Database.ExecuteSqlAsync($"""
+            INSERT INTO nexora.company (id, name, main_activity_type, default_currency_id, complexity_level, deployment_mode)
+            SELECT {outsider}, 'Client indépendant', 'services', id, 'STANDARD', 'HYBRID' FROM nexora.currency WHERE code = 'HTG'
+            """);
+        (await prov.ArchiveAsync(Group, outsider, new ArchiveCompanyRequest("Tentative"))).Error!.Code.Should().Be("company.not_found");
+        (await db.Database.SqlQuery<string>($"SELECT status AS \"Value\" FROM nexora.company WHERE id = {outsider}").FirstAsync())
+            .Should().Be("active");
+
+        (await prov.ProvisionAsync(new ProvisionCompanyRequest("pharmacie abc", "pharmacy", "HTG", Group))).Error!.Code
+            .Should().Be("company.name_exists");
+
+        var stranger = Guid.NewGuid();
+        await db.Database.ExecuteSqlAsync($"""
+            INSERT INTO nexora.app_user (id, email, full_name, password_hash, status)
+            VALUES ({stranger}, {$"x{stranger:N}@ailleurs.test"}::citext, 'Hors groupe', 'x', 'active')
+            """);
+        var due = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(5);
+        (await tasks.CreateAsync(Group, new CreateGroupTaskRequest("Contrôle", null, null, stranger, "normal", due))).Error!.Code
+            .Should().Be("group.task_assignee");
+        (await tasks.CreateAsync(Group, new CreateGroupTaskRequest("Contrôle", null, null, null, "normal", new DateOnly(2020, 1, 1)))).Error!.Code
+            .Should().Be("group.task_due");
+        var t = (await tasks.CreateAsync(Group, new CreateGroupTaskRequest("Contrôle", null, Pharma, fx.UserId, "normal", due))).Value;
+        (await tasks.UpdateAsync(Group, t, new UpdateGroupTaskRequest("blocked", null))).Error!.Code.Should().Be("group.task_notes_required");
     }
 }

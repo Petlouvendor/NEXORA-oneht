@@ -13,6 +13,20 @@ public sealed record SetMappingRequest(Guid CompanyId, string LocalAccountCode, 
 public sealed record MappingCoverageRow(
     Guid CompanyId, string CompanyName, int MappedAccounts, int UnmappedWithActivity, IReadOnlyList<string> UnmappedCodes);
 
+/// <summary>Compte local d'une société et sa correspondance active sur le plan groupe (finalisation phase 14).</summary>
+public sealed record LocalAccountMappingDto(
+    Guid AccountId, string Code, string Name, string AccountType, bool HasActivity,
+    string? GroupAccountCode, string? GroupAccountName, DateOnly? EffectiveFrom, int Versions);
+
+/// <summary>Référentiels de l'écran groupe : sociétés, devises, activités, personnes du groupe.</summary>
+public sealed record GroupOptionsDto(
+    Guid GroupId, string GroupName, IReadOnlyList<GroupCompanyOption> Companies, IReadOnlyList<string> Currencies,
+    IReadOnlyList<string> Activities, IReadOnlyList<GroupUserOption> Users, IReadOnlyList<string> SupportedFxMethods);
+
+public sealed record GroupCompanyOption(Guid Id, string Name, string Status, string Currency, string? Sector, DateTimeOffset? ArchivedAt, string? ArchiveReason);
+
+public sealed record GroupUserOption(Guid Id, string Name, string Email);
+
 // --- Intercompany (§14-15) -------------------------------------------
 
 public sealed record RecordIntercompanyRequest(
@@ -22,7 +36,8 @@ public sealed record RecordIntercompanyRequest(
 
 public sealed record IntercompanyTransactionDto(
     Guid Id, Guid SourceCompanyId, string SourceCompany, Guid TargetCompanyId, string TargetCompany,
-    string TransactionType, decimal Amount, string Currency, DateOnly OccurredAt, string Status, string MatchStatus);
+    string TransactionType, decimal Amount, string Currency, DateOnly OccurredAt, string Status, string MatchStatus,
+    string? SourceDocument = null, string? TargetDocument = null, Guid? CounterpartId = null, decimal? MatchDifference = null);
 
 public sealed record ReconcileIntercompanyRequest(Guid SourceTransactionId, Guid? CounterpartTransactionId);
 

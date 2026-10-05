@@ -88,7 +88,7 @@ public sealed class SqlGroupControlCenter(NexoraDbContext db, ITenantContext ten
 }
 
 /// <summary>Tâches de contrôle groupe (Phase 9 §25).</summary>
-public sealed class SqlGroupTaskService(NexoraDbContext db, IUnitOfWork uow, ITenantContext tenant) : IGroupTaskService
+public sealed class SqlGroupTaskService(NexoraDbContext db, IUnitOfWork uow, ITenantContext tenant, IDateTimeProvider clock) : IGroupTaskService
 {
     private static readonly string[] Priorities = ["low", "normal", "high", "urgent"];
     private static readonly string[] Statuses = ["open", "in_progress", "blocked", "done", "cancelled"];
@@ -99,21 +99,37 @@ public sealed class SqlGroupTaskService(NexoraDbContext db, IUnitOfWork uow, ITe
     public async Task<Result<Guid>> CreateAsync(Guid groupId, CreateGroupTaskRequest request, CancellationToken ct = default)
     {
         GroupGuard.Require(tenant, groupId);
-        if (string.IsNullOrWhiteSpace(request.Title)) return Error.Validation("group.task_title", "Titre requis.");
-        var priority = request.Priority.Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(request.Title) || request.Title.Trim().Length > 200)
+            return Error.Validation("group.task_title", "Titre requis (200 caractères au plus).");
+        if (request.Description is { Length: > 2000 }) return Error.Validation("group.task_description", "Description : 2000 caractères au plus.");
+        var priority = (request.Priority ?? "").Trim().ToLowerInvariant();
         if (!Priorities.Contains(priority)) return Error.Validation("group.task_priority", "Priorité invalide.");
-        if (request.CompanyId is { } cid)
+        if (request.DueDate is { } due && due < DateOnly.FromDateTime(clock.UtcNow.UtcDateTime).AddDays(-1))
+            return Error.Validation("group.task_due", "L'échéance ne peut pas être passée.");
+        using (tenant.BeginSystemScope())
         {
-            using var _ = tenant.BeginSystemScope();
-            if (!await db.Companies.AsNoTracking().AnyAsync(c => c.Id == cid && c.GroupId == groupId, ct))
+            if (request.CompanyId is { } cid && !await db.Companies.AsNoTracking().AnyAsync(c => c.Id == cid && c.GroupId == groupId, ct))
                 return Error.NotFound("group.task_company", "Entreprise hors du groupe.");
+            // L'assigné doit appartenir au groupe : sinon une tâche (et ses notes) partirait vers un autre client.
+            if (request.AssigneeUserId is { } uid)
+            {
+                var member = await db.Database.SqlQuery<bool>($"""
+                    SELECT EXISTS(
+                        SELECT 1 FROM nexora.user_role ur
+                        JOIN nexora.access_scope sc ON sc.id = ur.scope_id
+                        LEFT JOIN nexora.company c ON c.id = sc.company_id
+                        WHERE ur.user_id = {uid} AND ur.revoked_at IS NULL
+                          AND (sc.group_id = {groupId} OR c.group_id = {groupId})) AS "Value"
+                    """).FirstAsync(ct);
+                if (!member) return Error.NotFound("group.task_assignee", "Personne introuvable dans le groupe.");
+            }
         }
 
         var id = Guid.NewGuid();
         await db.Database.ExecuteSqlAsync($"""
             INSERT INTO nexora.group_task
                 (id, group_id, company_id, title, description, assignee_user_id, priority, due_date, status, created_by)
-            VALUES ({id}, {groupId}, {request.CompanyId}, {request.Title.Trim()}, {request.Description},
+            VALUES ({id}, {groupId}, {request.CompanyId}, {request.Title.Trim()}, {(string.IsNullOrWhiteSpace(request.Description) ? null : request.Description.Trim())},
                     {request.AssigneeUserId}, {priority}, {request.DueDate}, 'open', {tenant.UserId})
             """, ct);
         await uow.SaveChangesAsync(ct);
@@ -139,8 +155,11 @@ public sealed class SqlGroupTaskService(NexoraDbContext db, IUnitOfWork uow, ITe
     public async Task<Result> UpdateAsync(Guid groupId, Guid taskId, UpdateGroupTaskRequest request, CancellationToken ct = default)
     {
         GroupGuard.Require(tenant, groupId);
-        var status = request.Status.Trim().ToLowerInvariant();
+        var status = (request.Status ?? "").Trim().ToLowerInvariant();
         if (!Statuses.Contains(status)) return Error.Validation("group.task_status", "Statut invalide.");
+        if (request.Notes is { Length: > 2000 }) return Error.Validation("group.task_notes", "Notes : 2000 caractères au plus.");
+        if (status is "blocked" or "cancelled" && string.IsNullOrWhiteSpace(request.Notes))
+            return Error.Validation("group.task_notes_required", "Indiquez pourquoi la tâche est bloquée ou annulée.");
         var n = await db.Database.ExecuteSqlAsync($"""
             UPDATE nexora.group_task SET status = {status}, notes = COALESCE({request.Notes}, notes), updated_at = now()
             WHERE id = {taskId} AND group_id = {groupId}
@@ -163,8 +182,16 @@ public sealed class SqlCompanyProvisioningService(
     {
         var activity = request.ActivityType.Trim().ToLowerInvariant();
         if (!Activities.Contains(activity)) return Error.Validation("company.activity", $"Activité « {activity} » inconnue.");
-        if (string.IsNullOrWhiteSpace(request.Name)) return Error.Validation("company.name", "Nom requis.");
-        if (request.GroupId is { } gid) GroupGuard.Require(tenant, gid);
+        if (string.IsNullOrWhiteSpace(request.Name) || request.Name.Trim().Length > 120)
+            return Error.Validation("company.name", "Nom requis (120 caractères au plus).");
+        if (request.GroupId is { } gid)
+        {
+            GroupGuard.Require(tenant, gid);
+            using var _ = tenant.BeginSystemScope();
+            var name = request.Name.Trim().ToLower();
+            if (await db.Companies.AsNoTracking().AnyAsync(c => c.GroupId == gid && c.Name.ToLower() == name, ct))
+                return Error.Conflict("company.name_exists", "Une société de ce nom existe déjà dans le groupe.");
+        }
 
         var currencyId = await db.Currencies.AsNoTracking().Where(c => c.Code == request.Currency).Select(c => (Guid?)c.Id).FirstOrDefaultAsync(ct);
         if (currencyId is null) return Error.Validation("company.currency", $"Devise « {request.Currency} » inconnue.");
@@ -199,20 +226,24 @@ public sealed class SqlCompanyProvisioningService(
         return Result.Success(companyId);
     }
 
-    public async Task<Result> ArchiveAsync(Guid companyId, ArchiveCompanyRequest request, CancellationToken ct = default)
+    public async Task<Result> ArchiveAsync(Guid groupId, Guid companyId, ArchiveCompanyRequest request, CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(request.Reason))
+        GroupGuard.Require(tenant, groupId);
+        if (string.IsNullOrWhiteSpace(request.Reason) || request.Reason.Trim().Length < 3)
             return Error.Validation("company.archive_reason", "Un motif d'archivage est obligatoire (§29).");
 
         using var _ = tenant.BeginSystemScope();
-        var company = await db.Companies.AsNoTracking().FirstOrDefaultAsync(c => c.Id == companyId, ct);
-        if (company is null) return Error.NotFound("company.not_found", "Entreprise introuvable.");
-        if (company.GroupId is { } gid && !tenant.BypassRls) GroupGuard.Require(tenant, gid);
+        // La société doit appartenir au groupe de la route : sans ce contrôle, une société indépendante
+        // (un autre client) pouvait être archivée depuis n'importe quel groupe (finalisation phase 14).
+        var company = await db.Companies.AsNoTracking().FirstOrDefaultAsync(c => c.Id == companyId && c.GroupId == groupId, ct);
+        if (company is null) return Error.NotFound("company.not_found", "Entreprise introuvable dans ce groupe.");
+        if (company.Status == "archived") return Error.Conflict("company.already_archived", "Cette société est déjà archivée.");
 
         // Archivage : désactive les nouvelles opérations, conserve tout l'historique (§29).
         await db.Database.ExecuteSqlAsync($"""
-            UPDATE nexora.company SET status = 'archived', archived_at = now(), archived_by = {tenant.UserId}, updated_at = now()
-            WHERE id = {companyId}
+            UPDATE nexora.company SET status = 'archived', archived_at = now(), archived_by = {tenant.UserId},
+                archive_reason = {request.Reason.Trim()}, updated_at = now()
+            WHERE id = {companyId} AND group_id = {groupId}
             """, ct);
         await db.Database.ExecuteSqlAsync($"""
             UPDATE nexora.company_module SET enabled = false, disabled_at = now(), updated_at = now()
