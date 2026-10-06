@@ -3,6 +3,7 @@ using Nexora.Application.Abstractions;
 using Nexora.Application.Catalog;
 using Nexora.Contracts.Catalog;
 using Nexora.Infrastructure.Persistence;
+using Nexora.Domain.Common;
 
 namespace Nexora.Infrastructure.Catalog;
 
@@ -10,7 +11,7 @@ namespace Nexora.Infrastructure.Catalog;
 public sealed class CatalogQueries(NexoraDbContext db, ITenantContext tenant, IPermissionService permissions) : ICatalogQueries
 {
     private Guid Company => tenant.ActiveCompanyId
-        ?? throw new InvalidOperationException("Aucune entreprise active.");
+        ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record HitRow(
         Guid ProductId, string Sku, string Name, string? ShortName, string? Barcode, string? PluCode,

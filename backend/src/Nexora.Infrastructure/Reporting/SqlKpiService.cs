@@ -12,7 +12,7 @@ public sealed class SqlKpiService(
     IPermissionService permissions) : IKpiService
 {
     private Guid Company => tenant.ActiveCompanyId
-        ?? throw new InvalidOperationException("Sélectionner une entreprise active (X-Company-Id).");
+        ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record Scalar(decimal Value);
     private sealed record CountScalar(long Value);

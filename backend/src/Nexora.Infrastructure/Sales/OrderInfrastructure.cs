@@ -4,6 +4,7 @@ using Nexora.Application.Sales;
 using Nexora.Contracts.Sales;
 using Nexora.Domain.Sales;
 using Nexora.Infrastructure.Persistence;
+using Nexora.Domain.Common;
 
 namespace Nexora.Infrastructure.Sales;
 
@@ -35,7 +36,7 @@ public sealed class EfOrderStore(NexoraDbContext db, ITenantContext tenant) : IO
         => await db.Products.AsNoTracking().Where(p => p.Id == productId)
             .Select(p => p.ProductType == "stockable" || p.ProductType == "weight").FirstOrDefaultAsync(ct);
 
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Aucune entreprise active.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     public async Task<Guid?> CurrencyIdOrNullAsync(string code, CancellationToken ct = default)
         => await db.Currencies.AsNoTracking().Where(c => c.Code == code).Select(c => (Guid?)c.Id).FirstOrDefaultAsync(ct);
@@ -77,7 +78,7 @@ internal sealed record OrderExtraRow(string? CustomerName, string? LocationName,
 public sealed class SqlSalesQueries(NexoraDbContext db, ITenantContext tenant, IPermissionService permissions) : ISalesQueries
 {
     private Guid Company => tenant.ActiveCompanyId
-        ?? throw new InvalidOperationException("Aucune entreprise active.");
+        ?? throw TenantErrors.ActiveCompanyRequired();
 
     public async Task<SaleDto?> GetSaleAsync(Guid saleId, CancellationToken ct = default)
     {

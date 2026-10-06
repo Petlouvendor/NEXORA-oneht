@@ -61,7 +61,7 @@ public sealed class InventoryOperationsService(
     IDateTimeProvider clock)
 {
     private Guid Company => tenant.ActiveCompanyId
-        ?? throw new InvalidOperationException("Aucune entreprise active.");
+        ?? throw TenantErrors.ActiveCompanyRequired();
 
     /// <summary>Types de sortie de stock (valeur passée en charge).</summary>
     public static readonly string[] LossTypes = [AdjustmentType.Loss, AdjustmentType.Breakage, AdjustmentType.Expiry, AdjustmentType.Theft];

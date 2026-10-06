@@ -42,7 +42,7 @@ internal static class PartyRules
 /// le reste du produit — ventes, créances, relances, recommandations la lisent déjà.</summary>
 public sealed class SqlCustomerService(NexoraDbContext db, ITenantContext tenant, IPermissionService permissions, IUnitOfWork uow) : ICustomerService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record Row(Guid Id, string CustomerNumber, string Name, string Type, string? Phone, string? Email,
         string? Address, string? TaxIdentifier, string Status, decimal CreditLimit, string Currency, decimal OpenReceivables,
@@ -301,7 +301,7 @@ public sealed class SqlCustomerService(NexoraDbContext db, ITenantContext tenant
 /// <summary>Fiche fournisseur (recette Phase 55 ACH-001/011).</summary>
 public sealed class SqlSupplierService(NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow) : ISupplierService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record Row(Guid Id, string SupplierNumber, string Name, string Type, string? Phone, string? Email,
         string? Address, string? TaxIdentifier, string Status, string Currency, decimal OpenPayables, DateTimeOffset CreatedAt);

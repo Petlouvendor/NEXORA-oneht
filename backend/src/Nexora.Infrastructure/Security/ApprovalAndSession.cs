@@ -12,7 +12,7 @@ namespace Nexora.Infrastructure.Security;
 /// <summary>Workflow d'approbation des opérations sensibles (Phase 11 §19-20). Réutilise V016.</summary>
 public sealed class SqlApprovalWorkflowService(NexoraDbContext db, IUnitOfWork uow, ITenantContext tenant) : IApprovalWorkflowService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
     private static readonly string[] Types =
         ["expense", "discount", "refund", "purchase", "credit_sale", "stock_adjustment", "price_change", "void", "period_close", "other"];
 
@@ -536,7 +536,7 @@ public sealed class SqlSessionSecurityService(NexoraDbContext db, IUnitOfWork uo
 /// <summary>Politique de sécurité par entreprise (Phase 11 §7, §21, §31).</summary>
 public sealed class SqlSecurityPolicyService(NexoraDbContext db, IUnitOfWork uow, ITenantContext tenant) : ISecurityPolicyService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
     private sealed record PolicyRow(
         string MfaRequiredRoles, int SessionTtlMinutes, int StepUpTtlMinutes,
         bool SensitiveExportRequiresApproval, bool ExportWatermark, int AuditRetentionDays, bool EnforceMfaForCritical);

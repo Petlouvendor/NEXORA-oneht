@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Nexora.Application.Abstractions;
 using Nexora.Application.Catalog;
 using Nexora.Application.Finance.Abstractions;
@@ -85,6 +86,10 @@ public static class DependencyInjection
 
         // Assistant d'installation (résumé fonctionnel §20) — SetupState est enregistré par l'hôte.
         services.AddScoped<Nexora.Application.Setup.ISetupInstaller, Nexora.Infrastructure.Setup.SetupInstaller>();
+        services.AddScoped<Nexora.Infrastructure.Setup.MigrationStatusProbe>();   // finalisation phase 18 : readiness, mise en production
+        // L'hôte web enregistre le vrai nom d'environnement avant ; à défaut (tests d'intégration) : variable d'environnement.
+        services.TryAddSingleton(_ => Nexora.Infrastructure.Operations.RuntimeEnvironment.From(config,
+            config["ASPNETCORE_ENVIRONMENT"] ?? config["DOTNET_ENVIRONMENT"] ?? "Production"));
 
         services.AddScoped<IUnitOfWork, UnitOfWork>();
         services.AddScoped<IUserRepository, UserRepository>();

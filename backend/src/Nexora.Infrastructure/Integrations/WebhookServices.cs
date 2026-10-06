@@ -160,7 +160,7 @@ public sealed class SqlWebhookIngestService(
 
     public async Task<IReadOnlyList<WebhookEventDto>> ListAsync(string? status, CancellationToken ct = default)
     {
-        var company = tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+        var company = tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
         var s = status?.Trim().ToLowerInvariant();
         var rows = await db.Database.SqlQuery<EventRow>($"""
             SELECT id AS "Id", connector_id AS "ConnectorId", provider_event_id AS "ProviderEventId",
@@ -235,7 +235,7 @@ public sealed class SqlOutboundWebhookService(
     NexoraDbContext db, ITenantContext tenant, IDateTimeProvider clock, IOutboundWebhookDispatcher dispatcher)
     : IOutboundWebhookService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
     private static readonly int[] BackoffMinutes = [1, 5, 15, 60, 180];
 
     private sealed record HookRow(Guid Id, string Name, string TargetUrl, string Events, string Status, int ConsecutiveFailures, DateTimeOffset? LastDeliveryAt);

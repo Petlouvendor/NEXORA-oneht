@@ -4,6 +4,7 @@ using Nexora.Application.Abstractions;
 using Nexora.Application.Intelligence;
 using Nexora.Contracts.Intelligence;
 using Nexora.Infrastructure.Persistence;
+using Nexora.Domain.Common;
 
 namespace Nexora.Infrastructure.Intelligence;
 
@@ -14,7 +15,7 @@ namespace Nexora.Infrastructure.Intelligence;
 /// </summary>
 public sealed class SqlIntelligenceAuditQuery(NexoraDbContext db, ITenantContext tenant) : IIntelligenceAuditQuery
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record Row(Guid Id, string EntityType, string Action, string? Changes, Guid? UserId, DateTimeOffset OccurredAt);
 

@@ -36,7 +36,7 @@ internal static class CustomerAccountRules
     public static decimal Money(decimal v) => Math.Round(v, 2, MidpointRounding.AwayFromZero);
 
     public static Guid Company(ITenantContext tenant)
-        => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+        => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     public static Guid User(ITenantContext tenant)
         => tenant.UserId ?? throw new InvalidOperationException("Utilisateur requis.");

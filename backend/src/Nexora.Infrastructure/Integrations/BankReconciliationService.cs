@@ -15,7 +15,7 @@ namespace Nexora.Infrastructure.Integrations;
 public sealed class SqlBankReconciliationService(NexoraDbContext db, IUnitOfWork uow, ITenantContext tenant)
     : IBankReconciliationService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
     private const int MatchDayWindow = 3;
 
     private sealed record StatementRow(
@@ -272,7 +272,7 @@ public sealed class SqlBankReconciliationService(NexoraDbContext db, IUnitOfWork
 public sealed class SqlIntegrationCenter(NexoraDbContext db, ITenantContext tenant, IDateTimeProvider clock)
     : IIntegrationCenter
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record CountRow(string Key, int Count);
     private sealed record HealthRow(

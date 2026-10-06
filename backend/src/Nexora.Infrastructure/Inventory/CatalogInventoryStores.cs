@@ -7,13 +7,14 @@ using Nexora.Domain.Catalog;
 using Nexora.Domain.Inventory;
 using Nexora.Domain.Purchasing;
 using Nexora.Infrastructure.Persistence;
+using Nexora.Domain.Common;
 
 namespace Nexora.Infrastructure.Inventory;
 
 internal static class StoreHelpers
 {
     public static Guid Company(ITenantContext t) => t.ActiveCompanyId
-        ?? throw new InvalidOperationException("Aucune entreprise active.");
+        ?? throw TenantErrors.ActiveCompanyRequired();
 
     public static async Task<Guid> CurrencyId(NexoraDbContext db, string code, CancellationToken ct)
         => await db.Currencies.AsNoTracking().Where(c => c.Code == code).Select(c => (Guid?)c.Id).FirstOrDefaultAsync(ct)

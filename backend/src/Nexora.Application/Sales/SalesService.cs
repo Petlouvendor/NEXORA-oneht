@@ -3,6 +3,7 @@ using Nexora.Application.Abstractions;
 using Nexora.Application.Finance.Engine;
 using Nexora.Application.Finance.Events;
 using Nexora.Application.Inventory;
+using Nexora.Application.Observability;
 using Nexora.Domain.Common;
 using Nexora.Domain.Finance;
 using Nexora.Domain.Inventory;
@@ -33,12 +34,16 @@ public sealed class SalesService(
     ILogger<SalesService> logger)
 {
     private Guid Company => tenant.ActiveCompanyId
-        ?? throw new InvalidOperationException("Aucune entreprise active.");
+        ?? throw TenantErrors.ActiveCompanyRequired();
 
     /// <summary>Vente saisie par un client (POS, API, synchronisation hors ligne, restaurant) : les
     /// montants saisis passent par <see cref="ISalePricingGuard"/> (recette Phase 55).</summary>
-    public Task<Result<CheckoutResult>> CheckoutAsync(CheckoutCommand cmd, CancellationToken ct = default)
-        => CheckoutCoreAsync(cmd, guardClientPricing: true, ct);
+    public async Task<Result<CheckoutResult>> CheckoutAsync(CheckoutCommand cmd, CancellationToken ct = default)
+    {
+        var result = await CheckoutCoreAsync(cmd, guardClientPricing: true, ct);
+        if (result.IsSuccess) NexoraMetrics.RecordCheckout("direct");
+        return result;
+    }
 
     /// <summary>Exécution d'une commande : ses prix ont été figés — et contrôlés — à la saisie de la
     /// commande ou du devis d'origine ; les rejouer ici exigerait à tort <c>pos.change_price</c>
@@ -76,8 +81,12 @@ public sealed class SalesService(
             subtotal, discountTotal, taxTotal, Rounding.Money(subtotal - discountTotal + taxTotal), result));
     }
 
-    internal Task<Result<CheckoutResult>> CheckoutFrozenPricesAsync(CheckoutCommand cmd, CancellationToken ct = default)
-        => CheckoutCoreAsync(cmd, guardClientPricing: false, ct);
+    internal async Task<Result<CheckoutResult>> CheckoutFrozenPricesAsync(CheckoutCommand cmd, CancellationToken ct = default)
+    {
+        var result = await CheckoutCoreAsync(cmd, guardClientPricing: false, ct);
+        if (result.IsSuccess) NexoraMetrics.RecordCheckout("order");
+        return result;
+    }
 
     private async Task<Result<CheckoutResult>> CheckoutCoreAsync(CheckoutCommand cmd, bool guardClientPricing, CancellationToken ct)
     {

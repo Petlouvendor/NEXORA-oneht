@@ -11,7 +11,7 @@ namespace Nexora.Infrastructure.Finance;
 public sealed class SqlChartManagementService(NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow) : IChartManagementService
 {
     private static readonly string[] Types = ["asset", "liability", "equity", "revenue", "expense"];
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record Row(Guid Id, string Code, string Name, string AccountType, bool IsPostable, string Status,
         Guid? ParentAccountId, string? ParentCode, string? Currency, decimal Balance, int LineCount,

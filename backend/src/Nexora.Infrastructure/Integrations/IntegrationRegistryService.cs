@@ -69,7 +69,7 @@ public sealed class SqlIntegrationRegistry(
     NexoraDbContext db, IUnitOfWork uow, ITenantContext tenant, IPaymentProviderRegistry providers,
     Payroll.PersonalDataProtector protector) : IIntegrationRegistry
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private static readonly string[] Types =
         ["payment", "bank", "ecommerce", "marketplace", "messaging", "email_sms",

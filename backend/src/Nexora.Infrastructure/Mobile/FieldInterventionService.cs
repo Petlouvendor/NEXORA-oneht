@@ -16,7 +16,7 @@ namespace Nexora.Infrastructure.Mobile;
 public sealed class SqlFieldInterventionService(NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow) : IFieldInterventionService
 {
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record Row(Guid Id, Guid? TechnicianUserId, Guid? CustomerId, string EquipmentDescription,
         string Checklist, string PartsUsed, DateTimeOffset? ScheduledAt, DateTimeOffset? StartedAt,

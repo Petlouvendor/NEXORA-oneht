@@ -23,7 +23,7 @@ public sealed class SqlInsightService(
 {
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
 
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record Row(Guid Id, string Category, string Severity, string Title, string Detail, string Evidence,
         string? DrillPath, string? SuggestedAction, DateOnly PeriodStart, string Status, Guid? AssignedTo,

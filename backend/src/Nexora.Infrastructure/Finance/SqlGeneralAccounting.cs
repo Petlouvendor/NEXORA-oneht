@@ -20,7 +20,7 @@ namespace Nexora.Infrastructure.Finance;
 /// <summary>Lectures du plan comptable & des journaux (§4-8, §51).</summary>
 public sealed class SqlChartQueries(NexoraDbContext db, ITenantContext tenant) : IChartQueries
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     public async Task<IReadOnlyList<ChartOfAccountsDto>> ChartsAsync(CancellationToken ct = default)
         => await db.Database.SqlQuery<ChartOfAccountsDto>($"""
@@ -54,7 +54,7 @@ public sealed class SqlChartQueries(NexoraDbContext db, ITenantContext tenant) :
 public sealed class SqlAccountingControls(NexoraDbContext db, ITenantContext tenant, IAccountingPeriods periods)
     : IAccountingControls
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private static readonly string[] ThirdPartyTypes = ["customer", "supplier", "employee", "other"];
 
@@ -156,7 +156,7 @@ public sealed class SqlManualJournalService(
     ICompanyCurrencyContext currency,
     IExchangeRateProvider fx) : IManualJournalService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record EntryHead(
         Guid Id, string JournalCode, string EntryNumber, DateOnly EntryDate, string Status, string Origin,
@@ -539,7 +539,7 @@ public sealed class SqlFiscalYearService(
     IDocumentNumberGenerator numbers,
     ICompanyCurrencyContext currency) : IFiscalYearService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record PeriodRow(Guid Id, string Name, DateOnly StartDate, DateOnly EndDate, string Status);
     private sealed record AccBalance(Guid AccountId, string Code, string AccountType, decimal Balance);

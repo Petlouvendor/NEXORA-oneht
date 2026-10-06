@@ -54,7 +54,7 @@ public sealed class OrderService(
     ILogger<OrderService> logger)
 {
     private Guid Company => tenant.ActiveCompanyId
-        ?? throw new InvalidOperationException("Aucune entreprise active.");
+        ?? throw TenantErrors.ActiveCompanyRequired();
 
     /// <summary>Commande saisie par un client : prix forcés et remises contrôlés (recette Phase 55).</summary>
     public Task<Result<Guid>> CreateOrderAsync(CreateOrderRequest r, CancellationToken ct = default)

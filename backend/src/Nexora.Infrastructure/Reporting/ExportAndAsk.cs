@@ -8,6 +8,7 @@ using Nexora.Application.Security;
 using Nexora.Contracts.Printing;
 using Nexora.Contracts.Reporting;
 using Nexora.Infrastructure.Persistence;
+using Nexora.Domain.Common;
 
 namespace Nexora.Infrastructure.Reporting;
 
@@ -19,7 +20,7 @@ public sealed class ReportExportService(
     NexoraDbContext db, ITenantContext tenant, IPrintService print,
     ISalesReports sales, IStockReports stock, IAgingReports aging) : IExportService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     public async Task<ExportResult> ExportAsync(ExportRequest request, CancellationToken ct = default)
     {

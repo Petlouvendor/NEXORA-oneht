@@ -4,13 +4,14 @@ using Nexora.Application.Abstractions;
 using Nexora.Domain.Accounting;
 using Nexora.Domain.Finance;
 using Nexora.Infrastructure.Persistence;
+using Nexora.Domain.Common;
 
 namespace Nexora.Infrastructure.Finance;
 
 public sealed class EfJournalEntryStore(NexoraDbContext db, ITenantContext tenant) : IJournalEntryStore
 {
     private Guid Company => tenant.ActiveCompanyId
-        ?? throw new InvalidOperationException("Aucune entreprise active.");
+        ?? throw TenantErrors.ActiveCompanyRequired();
 
     public Task<Guid?> FindByOperationAsync(Guid operationUuid, CancellationToken ct = default)
         => db.JournalEntries.AsNoTracking()

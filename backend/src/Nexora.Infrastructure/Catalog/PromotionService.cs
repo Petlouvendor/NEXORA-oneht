@@ -20,7 +20,7 @@ public sealed class SqlPromotionService(NexoraDbContext db, ITenantContext tenan
     private static readonly string[] TargetTypes = ["all", "product", "category", "brand"];
     private static readonly string[] SimpleStatuses = ["active", "inactive"];
 
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Aucune entreprise active.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record PromoRow(
         Guid Id, string Name, string PromoType, decimal Value, short Priority,

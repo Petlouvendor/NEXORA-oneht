@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using Nexora.Application.Abstractions;
 using Nexora.Application.Administration;
 using Nexora.Application.Integrations;
+using Nexora.Application.Observability;
 using Nexora.Application.Operations;
 using Nexora.Infrastructure.Persistence;
 
@@ -198,14 +199,20 @@ public sealed class SchedulerRunner(
     {
         if (!force && !await jobs.IsEnabledAsync(key, ct)) return (0, 0);
         var runId = await jobs.StartRunAsync(key, triggeredBy, triggeredByUser, ct);
+        using var activity = NexoraMetrics.ActivitySource.StartActivity($"job {key}");
+        activity?.SetTag("nexora.job", key);
+        activity?.SetTag("nexora.triggered_by", triggeredBy);
         try
         {
             var (count, failures) = await action(ct);
             await jobs.FinishRunAsync(runId, failures == 0, count, failures > 0 ? $"{failures} échec(s) entreprise" : null, ct);
+            NexoraMetrics.RecordJob(key, failures == 0 ? "succeeded" : "partial");
             return (count, failures);
         }
         catch (Exception ex)
         {
+            NexoraMetrics.RecordJob(key, "failed");
+            activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Error, ex.Message);
             await jobs.FinishRunAsync(runId, false, 0, ex.Message, ct);
             logger.LogWarning(ex, "Planificateur : échec du job {Key}", key);
             return (0, 1);

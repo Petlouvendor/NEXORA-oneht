@@ -24,7 +24,7 @@ public sealed class SqlAssistantService(
     IPermissionService permissions) : IAssistantService
 {
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     /// <summary>Catégories pertinentes par rôle (§7-9) — tableau vide = pas de filtre (direction voit tout, §6).</summary>
     private static readonly Dictionary<string, (string[] InsightCategories, string[] RecommendationCategories)> RoleFilters = new()

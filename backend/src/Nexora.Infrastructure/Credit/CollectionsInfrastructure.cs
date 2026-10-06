@@ -3,13 +3,14 @@ using Nexora.Application.Abstractions;
 using Nexora.Application.Credit;
 using Nexora.Contracts.Credit;
 using Nexora.Infrastructure.Persistence;
+using Nexora.Domain.Common;
 
 namespace Nexora.Infrastructure.Credit;
 
 public sealed class SqlCollectionsStore(NexoraDbContext db, ITenantContext tenant) : ICollectionsStore
 {
     private Guid Company => tenant.ActiveCompanyId
-        ?? throw new InvalidOperationException("Aucune entreprise active.");
+        ?? throw TenantErrors.ActiveCompanyRequired();
 
     public Task<string?> CustomerNameAsync(Guid customerId, CancellationToken ct = default)
         => db.Database.SqlQuery<string?>($"""
@@ -192,7 +193,7 @@ public sealed class SqlCollectionsStore(NexoraDbContext db, ITenantContext tenan
 public sealed class SqlCreditPortfolioQueries(NexoraDbContext db, ITenantContext tenant, IDateTimeProvider clock) : ICreditPortfolioQueries
 {
     private Guid Company => tenant.ActiveCompanyId
-        ?? throw new InvalidOperationException("Aucune entreprise active.");
+        ?? throw TenantErrors.ActiveCompanyRequired();
 
     public async Task<IReadOnlyList<CollectionsRowDto>> CollectionsAsync(bool onlyOverdue, CancellationToken ct = default)
     {

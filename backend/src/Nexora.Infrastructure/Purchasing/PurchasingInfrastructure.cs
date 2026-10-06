@@ -3,6 +3,7 @@ using Nexora.Application.Abstractions;
 using Nexora.Application.Purchasing;
 using Nexora.Contracts.Purchasing;
 using Nexora.Infrastructure.Persistence;
+using Nexora.Domain.Common;
 
 namespace Nexora.Infrastructure.Purchasing;
 
@@ -10,7 +11,7 @@ namespace Nexora.Infrastructure.Purchasing;
 public sealed class SqlPurchasingQueries(NexoraDbContext db, ITenantContext tenant, IDateTimeProvider clock) : IPurchasingQueries
 {
     private Guid Company => tenant.ActiveCompanyId
-        ?? throw new InvalidOperationException("Aucune entreprise active.");
+        ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record PayableRow(
         Guid Id, Guid? SupplierInvoiceId, string? InvoiceNumber, string? SupplierReference,

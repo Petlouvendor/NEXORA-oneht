@@ -28,7 +28,7 @@ public sealed class SqlDeliveryService(
 {
     public const string LocationSetting = "field_ops.capture_location";
     private static readonly string[] Closed = ["delivered", "returned"];
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record RouteRow(Guid Id, Guid? DriverUserId, DateOnly RouteDate, string? Vehicle, string Status,
         DateTimeOffset? StartedAt, DateTimeOffset? CompletedAt, string? DriverName);

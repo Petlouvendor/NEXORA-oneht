@@ -16,7 +16,7 @@ public sealed class SqlTreasuryManagementService(
     /// <summary>Comptes dont le solde ne peut pas devenir négatif (argent physique ou porte-monnaie).</summary>
     private static readonly string[] NoOverdraft = ["cash", "mobile_money", "wallet"];
 
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     internal sealed record AccountRow(Guid Id, string Name, string AccountType, string Currency, string Status, decimal Balance, int Movements);
 
@@ -244,7 +244,7 @@ public sealed class SqlExpenseService(
     NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow, IFinanceOperations ops,
     IDocumentNumberGenerator numbers, IDateTimeProvider clock) : IExpenseService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     public async Task<IReadOnlyList<ExpenseCategoryDto>> CategoriesAsync(CancellationToken ct = default)
         => await db.Database.SqlQuery<ExpenseCategoryDto>($"""

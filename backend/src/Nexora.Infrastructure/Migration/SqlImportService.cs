@@ -24,7 +24,7 @@ public sealed class SqlImportService(
 {
     private const int MaxContentBytes = 8 * 1024 * 1024;
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
     private readonly Dictionary<string, IEntityImporter> _byKind = importers.ToDictionary(i => i.Kind);
 
     private static readonly string[] Kinds = ["customers", "suppliers", "products", "opening_stock"];

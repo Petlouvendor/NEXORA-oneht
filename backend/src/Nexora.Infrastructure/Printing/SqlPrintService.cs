@@ -4,6 +4,7 @@ using Nexora.Application.Abstractions;
 using Nexora.Application.Printing;
 using Nexora.Contracts.Printing;
 using Nexora.Infrastructure.Persistence;
+using Nexora.Domain.Common;
 
 namespace Nexora.Infrastructure.Printing;
 
@@ -15,7 +16,7 @@ namespace Nexora.Infrastructure.Printing;
 public sealed class SqlPrintService(
     NexoraDbContext db, ITenantContext tenant, IDateTimeProvider clock, IDocumentRenderer renderer) : IPrintService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     public async Task<RenderedFile> RenderAsync(
         PrintDocument document, string format, string logKey, string fileBaseName,

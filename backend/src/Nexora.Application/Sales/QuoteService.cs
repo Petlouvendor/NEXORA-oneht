@@ -39,7 +39,7 @@ public sealed class QuoteService(
     ILogger<QuoteService> logger)
 {
     private Guid Company => tenant.ActiveCompanyId
-        ?? throw new InvalidOperationException("Aucune entreprise active.");
+        ?? throw TenantErrors.ActiveCompanyRequired();
 
     private static decimal Round(decimal v) => Math.Round(v, 2, MidpointRounding.ToEven);
 

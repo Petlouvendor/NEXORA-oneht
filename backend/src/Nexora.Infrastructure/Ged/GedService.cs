@@ -19,7 +19,7 @@ namespace Nexora.Infrastructure.Ged;
 public sealed class SqlGedService(NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow) : IGedService
 {
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private static readonly string[] DocumentTypes =
     [

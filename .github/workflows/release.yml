@@ -1,0 +1,83 @@
+# NEXORA ONE — publication et déploiement (finalisation phase 18, §39 « CI/CD »).
+#
+# Publication : un tag « v1.4.0 » (après une CI verte sur main) construit et publie les trois images dans le registre
+# GitHub (ghcr.io/<organisation>/nexora-api|nexora-web|nexora-backup:1.4.0 et :latest), avec version et commit gravés.
+#
+# Déploiement : manuel (« Run workflow »), dans l'environnement GitHub « production » — qui porte les approbations
+# requises et les secrets DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY, DEPLOY_PATH. Sur le serveur : sauvegarde,
+# récupération des images de la version, migrations (service « migrate »), redémarrage, contrôle de disponibilité.
+# Procédure et retour arrière : docs/exploitation/runbook-production.md.
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version à déployer (ex. 1.4.0) — les images doivent être publiées"
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  images:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Version
+        id: v
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Construire et publier
+        env:
+          REGISTRY: ghcr.io/${{ github.repository_owner }}
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          REGISTRY=$(echo "$REGISTRY" | tr '[:upper:]' '[:lower:]')
+          build() {
+            docker build -f "$2" --build-arg NEXORA_VERSION="$VERSION" --build-arg NEXORA_COMMIT="$GITHUB_SHA" \
+              -t "$REGISTRY/$1:$VERSION" -t "$REGISTRY/$1:latest" .
+            docker push "$REGISTRY/$1:$VERSION"
+            docker push "$REGISTRY/$1:latest"
+          }
+          build nexora-api backend/Dockerfile
+          build nexora-web frontend/nexora-web/Dockerfile
+          build nexora-backup infrastructure/backup/Dockerfile
+
+  deploy:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Déployer sur le serveur
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          VERSION: ${{ inputs.version }}
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          envs: VERSION
+          script: |
+            set -euo pipefail
+            cd "${{ secrets.DEPLOY_PATH }}"
+            sed -i "s/^NEXORA_VERSION=.*/NEXORA_VERSION=$VERSION/" infrastructure/production.env
+            C="docker compose -f infrastructure/docker-compose.prod.yml --env-file infrastructure/production.env"
+            # 1. Sauvegarde avant toute migration (point de retour)
+            $C exec -T backup bash /scripts/backup.sh nexora /backups
+            # 2. Images de la version, migrations, redémarrage
+            $C pull
+            $C run --rm migrate
+            $C up -d
+            # 3. Disponibilité : l'API répond et son schéma est conforme
+            for i in $(seq 1 30); do $C exec -T api dotnet Nexora.Api.dll healthcheck http://localhost:8080/health/ready && exit 0; sleep 4; done
+            echo "ÉCHEC : l'API n'est pas prête après déploiement — appliquer le retour arrière du runbook" >&2
+            exit 1

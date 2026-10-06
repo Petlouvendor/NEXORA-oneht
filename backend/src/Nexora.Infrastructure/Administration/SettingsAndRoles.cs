@@ -11,7 +11,7 @@ namespace Nexora.Infrastructure.Administration;
 /// <summary>Paramètres résolus par périmètre (Phase 14 §2-3).</summary>
 public sealed class SqlSettingsService(NexoraDbContext db, IUnitOfWork uow, ITenantContext tenant) : ISettingsService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
     private static readonly string[] Scopes = ["system", "group", "company", "establishment"];
     private static int Rank(string s) => Array.IndexOf(Scopes, s);
 
@@ -157,7 +157,7 @@ public sealed class SqlSettingsService(NexoraDbContext db, IUnitOfWork uow, ITen
 /// </summary>
 public sealed class SqlCustomRoleService(NexoraDbContext db, IUnitOfWork uow, ITenantContext tenant, IPermissionService permissions) : ICustomRoleService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record RoleRow(Guid Id, string Name, string? Description, bool SystemRole, string Status);
 

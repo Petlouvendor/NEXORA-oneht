@@ -22,7 +22,7 @@ public sealed class SalesReturnService(
     ILogger<SalesReturnService> logger)
 {
     private Guid Company => tenant.ActiveCompanyId
-        ?? throw new InvalidOperationException("Aucune entreprise active.");
+        ?? throw TenantErrors.ActiveCompanyRequired();
 
     /// <summary>Modes de remboursement acceptés (miroir de <c>sale_return_method_chk</c>).</summary>
     public static readonly IReadOnlySet<string> RefundMethods =

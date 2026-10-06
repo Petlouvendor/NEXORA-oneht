@@ -23,7 +23,7 @@ public sealed class SqlCatalogReferenceService(
     private static readonly string[] ImageTypes = ["image/png", "image/jpeg", "image/webp"];
     private static readonly string[] CategoryStatuses = ["active", "inactive", "archived"];
 
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Aucune entreprise active.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     // --------------------------------------------------- Marques & groupes clients
 
@@ -272,7 +272,7 @@ public sealed class SqlUnitConverter(NexoraDbContext db, ITenantContext tenant) 
         Guid? productId, Guid fromUnitId, Guid toUnitId, decimal quantity, CancellationToken ct = default)
     {
         if (fromUnitId == toUnitId) return Result.Success(new UnitConversionResultDto(quantity, quantity, "identity"));
-        var company = tenant.ActiveCompanyId ?? throw new InvalidOperationException("Aucune entreprise active.");
+        var company = tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
         var rules = await db.Database.SqlQuery<Rule>($"""
             SELECT product_id AS "ProductId", from_unit_id AS "FromUnitId", to_unit_id AS "ToUnitId", factor AS "Factor"

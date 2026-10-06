@@ -28,7 +28,7 @@ public sealed class SqlDashboardLayoutService(NexoraDbContext db, ITenantContext
     : IDashboardLayoutService
 {
     private Guid User => tenant.UserId ?? throw new InvalidOperationException("Utilisateur requis.");
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record Row(Guid Id, Guid CompanyId, Guid? UserId, string? Role, string Name, string Widgets, bool IsDefault, DateTimeOffset UpdatedAt);
 
@@ -145,7 +145,7 @@ public sealed class SqlDashboardLayoutService(NexoraDbContext db, ITenantContext
 public sealed class SqlSavedFilterService(NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow) : ISavedFilterService
 {
     private Guid User => tenant.UserId ?? throw new InvalidOperationException("Utilisateur requis.");
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record Row(Guid Id, Guid CompanyId, Guid UserId, string ViewKey, string Name, string Filter, bool IsDefault, bool Shared, DateTimeOffset UpdatedAt);
 

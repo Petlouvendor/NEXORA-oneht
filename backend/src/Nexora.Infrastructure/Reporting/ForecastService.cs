@@ -24,7 +24,7 @@ public sealed class SqlForecastService(
     private static readonly string[] Metrics = ["revenue", "cash", "stock", "receivables", "expenses"];
     private static readonly string[] Scenarios = ["base", "optimistic", "prudent", "custom"];
 
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record Row(Guid Id, string Metric, string Method, string Scenario, decimal AdjustmentPct,
         int HorizonDays, string ConfidenceLevel, string Assumptions, string Points, DateTimeOffset GeneratedAt);

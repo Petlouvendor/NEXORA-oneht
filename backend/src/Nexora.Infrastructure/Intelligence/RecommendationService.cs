@@ -25,7 +25,7 @@ public sealed class SqlRecommendationService(
     ITaskService tasks, IInsightService insights) : IRecommendationService
 {
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     /// <summary>Durée de vie par défaut d'une recommandation jamais traitée (Phase 54 §6, §21).</summary>
     private const int DefaultExpiryDays = 30;

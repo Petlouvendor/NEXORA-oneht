@@ -16,7 +16,7 @@ public sealed class CatalogPricingEngine(NexoraDbContext db, ITenantContext tena
     : ICatalogPricingEngine
 {
     private Guid Company => tenant.ActiveCompanyId
-        ?? throw new InvalidOperationException("Aucune entreprise active.");
+        ?? throw TenantErrors.ActiveCompanyRequired();
 
     private static decimal R2(decimal v) => Math.Round(v, 2, MidpointRounding.ToEven);
     private static decimal R4(decimal v) => Math.Round(v, 4, MidpointRounding.ToEven);
