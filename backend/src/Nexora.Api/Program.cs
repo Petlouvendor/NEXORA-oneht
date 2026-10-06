@@ -110,9 +110,12 @@ builder.Services.AddCors(o => o.AddPolicy(CorsPolicy, p => p
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    // 10 connexions par minute et par adresse ; réglable (Security:LoginRateLimitPerMinute) pour un environnement de
+    // test qui ouvre beaucoup de sessions depuis une seule machine (finalisation phase 19) — jamais au-dessus de 1 000.
+    var loginPerMinute = Math.Clamp(builder.Configuration.GetValue("Security:LoginRateLimitPerMinute", 10), 1, 1000);
     options.AddPolicy("auth", ctx => RateLimitPartition.GetFixedWindowLimiter(
         ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
-        _ => new FixedWindowRateLimiterOptions { PermitLimit = 10, Window = TimeSpan.FromMinutes(1) }));
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = loginPerMinute, Window = TimeSpan.FromMinutes(1) }));
     // Rafraîchissement (finalisation phase 17) : plus fréquent que la connexion (bureau partagé derrière une même
     // adresse), mais borné — une rafale de rafraîchissements est un signal d'abus.
     options.AddPolicy("refresh", ctx => RateLimitPartition.GetFixedWindowLimiter(

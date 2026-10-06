@@ -83,6 +83,15 @@ public sealed class ProductionConfigurationTests
     }
 
     [Fact]
+    public void A_login_rate_limit_widened_for_tests_fails_in_production()
+    {
+        ProductionConfiguration.Evaluate(Production(("Security:LoginRateLimitPerMinute", "120")), "Production")
+            .Single(c => c.Key == "login_rate_limit").Status.Should().Be("fail");
+        ProductionConfiguration.Evaluate(Production(), "Production")
+            .Single(c => c.Key == "login_rate_limit").Status.Should().Be("pass");
+    }
+
+    [Fact]
     public void A_missing_company_header_is_a_bad_request_not_an_internal_error()
     {
         var error = TenantErrors.ActiveCompanyRequired().Error;

@@ -118,3 +118,44 @@ jobs:
           docker run -d --name api-ci -e ASPNETCORE_ENVIRONMENT=Production nexora-api:ci
           for i in $(seq 1 30); do docker exec api-ci dotnet Nexora.Api.dll healthcheck && break; sleep 2; done
           docker exec api-ci dotnet Nexora.Api.dll healthcheck
+
+  # --- E2E global (finalisation phase 19, plan maître §41-43) : installation neuve, scénarios métier complets ---
+  e2e:
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    env:
+      E: docker compose -p nexora-e2e -f infrastructure/docker-compose.prod.yml -f infrastructure/docker-compose.e2e.yml --env-file infrastructure/production.env
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/nexora-web/package-lock.json
+      - name: Installation neuve (images construites depuis ce commit)
+        run: |
+          bash infrastructure/scripts/generate-secrets.sh
+          cp infrastructure/production.env.example infrastructure/production.env
+          sed -i -e 's/^NEXORA_DOMAIN=.*/NEXORA_DOMAIN=localhost/' -e 's/^NEXORA_REGISTRY=.*/NEXORA_REGISTRY=nexora/' \
+                 -e 's/^NEXORA_OTLP_ENDPOINT=.*/NEXORA_OTLP_ENDPOINT=/' -e 's|^NEXORA_BACKUP_HOST_DIR=.*|NEXORA_BACKUP_HOST_DIR=./backups|' \
+                 infrastructure/production.env
+          $E up -d --build --wait api web
+          $E run --rm -e 'Bootstrap__AdminPassword=E2e!Nexora2026' migrate bootstrap --company "Supermarché E2E" \
+            --activity supermarket --currency HTG --admin-name "Direction E2E" --admin-email direction@e2e.ht
+      - name: Scénarios E2E (Playwright)
+        working-directory: frontend/nexora-web
+        env:
+          E2E_BASE_URL: http://localhost:8090
+          E2E_ARTIFACTS: ${{ runner.temp }}/e2e
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+          npx playwright test
+      - name: Rapport et journaux en cas d'échec
+        if: failure()
+        run: $E logs api > ${{ runner.temp }}/e2e/api.log 2>&1 || true
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-report
+          path: ${{ runner.temp }}/e2e

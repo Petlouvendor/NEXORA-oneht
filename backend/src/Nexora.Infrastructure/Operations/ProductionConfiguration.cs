@@ -115,6 +115,13 @@ public static class ProductionConfiguration
         checks.Add(new("allowed_hosts", "Noms d'hôte acceptés", "security", hosts.Trim() == "*" ? "warn" : "pass",
             hosts.Trim() == "*" ? "tous les noms d'hôte acceptés — renseignez AllowedHosts avec le domaine public" : hosts));
 
+        // Finalisation phase 19 : la limite de connexion est réglable pour la suite E2E — jamais élargie en production.
+        var loginLimit = int.TryParse(configuration["Security:LoginRateLimitPerMinute"], out var l) ? l : 10;
+        checks.Add(new("login_rate_limit", "Limite de connexion par adresse", "security",
+            loginLimit <= 10 ? "pass" : notOk,
+            loginLimit <= 10 ? $"{loginLimit} connexions par minute et par adresse"
+                : $"limite élargie à {loginLimit} connexions par minute (réglage de test) — revenir à 10 (Security:LoginRateLimitPerMinute)"));
+
         var otlp = OtlpEndpoint(configuration);
         checks.Add(new("observability", "Traces et métriques (OpenTelemetry)", "monitoring", otlp is null ? "warn" : "pass",
             otlp is null ? "aucun collecteur OTLP configuré (Observability:OtlpEndpoint)" : $"export OTLP vers {otlp}"));
