@@ -53,7 +53,7 @@ export function InvoicesPanel({ refs, onChanged }: { refs: PurchasingRefs; onCha
           { key: "t", header: "Total", numeric: true, render: (i) => money(i.total, i.currency) },
           { key: "rest", header: "Reste à payer", numeric: true, render: (i) => (i.remainingAmount != null ? money(i.remainingAmount, i.currency) : "—") },
           { key: "m", header: "Rapprochement", render: (i) => (i.paymentBlocked ? <Badge tone="error">paiement bloqué</Badge>
-            : <Badge tone={i.matchStatus === "matched" ? "success" : i.matchStatus === "variance" ? "error" : undefined}>{MATCH_STATUS[i.matchStatus] ?? i.matchStatus}</Badge>) },
+            : <Badge tone={i.matchStatus === "matched" || i.matchStatus === "waived" ? "success" : i.matchStatus === "variance" || i.matchStatus === "blocked" ? "error" : undefined}>{MATCH_STATUS[i.matchStatus] ?? i.matchStatus}</Badge>) },
         ]}
         rows={invoices.data ?? []} rowKey={(i) => i.id} empty={invoices.loading ? "Chargement…" : "Aucune facture."} />
       {creating && <InvoiceDialog refs={refs} order={null} onClose={() => setCreating(false)}

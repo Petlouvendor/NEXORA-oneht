@@ -59,11 +59,16 @@ export function LocationSelect({ value, onChange, locations, label = "Emplacemen
   value: string; onChange: (v: string) => void; locations: Location[]; label?: string; required?: boolean;
   error?: string | null; allowAll?: boolean; exclude?: string;
 }) {
+  // Finalisation phase 19 (E2E) : un emplacement obligatoire et un seul choix possible → présélectionné (une
+  // installation neuve n'a que « Magasin » : l'utilisateur ne doit pas avoir à le choisir pour réceptionner).
+  const choices = locations.filter((l) => l.id !== exclude);
+  const only = required && !allowAll && choices.length === 1 ? choices[0].id : null;
+  useEffect(() => { if (only && !value) onChange(only); }, [only, value, onChange]);
   return (
     <Field label={label} required={required} error={error}>
       <Select value={value} onChange={(e) => onChange(e.target.value)}>
         <option value="">{allowAll ? "Tous les emplacements" : "—"}</option>
-        {locations.filter((l) => l.id !== exclude).map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+        {choices.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
       </Select>
     </Field>
   );

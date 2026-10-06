@@ -17,7 +17,11 @@ export const ORDER_TONE: Record<string, "success" | "warning" | "error" | "info"
 export const INVOICE_STATUS: Record<string, string> = {
   draft: "Brouillon", validated: "Validée", posted: "Comptabilisée", partially_paid: "Partiellement payée", paid: "Payée", cancelled: "Annulée",
 };
-export const MATCH_STATUS: Record<string, string> = { pending: "À rapprocher", matched: "Rapprochée", variance: "Écart", not_applicable: "Sans commande" };
+/** Statuts réels de supplier_invoice.match_status (V039) — finalisation phase 19 : « unmatched », « blocked » et
+ * « waived » s'affichaient en anglais brut, et deux statuts inexistants étaient traduits. */
+export const MATCH_STATUS: Record<string, string> = {
+  unmatched: "À rapprocher", matched: "Rapprochée", variance: "Écart", blocked: "Bloquée", waived: "Écart accepté",
+};
 
 /** Commande encore modifiable (avant approbation). */
 export const orderEditable = (status: string) => status === "draft" || status === "submitted";
