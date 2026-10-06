@@ -154,3 +154,46 @@ export const requestDataCorrection = (body: { tableName: string; recordId: strin
   apiFetch<DataCorrection>("/ops/data-corrections", { method: "POST", body: JSON.stringify(body) });
 export const decideDataCorrection = (id: string, approve: boolean, notes?: string) =>
   apiFetch<DataCorrection>(`/ops/data-corrections/${id}/decide`, { method: "POST", body: JSON.stringify({ approve, notes }) });
+
+// --- Finalisation phase 18 : état de production ------------------------------
+
+export interface ProductionCheck {
+  key: string;
+  label: string;
+  category: "security" | "monitoring" | string;
+  status: "pass" | "warn" | "fail";
+  detail: string;
+}
+
+export interface HealthProbe {
+  name: string;
+  status: "Healthy" | "Degraded" | "Unhealthy";
+  description: string | null;
+  durationMs: number;
+}
+
+export interface MigrationStatus {
+  embedded: number;
+  applied: number;
+  latestApplied: string | null;
+  latestEmbedded: string | null;
+  pending: string[];
+  drifted: string[];
+  unknown: string[];
+}
+
+export interface ProductionReadiness {
+  environment: string;
+  version: string;
+  commit: string | null;
+  startedAt: string;
+  uptimeSeconds: number;
+  overall: "pass" | "warn" | "fail";
+  probes: HealthProbe[];
+  migrations: MigrationStatus | null;
+  checks: ProductionCheck[];
+  generatedAt: string;
+}
+
+/** Version déployée, sondes, migrations et configuration de production (lecture seule, sans secret). */
+export const productionReadiness = () => apiFetch<ProductionReadiness>("/ops/production");
