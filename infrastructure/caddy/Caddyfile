@@ -1,0 +1,62 @@
+# NEXORA ONE — point d'entrée HTTPS de production (finalisation phase 18, §39 « HTTPS »).
+#
+# Caddy termine TLS (certificat Let's Encrypt automatique pour un vrai domaine, autorité locale pour
+# « localhost »), redirige HTTP vers HTTPS, sert l'interface et relaie /api vers l'API. L'API n'est jamais
+# exposée directement : elle reconnaît ce proxy (ReverseProxy:KnownNetworks) pour l'adresse réelle du client.
+#
+# Variables : NEXORA_DOMAIN (ex. app.exemple.ht, défaut localhost), ACME_EMAIL (avis d'expiration du certificat).
+{
+	email {$ACME_EMAIL:admin@localhost}
+	servers {
+		# Adresse réelle du client transmise à l'API (X-Forwarded-For) — jamais celle d'un en-tête du client.
+		trusted_proxies static private_ranges
+	}
+}
+
+{$NEXORA_DOMAIN:localhost} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "geolocation=(self), camera=(self), microphone=()"
+		-Server
+	}
+
+	# Sondes et métriques internes : jamais exposées sur Internet (l'orchestrateur et Prometheus interrogent l'API
+	# directement sur le réseau interne). /api/v1/metrics est anonyme côté API : sans ce blocage, il serait public.
+	@internal path /health /health/* /api/v1/health /api/v1/ready /api/v1/metrics
+	handle @internal {
+		respond 404
+	}
+
+	handle /api/* {
+		reverse_proxy api:8080 {
+			header_up X-Forwarded-Proto {scheme}
+			health_uri /health/live
+			health_interval 15s
+		}
+	}
+
+	handle {
+		root * /srv
+		header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self'; manifest-src 'self'; frame-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+
+		# Fichiers horodatés par Vite : cache permanent. Coque, manifeste et service worker : toujours revalidés
+		# (sinon une mise à jour resterait invisible jusqu'à expiration du cache).
+		@hashed path /assets/*
+		header @hashed Cache-Control "public, max-age=31536000, immutable"
+		@shell path / /index.html /sw.js /manifest.webmanifest
+		header @shell Cache-Control "no-cache"
+
+		try_files {path} /index.html
+		file_server
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

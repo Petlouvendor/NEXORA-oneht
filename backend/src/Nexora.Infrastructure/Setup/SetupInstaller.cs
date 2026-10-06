@@ -225,7 +225,7 @@ public sealed partial class SetupInstaller(
             int applied;
             try
             {
-                applied = await ApplyMigrationsAsync(conn, ct);
+                applied = await MigrationRunner.ApplyPendingAsync(conn, ct);
             }
             finally
             {
@@ -253,51 +253,29 @@ public sealed partial class SetupInstaller(
         }
     }
 
-    private static async Task<int> ApplyMigrationsAsync(NpgsqlConnection conn, CancellationToken ct)
+    /// <summary>
+    /// Premier démarrage d'une installation par conteneurs (finalisation phase 18) : la base a été migrée par la commande
+    /// « migrate » et l'application se connecte déjà avec le rôle applicatif fourni par l'orchestrateur. Crée l'entreprise et
+    /// son premier administrateur — exactement comme l'assistant (mêmes validations, même transaction), sans rôle de
+    /// connexion dédié ni fichier de configuration. Refusé si la base contient déjà une entreprise ou un utilisateur.
+    /// </summary>
+    public async Task<Result<Guid>> BootstrapAsync(NpgsqlConnection conn, SetupCompanyInput company, SetupAdminInput admin,
+        SetupSettingsInput? settings = null, CancellationToken ct = default)
     {
-        var applied = new HashSet<string>(StringComparer.Ordinal);
-        if (await ScalarAsync<bool>(conn, null, "SELECT to_regclass('nexora.schema_migration') IS NOT NULL", ct))
-        {
-            await using var cmd = new NpgsqlCommand("SELECT version FROM nexora.schema_migration", conn);
-            await using var reader = await cmd.ExecuteReaderAsync(ct);
-            while (await reader.ReadAsync(ct)) applied.Add(reader.GetString(0));
-        }
-
-        var migrations = EmbeddedMigrations.All();
-        if (migrations.Count == 0)
-            throw new InvalidOperationException("Aucune migration embarquée dans l'application (database/migrations).");
-
-        var count = 0;
-        foreach (var m in migrations.Where(m => !applied.Contains(m.Version)))
-        {
-            await using var tx = await conn.BeginTransactionAsync(ct);
-            try
-            {
-                await using (var cmd = new NpgsqlCommand(m.Sql, conn, tx) { CommandTimeout = 600 })
-                    await cmd.ExecuteNonQueryAsync(ct);
-                await using (var log = new NpgsqlCommand("""
-                    INSERT INTO nexora.schema_migration (version, filename, checksum) VALUES (@v, @f, @c)
-                    ON CONFLICT (version) DO NOTHING
-                    """, conn, tx))
-                {
-                    log.Parameters.AddWithValue("v", m.Version);
-                    log.Parameters.AddWithValue("f", m.FileName);
-                    log.Parameters.AddWithValue("c", m.Checksum);
-                    await log.ExecuteNonQueryAsync(ct);
-                }
-                await tx.CommitAsync(ct);
-                count++;
-            }
-            catch (Exception ex)
-            {
-                throw new InvalidOperationException($"Échec de la migration {m.FileName} : {ex.Message}", ex);
-            }
-        }
-        return count;
+        var request = new InstallRequest(new DatabaseSetupRequest("-", 0, "-", "-", "-"), company, admin, settings);
+        if (ValidateInstall(request) is { } invalid) return invalid;
+        if (!await ScalarAsync<bool>(conn, null, "SELECT to_regclass('nexora.company') IS NOT NULL", ct))
+            return Error.Validation("setup.not_migrated", "La base n'est pas migrée : lancer « migrate » d'abord.");
+        await ExecAsync(conn, null, "SET nexora.bypass_rls = 'on'", ct);
+        var outcome = await CreateTenantAsync(conn, request, ct, createRuntimeRole: false);
+        if (!outcome.IsSuccess) return outcome.Error!;
+        logger.LogWarning("Premier démarrage : entreprise {CompanyId}, administrateur {Email}.", outcome.Value.CompanyId,
+            admin.Email.Trim().ToLowerInvariant());
+        return Result.Success(outcome.Value.CompanyId);
     }
 
     private async Task<Result<(Guid CompanyId, string RoleName, string RolePassword)>> CreateTenantAsync(
-        NpgsqlConnection conn, InstallRequest request, CancellationToken ct)
+        NpgsqlConnection conn, InstallRequest request, CancellationToken ct, bool createRuntimeRole = true)
     {
         var company = request.Company;
         var admin = request.Admin;
@@ -364,10 +342,15 @@ public sealed partial class SetupInstaller(
             throw new InvalidOperationException($"Rôle système « {InitialAdminRole} » introuvable après migrations.");
 
         // ---- Rôle de connexion de l'application : membre de nexora_app, jamais BYPASSRLS ------------
-        var roleName = "nexora_rt_" + Convert.ToHexString(RandomNumberGenerator.GetBytes(4)).ToLowerInvariant();
-        var rolePassword = RandomAlphanumeric(40);
-        await ExecAsync(conn, tx,
-            $"CREATE ROLE {roleName} LOGIN PASSWORD '{rolePassword}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS INHERIT IN ROLE nexora_app", ct);
+        // (installation par conteneurs : l'orchestrateur fournit déjà la connexion du rôle applicatif)
+        string roleName = "", rolePassword = "";
+        if (createRuntimeRole)
+        {
+            roleName = "nexora_rt_" + Convert.ToHexString(RandomNumberGenerator.GetBytes(4)).ToLowerInvariant();
+            rolePassword = RandomAlphanumeric(40);
+            await ExecAsync(conn, tx,
+                $"CREATE ROLE {roleName} LOGIN PASSWORD '{rolePassword}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS INHERIT IN ROLE nexora_app", ct);
+        }
 
         await ExecAsync(conn, tx, """
             INSERT INTO nexora.audit_log (company_id, user_id, action, entity_type, entity_id, new_values)
@@ -375,7 +358,7 @@ public sealed partial class SetupInstaller(
             """, ct, companyId, adminId, JsonSerializer.Serialize(new
             {
                 company = company.Name.Trim(), activity, currency = company.Currency.Trim().ToUpperInvariant(),
-                admin = email, runtime_role = roleName,
+                admin = email, runtime_role = createRuntimeRole ? roleName : "fourni par l'orchestrateur",
             }));
 
         await tx.CommitAsync(ct);
@@ -548,33 +531,4 @@ public sealed partial class SetupInstaller(
             $"Échec de la négociation SSL : {ne.Message}",
         _ => $"Connexion impossible : {ex.Message}",
     };
-}
-
-/// <summary>Migrations SQL embarquées (<c>database/migrations/V*.sql</c>), dans l'ordre des fichiers.</summary>
-internal static class EmbeddedMigrations
-{
-    internal sealed record Migration(string Version, string FileName, string Sql, string Checksum);
-
-    private const string Prefix = "migrations/";
-
-    public static IReadOnlyList<Migration> All()
-    {
-        var assembly = Assembly.GetExecutingAssembly();
-        return assembly.GetManifestResourceNames()
-            .Where(n => n.StartsWith(Prefix, StringComparison.Ordinal) && n.EndsWith(".sql", StringComparison.Ordinal))
-            .Select(n =>
-            {
-                using var stream = assembly.GetManifestResourceStream(n)!;
-                using var buffer = new MemoryStream();
-                stream.CopyTo(buffer);
-                var bytes = buffer.ToArray();
-                var file = n[Prefix.Length..];
-                var sql = new UTF8Encoding(false).GetString(bytes).TrimStart('﻿');
-                // Même empreinte que apply.sh (sha256sum du fichier).
-                return new Migration(file[..file.IndexOf("__", StringComparison.Ordinal)], file, sql,
-                    Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant());
-            })
-            .OrderBy(m => m.FileName, StringComparer.Ordinal)
-            .ToList();
-    }
 }

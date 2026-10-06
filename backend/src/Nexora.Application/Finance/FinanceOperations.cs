@@ -46,7 +46,7 @@ public sealed class FinanceOperations(
     ITenantContext tenant) : IFinanceOperations
 {
     private Guid Company => tenant.ActiveCompanyId
-        ?? throw new InvalidOperationException("Aucune entreprise active pour l'opération financière.");
+        ?? throw TenantErrors.ActiveCompanyRequired();
 
     public Task<Result<PostingResultResponse>> RecordCashSaleAsync(RecordCashSaleRequest r, CancellationToken ct) =>
         Run(new CashSaleRecorded(Company, r.OperationUuid, r.OccurredAt, r.SaleId,

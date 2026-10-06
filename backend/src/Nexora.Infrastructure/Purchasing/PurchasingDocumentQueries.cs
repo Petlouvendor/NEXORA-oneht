@@ -10,7 +10,7 @@ namespace Nexora.Infrastructure.Purchasing;
 /// <summary>Lectures du cycle d'achat (finalisation produit, phase 3). Tous les montants viennent de la base.</summary>
 public sealed class SqlPurchasingDocumentQueries(NexoraDbContext db, ITenantContext tenant) : IPurchasingDocumentQueries
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Aucune entreprise active.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record OrderHeader(
         Guid Id, string DocumentNumber, string Status, Guid SupplierId, string SupplierName, Guid? WarehouseId,
@@ -217,7 +217,7 @@ public sealed class SqlPurchasingDocumentQueries(NexoraDbContext db, ITenantCont
 /// <summary>Conditions de paiement (table supplier_payment_terms, V005) et conditions commerciales du fournisseur (V081).</summary>
 public sealed class SqlSupplierTermsService(NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow) : ISupplierTermsService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Aucune entreprise active.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     public async Task<Result<Guid>> CreatePaymentTermsAsync(SavePaymentTermsRequest r, CancellationToken ct = default)
     {

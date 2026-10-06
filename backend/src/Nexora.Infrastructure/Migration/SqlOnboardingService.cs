@@ -15,7 +15,7 @@ namespace Nexora.Infrastructure.Migration;
 public sealed class SqlOnboardingService(NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow, IDateTimeProvider clock)
     : IOnboardingService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record Item(string Key, string Label, string Category, bool Auto, Func<Counts, bool>? Derived);
 

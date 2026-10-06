@@ -214,7 +214,7 @@ public sealed class SqlEmergencyAccessService(
     NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow, IDateTimeProvider clock,
     IUserAssignmentService assignments, ISecurityEventLog events) : IEmergencyAccessService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
     private Guid CurrentUser => tenant.UserId ?? throw new InvalidOperationException("Utilisateur requis.");
 
     private const string Select = """
@@ -341,7 +341,7 @@ public sealed class SqlEmergencyAccessService(
 /// </summary>
 public sealed class SqlSecurityScoreService(NexoraDbContext db, ITenantContext tenant, IDateTimeProvider clock) : ISecurityScoreService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record CompanyStatsRow(int TotalUsers, int MfaEnrolledUsers, int ActiveSessions, int TrustedDevices,
         int OpenFraudSignals, int PendingApprovals, int OpenSecurityIncidents, int PendingEmergencyAccess);

@@ -3,12 +3,13 @@ using Nexora.Application.Abstractions;
 using Nexora.Application.Reporting;
 using Nexora.Contracts.Reporting;
 using Nexora.Infrastructure.Persistence;
+using Nexora.Domain.Common;
 
 namespace Nexora.Infrastructure.Reporting;
 
 public sealed class SqlSalesReports(NexoraDbContext db, ITenantContext tenant) : ISalesReports
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     public async Task<SalesJournalResponse> JournalAsync(ReportFilter filter, CancellationToken ct = default)
     {
@@ -104,7 +105,7 @@ public sealed class SqlSalesReports(NexoraDbContext db, ITenantContext tenant) :
 
 public sealed class SqlStockReports(NexoraDbContext db, ITenantContext tenant) : IStockReports
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     public async Task<StockValuationResponse> ValuationAsync(ReportFilter filter, CancellationToken ct = default)
     {

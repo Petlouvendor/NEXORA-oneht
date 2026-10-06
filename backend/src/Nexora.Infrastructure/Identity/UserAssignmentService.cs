@@ -14,7 +14,7 @@ public sealed class SqlUserAssignmentService(
     : IUserAssignmentService
 {
     private Guid Caller => tenant.UserId ?? throw new InvalidOperationException("Utilisateur requis.");
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
     private static readonly string[] ProtectedRoles = ["super_administrator", "group_administrator"];
     private static readonly string[] Statuses = ["active", "suspended", "locked"];
 

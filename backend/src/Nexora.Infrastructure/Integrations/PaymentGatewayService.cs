@@ -23,7 +23,7 @@ public sealed class SqlPaymentGateway(
     IFinanceOperations finance, IOutboundWebhookService outbound, IPaymentProviderRegistry providers,
     Payroll.PersonalDataProtector protector, ICustomerAccountService customerAccounts) : IPaymentGateway
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
     private static readonly string[] Methods = ["card", "mobile_money", "bank_transfer", "wallet", "link", "qr"];
     private static readonly string[] Purposes = ["sale", "receivable", "link"];
 
@@ -441,7 +441,7 @@ public sealed class SqlPaymentGateway(
 /// <summary>Rapprochement des paiements : intentions fournisseur ↔ paiements internes (§15).</summary>
 public sealed class SqlPaymentReconciliationService(NexoraDbContext db, ITenantContext tenant) : IPaymentReconciliationService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record IntentLite(
         Guid Id, string? ProviderReference, decimal Amount, string Status, Guid? PaymentId,

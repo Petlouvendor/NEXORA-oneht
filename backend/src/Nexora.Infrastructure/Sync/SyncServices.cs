@@ -23,7 +23,7 @@ public sealed class SqlSyncService(
     SalesService sales, IDeliveryService delivery, IFieldInterventionService interventions,
     Nexora.Application.Customers.ICustomerAccountService customerAccounts, IPermissionService permissions) : ISyncService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
     private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
 
     private sealed record DeviceRow(Guid Id, string Status);

@@ -12,7 +12,7 @@ namespace Nexora.Infrastructure.Sync;
 /// <summary>Registre des appareils autorisés à synchroniser (Phase 10 §12, §31).</summary>
 public sealed class SqlDeviceRegistryService(NexoraDbContext db, IUnitOfWork uow, ITenantContext tenant) : IDeviceRegistryService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
     private static readonly string[] Types = ["pos", "mobile", "desktop", "server", "other"];
 
     private sealed record DeviceRow(
@@ -109,7 +109,7 @@ public sealed class SqlDeviceRegistryService(NexoraDbContext db, IUnitOfWork uow
 /// <summary>Politique de fonctionnement hors connexion (Phase 10 §10, §17).</summary>
 public sealed class SqlOfflinePolicyService(NexoraDbContext db, IUnitOfWork uow, ITenantContext tenant) : IOfflinePolicyService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record PolicyRow(
         bool AllowOfflineSales, bool AllowOfflineCredit, decimal OfflineCreditLimit, bool AllowOfflineDiscount,

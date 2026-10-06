@@ -24,7 +24,7 @@ public sealed class CashSessionService(
     IDateTimeProvider clock)
 {
     private Guid Company => tenant.ActiveCompanyId
-        ?? throw new InvalidOperationException("Aucune entreprise active.");
+        ?? throw TenantErrors.ActiveCompanyRequired();
 
     public async Task<Result<Guid>> OpenAsync(OpenSessionCommand cmd, CancellationToken ct = default)
     {

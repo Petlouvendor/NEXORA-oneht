@@ -1,0 +1,221 @@
+# NEXORA ONE — déploiement de production (finalisation phase 18, §39).
+#
+#   1. Secrets (une fois) :          infrastructure/scripts/generate-secrets.sh
+#   2. Variables :                   cp infrastructure/production.env.example infrastructure/production.env  (puis éditer)
+#   3. Démarrage :                   docker compose -f infrastructure/docker-compose.prod.yml --env-file infrastructure/production.env up -d
+#      (le service « migrate » applique les migrations avant que l'API ne démarre)
+#   3 bis. Première installation :   entreprise et premier administrateur (mot de passe par variable, jamais en argument)
+#      docker compose … run --rm -e Bootstrap__AdminPassword='…' migrate bootstrap --company "Nom" --activity supermarket \
+#        --currency HTG --admin-name "Prénom Nom" --admin-email direction@exemple.ht
+#   4. Surveillance (facultative) :  … --profile observability up -d
+#
+# Seul Caddy est exposé (80/443). PostgreSQL et l'API restent sur le réseau interne. Les secrets sont des fichiers
+# montés dans /run/secrets (jamais dans une variable d'environnement visible par « docker inspect ») ; l'API les lit
+# un fichier par clé (Jwt__SigningKey → Jwt:SigningKey). Procédures : docs/exploitation/runbook-production.md.
+
+name: nexora
+
+x-api-image: &api-image
+  image: ${NEXORA_REGISTRY:-nexora}/nexora-api:${NEXORA_VERSION:-latest}
+  build:
+    context: ..
+    dockerfile: backend/Dockerfile
+    args:
+      NEXORA_VERSION: ${NEXORA_VERSION:-1.0.0}
+      NEXORA_COMMIT: ${NEXORA_COMMIT:-}
+
+services:
+  postgres:
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: nexora_owner
+      POSTGRES_DB: nexora
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      TZ: ${NEXORA_TIMEZONE:-America/Port-au-Prince}
+    secrets: [postgres_password]
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nexora_owner -d nexora"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [nexora]
+
+  # Migrations livrées avec l'image, sous verrou, avec le compte propriétaire ; fixe aussi le mot de passe du
+  # rôle applicatif (sans BYPASSRLS). S'arrête une fois la base à jour ; l'API attend sa réussite.
+  migrate:
+    <<: *api-image
+    command: ["migrate"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+    secrets:
+      - source: migration_connection
+        target: Database__MigrationConnectionString
+      - source: app_role_password
+        target: Database__AppRolePassword
+    healthcheck:
+      disable: true
+    networks: [nexora]
+
+  api:
+    <<: *api-image
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      PublicUrl: https://${NEXORA_DOMAIN:-localhost}
+      AllowedHosts: ${NEXORA_DOMAIN:-localhost};api;localhost
+      # TLS terminé par Caddy : adresse réelle du client et protocole repris de ses en-têtes, et de lui seul.
+      ReverseProxy__Enabled: "true"
+      ReverseProxy__KnownNetworks__0: 172.30.0.0/24
+      Cors__Origins__0: https://${NEXORA_DOMAIN:-localhost}
+      Scheduler__Enabled: "true"
+      Observability__LogFormat: json
+      Observability__OtlpEndpoint: ${NEXORA_OTLP_ENDPOINT:-}
+      Security__SessionMaxHours: ${NEXORA_SESSION_MAX_HOURS:-12}
+      Notifications__Smtp__Enabled: ${NEXORA_SMTP_ENABLED:-false}
+      Notifications__Smtp__Host: ${NEXORA_SMTP_HOST:-}
+      Notifications__Smtp__Port: ${NEXORA_SMTP_PORT:-587}
+      Notifications__Smtp__UseSsl: ${NEXORA_SMTP_SSL:-true}
+      Notifications__Smtp__UserName: ${NEXORA_SMTP_USER:-}
+      Notifications__Smtp__FromAddress: ${NEXORA_SMTP_FROM:-}
+      TZ: ${NEXORA_TIMEZONE:-America/Port-au-Prince}
+    secrets:
+      - source: app_connection
+        target: Database__ConnectionString
+      - source: jwt_signing_key
+        target: Jwt__SigningKey
+      - source: mfa_encryption_key
+        target: Security__MfaEncryptionKey
+      - source: data_encryption_key
+        target: Security__DataEncryptionKey
+      - source: smtp_password
+        target: Notifications__Smtp__Password
+    volumes:
+      - apidata:/var/lib/nexora
+    networks: [nexora]
+
+  web:
+    image: ${NEXORA_REGISTRY:-nexora}/nexora-web:${NEXORA_VERSION:-latest}
+    build:
+      context: ..
+      dockerfile: frontend/nexora-web/Dockerfile
+      args:
+        NEXORA_VERSION: ${NEXORA_VERSION:-1.0.0}
+        NEXORA_COMMIT: ${NEXORA_COMMIT:-}
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      NEXORA_DOMAIN: ${NEXORA_DOMAIN:-localhost}
+      ACME_EMAIL: ${NEXORA_ACME_EMAIL:-admin@localhost}
+    ports:
+      - "${NEXORA_HTTP_PORT:-80}:80"
+      - "${NEXORA_HTTPS_PORT:-443}:443"
+      - "${NEXORA_HTTPS_PORT:-443}:443/udp"
+    volumes:
+      - caddydata:/data
+      - caddyconfig:/config
+    networks: [nexora]
+
+  # Sauvegarde logique quotidienne (pg_dump format custom + SHA-256), rétention en jours. Restauration et
+  # vérification : database/scripts/restore.sh (runbook).
+  backup:
+    image: ${NEXORA_REGISTRY:-nexora}/nexora-backup:${NEXORA_VERSION:-latest}
+    build:
+      context: ..
+      dockerfile: infrastructure/backup/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully   # jamais une sauvegarde d'une base pas encore migrée
+    environment:
+      PGHOST: postgres
+      PGUSER: nexora_owner
+      PGPASSWORD_FILE: /run/secrets/postgres_password
+      NEXORA_DB: nexora
+      NEXORA_BACKUP_DIR: /backups
+      NEXORA_BACKUP_RETENTION_DAYS: ${NEXORA_BACKUP_RETENTION_DAYS:-14}
+      NEXORA_BACKUP_HOUR_UTC: ${NEXORA_BACKUP_HOUR_UTC:-6}
+      NEXORA_API_URL: http://api:8080
+      NEXORA_API_KEY_FILE: /run/secrets/backup_api_key
+      TZ: ${NEXORA_TIMEZONE:-America/Port-au-Prince}
+    secrets: [postgres_password, backup_api_key]
+    volumes:
+      - ${NEXORA_BACKUP_HOST_DIR:-./backups}:/backups
+    networks: [nexora]
+
+  # --- Surveillance (profil « observability ») ------------------------------------------------------------
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.137.0
+    profiles: [observability]
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./observability/otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    networks: [nexora]
+
+  prometheus:
+    image: prom/prometheus:v3.6.0
+    profiles: [observability]
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=30d
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - promdata:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"     # administration par tunnel SSH, jamais exposé publiquement
+    networks: [nexora]
+
+  jaeger:
+    image: jaegertracing/jaeger:2.11.0
+    profiles: [observability]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:16686:16686"   # interface des traces, par tunnel SSH
+    networks: [nexora]
+
+secrets:
+  postgres_password:
+    file: ./secrets/postgres_password
+  migration_connection:
+    file: ./secrets/migration_connection
+  app_role_password:
+    file: ./secrets/app_role_password
+  app_connection:
+    file: ./secrets/app_connection
+  jwt_signing_key:
+    file: ./secrets/jwt_signing_key
+  mfa_encryption_key:
+    file: ./secrets/mfa_encryption_key
+  data_encryption_key:
+    file: ./secrets/data_encryption_key
+  backup_api_key:
+    file: ./secrets/backup_api_key
+  smtp_password:
+    file: ./secrets/smtp_password
+
+volumes:
+  pgdata:
+  apidata:
+  caddydata:
+  caddyconfig:
+  promdata:
+
+networks:
+  nexora:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24

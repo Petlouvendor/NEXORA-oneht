@@ -16,7 +16,7 @@ namespace Nexora.Infrastructure.Ged;
 public sealed class SqlDocumentRetentionService(
     NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow, IDateTimeProvider clock, IGedService ged) : IDocumentRetentionService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record PolicyRow(Guid Id, Guid? CompanyId, string? DocumentType, int RetentionYears, string LegalBasis);
 

@@ -19,7 +19,7 @@ public sealed class SqlApiKeyService(
     NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow, IPermissionService permissions, IDateTimeProvider clock)
     : IApiKeyService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
     private Guid CurrentUser => tenant.UserId ?? throw new InvalidOperationException("Utilisateur requis.");
 
     internal static string Hash(string secret) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(secret)));

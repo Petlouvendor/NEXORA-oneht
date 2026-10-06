@@ -32,7 +32,7 @@ public sealed class SqlSignatureService(
     public const string SigningLock = "En cours de signature (§18)";
     public const string SignedLock = "Document signé (§18)";
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record DocRow(string Name, string Status, Guid? CurrentVersionId, int? VersionNo, DateTimeOffset? DeletionRequestedAt);
     private sealed record RequestRow(Guid Id, Guid DocumentId, string Status, DateTimeOffset? CompletedAt, DateTimeOffset CreatedAt,

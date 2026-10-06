@@ -5,13 +5,14 @@ using Nexora.Application.Sales;
 using Nexora.Domain.Finance;
 using Nexora.Domain.Sales;
 using Nexora.Infrastructure.Persistence;
+using Nexora.Domain.Common;
 
 namespace Nexora.Infrastructure.Sales;
 
 internal static class SalesHelpers
 {
     public static Guid Company(ITenantContext t) => t.ActiveCompanyId
-        ?? throw new InvalidOperationException("Aucune entreprise active.");
+        ?? throw TenantErrors.ActiveCompanyRequired();
 
     public static async Task<string> NextNumber(NexoraDbContext db, ITenantContext t, string type, CancellationToken ct)
     {

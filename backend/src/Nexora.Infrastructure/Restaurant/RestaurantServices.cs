@@ -18,7 +18,7 @@ namespace Nexora.Infrastructure.Restaurant;
 /// </summary>
 public sealed class SqlRecipeExpansion(NexoraDbContext db, ITenantContext tenant, IStockLedger stock) : IRecipeExpansion
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Aucune entreprise active.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
     private sealed record Ing(Guid ComponentProductId, decimal Quantity, decimal WastagePercentage);
 
     public async Task<RecipeExpansion?> ExpandAsync(Guid productId, decimal dishQuantity, Guid inventoryLocationId, CancellationToken ct = default)
@@ -58,7 +58,7 @@ public sealed class SqlRecipeExpansion(NexoraDbContext db, ITenantContext tenant
 /// </summary>
 public sealed class SqlRecipeService(NexoraDbContext db, IUnitOfWork uow, ITenantContext tenant) : IRecipeService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Aucune entreprise active.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
     private sealed record ProdRow(Guid Id, string ProductType, Guid? UnitId, string Name);
 
     private Task<ProdRow?> ProductAsync(Guid id, CancellationToken ct) => db.Database.SqlQuery<ProdRow>($"""
@@ -216,7 +216,7 @@ public sealed class EfRestaurantService(
     NexoraDbContext db, IUnitOfWork uow, ITenantContext tenant, IDateTimeProvider clock,
     ISectorConfigService sectors, SalesService sales) : IRestaurantService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Aucune entreprise active.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private static readonly string[] KitchenFlow = ["pending", "preparing", "ready", "served"];
 

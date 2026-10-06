@@ -64,7 +64,7 @@ public sealed class CatalogService(
     ICatalogStore store, IUnitOfWork uow, ITenantContext tenant, IDateTimeProvider clock)
 {
     private Guid Company => tenant.ActiveCompanyId
-        ?? throw new InvalidOperationException("Aucune entreprise active.");
+        ?? throw TenantErrors.ActiveCompanyRequired();
 
     /// <summary>Mêmes valeurs que la contrainte <c>product_type_chk</c> (V007).</summary>
     public static readonly string[] ProductTypes = ["stockable", "service", "composite", "weight", "non_stock"];

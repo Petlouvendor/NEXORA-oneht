@@ -16,7 +16,7 @@ namespace Nexora.Infrastructure.Mobile;
 /// </summary>
 public sealed class SqlAttachmentService(NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow) : IAttachmentService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     public async Task<Result<AttachmentDto>> UploadAsync(UploadAttachmentRequest request, CancellationToken ct = default)
     {

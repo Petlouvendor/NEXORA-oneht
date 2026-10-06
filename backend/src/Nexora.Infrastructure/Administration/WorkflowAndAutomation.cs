@@ -15,7 +15,7 @@ namespace Nexora.Infrastructure.Administration;
 public sealed class SqlWorkflowService(
     NexoraDbContext db, IUnitOfWork uow, ITenantContext tenant, IApprovalWorkflowService approvals) : IWorkflowService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
     private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
     private static readonly string[] Ops = ["eq", "neq", "gt", "gte", "lt", "lte", "in", "contains"];
 
@@ -369,7 +369,7 @@ public sealed class SqlAutomationService(
     Nexora.Application.Notifications.INotificationService notifications)
     : IAutomationService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
     private static readonly string[] Kinds =
         ["dunning", "low_stock_alert", "expiry_alert", "scheduled_report", "supplier_reminder", "reconcile_assist", "archive", "scheduled_export"];
     private static readonly string[] Executable = ["dunning", "low_stock_alert", "expiry_alert"];

@@ -21,7 +21,7 @@ public sealed partial class SqlNotificationDeliveryAdmin(
 {
     private static readonly string[] ChannelOrder = ["email", "sms", "push", "whatsapp", "webhook"];
     private static readonly string[] Statuses = ["pending", "sending", "sent", "failed", "dead", "not_configured"];
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record TestRow(string Channel, string Status, string Message, DateTimeOffset TestedAt);
     private sealed record WaitingRow(string Channel, int Count);

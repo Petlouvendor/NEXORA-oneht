@@ -21,7 +21,7 @@ namespace Nexora.Infrastructure.Ged;
 public sealed class SqlDocumentOcrService(NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow) : IDocumentOcrService
 {
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record VersionRow(Guid Id, int VersionNo, byte[] Content, string ContentType);
 

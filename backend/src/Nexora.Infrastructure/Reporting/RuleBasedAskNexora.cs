@@ -8,6 +8,7 @@ using Nexora.Application.Reporting;
 using Nexora.Application.Security;
 using Nexora.Contracts.Reporting;
 using Nexora.Infrastructure.Persistence;
+using Nexora.Domain.Common;
 
 namespace Nexora.Infrastructure.Reporting;
 
@@ -32,7 +33,7 @@ public sealed class RuleBasedAskNexora(
     IPayrollReports payroll, ISalesReports salesReports) : IAskNexora
 {
     private static readonly CultureInfo Fr = CultureInfo.GetCultureInfo("fr-FR");
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record ExpenseRow(string Code, string Name, decimal Current, decimal Previous);
     private sealed record CoverRow(string Sku, string Name, decimal Available, decimal Daily, decimal? DaysCover);

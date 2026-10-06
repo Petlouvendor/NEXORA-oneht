@@ -22,7 +22,7 @@ public sealed partial class SqlReceiptService(
     ICustomerAccountQueries customers, ICustomerRefundService refunds, ICustomerExpenseService expenses,
     IPurchasingQueries purchasing, IDateTimeProvider clock) : IReceiptService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record Built(PrintDocument Doc, string FileName, string Sensitivity = "financial", Guid? EstablishmentId = null);
 

@@ -16,7 +16,7 @@ namespace Nexora.Infrastructure.Reporting;
 public sealed class SqlObjectiveService(NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow,
     IKpiService kpi, IDateTimeProvider clock, IKpiGovernanceService kpiCatalog, IPermissionService permissions) : IObjectiveService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record Row(Guid Id, Guid CompanyId, Guid? EstablishmentId, string KpiKey, string PeriodType,
         decimal TargetValue, string Direction, decimal Weight, DateOnly EffectiveFrom, DateOnly? EffectiveTo, string Status);

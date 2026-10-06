@@ -46,3 +46,8 @@ Thumbs.db
 # --- Outils locaux ---
 .claude/settings.local.json
 .claude/*.lock
+
+# Secrets de production générés (finalisation phase 18) — jamais dans Git
+infrastructure/secrets/
+infrastructure/backups/
+infrastructure/production.env

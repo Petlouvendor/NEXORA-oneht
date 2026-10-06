@@ -13,7 +13,7 @@ namespace Nexora.Infrastructure.Finance;
 public sealed class EfAccountResolver(NexoraDbContext db, ITenantContext tenant) : IAccountResolver
 {
     private Guid Company => tenant.ActiveCompanyId
-        ?? throw new InvalidOperationException("Aucune entreprise active.");
+        ?? throw TenantErrors.ActiveCompanyRequired();
 
     public async Task<Guid> ResolveAsync(string mappingKey, CancellationToken ct = default)
     {
@@ -51,7 +51,7 @@ public sealed class EfAccountResolver(NexoraDbContext db, ITenantContext tenant)
 public sealed class EfCompanyCurrencyContext(NexoraDbContext db, ITenantContext tenant) : ICompanyCurrencyContext
 {
     private Guid Company => tenant.ActiveCompanyId
-        ?? throw new InvalidOperationException("Aucune entreprise active.");
+        ?? throw TenantErrors.ActiveCompanyRequired();
 
     public async Task<string> FunctionalCurrencyAsync(CancellationToken ct = default)
     {
@@ -119,7 +119,7 @@ public sealed class EfExchangeRateProvider(NexoraDbContext db) : IExchangeRatePr
 public sealed class EfAccountingPeriods(NexoraDbContext db, ITenantContext tenant) : IAccountingPeriods
 {
     private Guid Company => tenant.ActiveCompanyId
-        ?? throw new InvalidOperationException("Aucune entreprise active.");
+        ?? throw TenantErrors.ActiveCompanyRequired();
 
     public async Task<AccountingPeriod> ResolveOpenPeriodAsync(DateOnly date, CancellationToken ct = default)
     {
@@ -166,7 +166,7 @@ public sealed class EfDocumentNumberGenerator(NexoraDbContext db, ITenantContext
     public async Task<string> NextAsync(string documentType, Guid? establishmentId = null, CancellationToken ct = default)
     {
         var company = tenant.ActiveCompanyId
-            ?? throw new InvalidOperationException("Aucune entreprise active.");
+            ?? throw TenantErrors.ActiveCompanyRequired();
         var year = DateTime.UtcNow.Year;
         var rows = await db.Database
             .SqlQuery<string>($"""SELECT nexora.next_document_number({company}, {documentType}, {establishmentId}, {year}) AS "Value" """)

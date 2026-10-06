@@ -194,7 +194,7 @@ public sealed class SqlMarketplaceCatalogService(NexoraDbContext db, ITenantCont
 public sealed class SqlAppInstallationService(NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow)
     : IAppInstallationService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
     private Guid CurrentUser => tenant.UserId ?? throw new InvalidOperationException("Utilisateur requis.");
 
     private const string Select = """
@@ -292,7 +292,7 @@ public sealed class SqlAppInstallationService(NexoraDbContext db, ITenantContext
 /// <summary>Usage quotidien des clés (portail développeur §47-48).</summary>
 public sealed class SqlDeveloperUsageQuery(NexoraDbContext db, ITenantContext tenant) : IDeveloperUsageQuery
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record Row(Guid ApiKeyId, string KeyName, DateOnly UsageDate, int RequestCount, int RateLimitedCount);
 

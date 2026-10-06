@@ -1,6 +1,6 @@
 namespace Nexora.Domain.Common;
 
-public enum ErrorKind { Validation, NotFound, Conflict, Forbidden, Unauthorized, Unexpected }
+public enum ErrorKind { Validation, NotFound, Conflict, Forbidden, Unauthorized, Unexpected, BadRequest }
 
 public sealed record Error(ErrorKind Kind, string Code, string Message)
 {
@@ -10,6 +10,8 @@ public sealed record Error(ErrorKind Kind, string Code, string Message)
     public static Error Forbidden(string code, string message) => new(ErrorKind.Forbidden, code, message);
     public static Error Unauthorized(string code, string message) => new(ErrorKind.Unauthorized, code, message);
     public static Error Unexpected(string code, string message) => new(ErrorKind.Unexpected, code, message);
+    /// <summary>Requête mal formée (en-tête ou paramètre obligatoire absent) — 400.</summary>
+    public static Error BadRequest(string code, string message) => new(ErrorKind.BadRequest, code, message);
 }
 
 /// <summary>Résultat d'opération sans exception pour le flux métier attendu (§3, §15).</summary>

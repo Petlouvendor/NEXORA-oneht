@@ -4,6 +4,7 @@ using Nexora.Application.Finance.Abstractions;
 using Nexora.Application.Finance.Reports;
 using Nexora.Contracts.Finance;
 using Nexora.Infrastructure.Persistence;
+using Nexora.Domain.Common;
 
 namespace Nexora.Infrastructure.Finance;
 
@@ -15,7 +16,7 @@ public sealed class SqlFinancialReports(
     NexoraDbContext db, ITenantContext tenant, ICompanyCurrencyContext currency) : IFinancialReports
 {
     private Guid Company => tenant.ActiveCompanyId
-        ?? throw new InvalidOperationException("Sélectionner une entreprise active (X-Company-Id) pour les rapports.");
+        ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record BalanceRow(string Code, string Name, string AccountType, decimal Debit, decimal Credit);
     private sealed record LedgerRow(DateOnly EntryDate, string EntryNumber, string Journal, string? Description, decimal Debit, decimal Credit);

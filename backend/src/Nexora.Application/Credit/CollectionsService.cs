@@ -50,7 +50,7 @@ public sealed class CollectionsService(
     ITenantContext tenant, IDateTimeProvider clock)
 {
     private Guid Company => tenant.ActiveCompanyId
-        ?? throw new InvalidOperationException("Aucune entreprise active.");
+        ?? throw TenantErrors.ActiveCompanyRequired();
 
     // --- Promesse de paiement (§24) ---------------------------------
     private static readonly string[] Channels = ["phone", "email", "sms", "whatsapp", "visit", "internal"];

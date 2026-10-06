@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging;
 using Nexora.Application.Abstractions;
 using Nexora.Application.Identity;
+using Nexora.Application.Observability;
 using Nexora.Application.Security;
 using Nexora.Contracts.Auth;
 using Nexora.Domain.Common;
@@ -28,6 +29,7 @@ public sealed class LoginHandler(
         if (user is null || !user.IsActive || string.IsNullOrEmpty(user.PasswordHash))
         {
             logger.LogInformation("Échec de connexion pour {Email} (compte inconnu/inactif)", request.Email);
+            NexoraMetrics.RecordLogin("invalid");
             return invalid;
         }
 
@@ -36,6 +38,7 @@ public sealed class LoginHandler(
         {
             await securityEvents.RecordAsync("login.blocked", user.Id, request.CompanyId,
                 detail: "compte verrouillé", ipAddress: ipAddress, ct: ct);
+            NexoraMetrics.RecordLogin("locked");
             return Error.Unauthorized("auth.account_locked",
                 "Compte temporairement verrouillé après plusieurs tentatives. Réessayez plus tard.");
         }
@@ -46,6 +49,7 @@ public sealed class LoginHandler(
             await securityEvents.RecordAsync(lockedUntil is null ? "login.failed" : "login.locked",
                 user.Id, request.CompanyId, detail: "mot de passe incorrect", ipAddress: ipAddress, ct: ct);
             logger.LogWarning("Échec de connexion pour l'utilisateur {UserId} (mot de passe)", user.Id);
+            NexoraMetrics.RecordLogin("invalid");
             return invalid;
         }
 
@@ -64,6 +68,7 @@ public sealed class LoginHandler(
         {
             var (token, expires) = await mfa.IssueChallengeAsync(user.Id, request.CompanyId, ct);
             await securityEvents.RecordAsync("login.mfa_challenged", user.Id, request.CompanyId, ipAddress: ipAddress, ct: ct);
+            NexoraMetrics.RecordLogin("mfa_challenged");
             return Result.Success(new AuthTokenResponse(string.Empty, "Bearer", 0,
                 new CurrentUserResponse(user.Id, user.Email, user.FullName, true, [], []))
             {
@@ -76,6 +81,7 @@ public sealed class LoginHandler(
         var policyRequiresMfa = await mfa.PolicyRequiresMfaAsync(user.Id, ct);
         var response = await issuer.IssueAsync(user, request.CompanyId, policyRequiresMfa, ct);
         await securityEvents.RecordAsync("login.succeeded", user.Id, request.CompanyId, ipAddress: ipAddress, ct: ct);
+        NexoraMetrics.RecordLogin("succeeded");
         return Result.Success(response);
     }
 }

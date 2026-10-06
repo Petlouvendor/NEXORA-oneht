@@ -21,7 +21,7 @@ public sealed class SqlTreasuryQueries(
     NexoraDbContext db, ITenantContext tenant, ISettingsService settings) : ITreasuryQueries
 {
     private Guid Company => tenant.ActiveCompanyId
-        ?? throw new InvalidOperationException("Entreprise active requise.");
+        ?? throw TenantErrors.ActiveCompanyRequired();
 
     private static readonly (string Label, int From, int To)[] Maturities =
     [
@@ -248,7 +248,7 @@ public sealed class SqlTreasuryQueries(
 public sealed class SqlSuspenseService(NexoraDbContext db, ITenantContext tenant) : ISuspenseService
 {
     private Guid Company => tenant.ActiveCompanyId
-        ?? throw new InvalidOperationException("Entreprise active requise.");
+        ?? throw TenantErrors.ActiveCompanyRequired();
 
     private static readonly string[] Kinds =
     [
@@ -334,7 +334,7 @@ public sealed class SqlSuspenseService(NexoraDbContext db, ITenantContext tenant
 public sealed class SqlFinancialCloseService(NexoraDbContext db, ITenantContext tenant) : IFinancialCloseService
 {
     private Guid Company => tenant.ActiveCompanyId
-        ?? throw new InvalidOperationException("Entreprise active requise.");
+        ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record PeriodRow(Guid Id, string Name, DateOnly StartDate, DateOnly EndDate, string Status);
     private sealed record CountTotal(int Count, decimal Total);

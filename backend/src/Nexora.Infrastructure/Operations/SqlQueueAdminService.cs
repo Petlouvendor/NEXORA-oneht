@@ -15,7 +15,7 @@ namespace Nexora.Infrastructure.Operations;
 /// </summary>
 public sealed class SqlQueueAdminService(NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow) : IQueueAdminService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record NotifStatsRow(int Pending, int Failed, int Dead, int DeliveredLastHour, double? OldestPendingAgeMinutes);
     private sealed record WebhookStatsRow(int Pending, int Failed, int Dead, int DeliveredLastHour, double? OldestPendingAgeMinutes);

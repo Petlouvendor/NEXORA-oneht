@@ -13,7 +13,7 @@ namespace Nexora.Infrastructure.Mobile;
 /// <summary>Diagnostics minimisés (Phase 44 §46) — journal d'ajout seul, comme <c>assistant_query</c> (Phase 43).</summary>
 public sealed class SqlCrashReportService(NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow) : ICrashReportService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record Row(Guid Id, Guid? DeviceId, string AppVersion, string Os, string Message, DateTimeOffset OccurredAt);
 
@@ -56,7 +56,7 @@ public sealed class SqlMobileBootstrapService(
     IDeliveryService delivery, IFieldInterventionService interventions, ITaskService tasks, INotificationService notifications)
     : IMobileBootstrapService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
     private sealed record PolicyRow(bool AllowOfflineSales, bool AllowOfflineCredit, decimal OfflineCreditLimit, int MaxOfflineMinutes);
 
     public async Task<MobileConfigDto> ConfigAsync(CancellationToken ct = default)

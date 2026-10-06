@@ -29,7 +29,7 @@ public sealed class SqlLotService(
     IDateTimeProvider clock, ISettingsService settings) : ILotService
 {
     private Guid Company => tenant.ActiveCompanyId
-        ?? throw new InvalidOperationException("Aucune entreprise active.");
+        ?? throw TenantErrors.ActiveCompanyRequired();
 
     public async Task<Result> BlockAsync(Guid lotId, string reason, CancellationToken ct = default)
     {
@@ -177,7 +177,7 @@ public sealed class SqlLotService(
 public sealed class SqlWarehouseService(NexoraDbContext db, ITenantContext tenant) : IWarehouseService
 {
     private Guid Company => tenant.ActiveCompanyId
-        ?? throw new InvalidOperationException("Aucune entreprise active.");
+        ?? throw TenantErrors.ActiveCompanyRequired();
 
     public async Task<Result<Guid>> CreateWarehouseAsync(CreateWarehouseRequest r, CancellationToken ct = default)
     {
@@ -238,7 +238,7 @@ public sealed class SqlStockQueries(
     NexoraDbContext db, ITenantContext tenant, IDateTimeProvider clock, ISettingsService settings) : IStockQueries
 {
     private Guid Company => tenant.ActiveCompanyId
-        ?? throw new InvalidOperationException("Aucune entreprise active.");
+        ?? throw TenantErrors.ActiveCompanyRequired();
 
     public async Task<IReadOnlyList<StockBalanceDto>> BalancesAsync(Guid? locationId, Guid? productId, bool onlyPositive, CancellationToken ct = default)
         => await db.Database.SqlQuery<StockBalanceDto>($"""

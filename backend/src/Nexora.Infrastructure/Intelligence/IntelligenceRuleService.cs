@@ -17,7 +17,7 @@ namespace Nexora.Infrastructure.Intelligence;
 /// </summary>
 public sealed class SqlIntelligenceRuleService(NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow) : IIntelligenceRuleService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record Row(Guid Id, Guid? CompanyId, string Key, string Category, string Label, string ThresholdJson,
         int? PeriodDays, string DefaultPriority, string? RecipientRole, string ActionLabel, int? EscalateAfterDays,

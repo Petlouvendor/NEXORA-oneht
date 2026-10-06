@@ -1,0 +1,82 @@
+# NEXORA ONE — règles d'alerte Prometheus (finalisation phase 18, §39 « monitoring »).
+# Noms de métriques vérifiés sur l'export réel de l'API (OpenTelemetry → collecteur → Prometheus).
+# L'acheminement des alertes vers l'astreinte (Alertmanager : e-mail, SMS…) se configure au déploiement :
+# docs/exploitation/runbook-production.md §7.
+groups:
+  - name: nexora-disponibilite
+    rules:
+      - alert: NexoraApiMuette
+        expr: absent_over_time(dotnet_process_cpu_time_seconds_total{job="nexora-api"}[3m])
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "L'API Nexora n'envoie plus de métriques depuis 5 minutes (arrêtée, bloquée ou collecteur coupé)."
+          runbook: "runbook-production.md §6.1"
+
+      - alert: NexoraErreursServeur
+        expr: |
+          sum(rate(http_server_request_duration_seconds_count{job="nexora-api", http_response_status_code=~"5.."}[5m]))
+            / clamp_min(sum(rate(http_server_request_duration_seconds_count{job="nexora-api"}[5m])), 0.001) > 0.05
+        for: 10m
+        labels: { severity: critical }
+        annotations:
+          summary: "Plus de 5 % des requêtes de l'API finissent en erreur serveur (5xx) depuis 10 minutes."
+          runbook: "runbook-production.md §6.2"
+
+      - alert: NexoraLatenceElevee
+        expr: |
+          histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_seconds_bucket{job="nexora-api"}[5m]))) > 2
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "95 % des requêtes de l'API dépassent 2 s depuis 10 minutes."
+          runbook: "runbook-production.md §6.3"
+
+      - alert: NexoraPoolPostgresSature
+        expr: |
+          sum(db_client_connection_count{job="nexora-api", db_client_connection_state="used"})
+            / clamp_min(sum(db_client_connection_max{job="nexora-api"}), 1) > 0.9
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Plus de 90 % des connexions PostgreSQL de l'API sont occupées."
+          runbook: "runbook-production.md §6.3"
+
+  - name: nexora-securite
+    rules:
+      - alert: NexoraSessionCompromise
+        # Un compteur qui naît directement à 1 donne increase() = 0 : on alerte aussi sur une série apparue récemment.
+        expr: |
+          (increase(nexora_auth_refreshes_total{job="nexora-api", outcome="auth.session_compromised"}[15m]) > 0)
+            or (nexora_auth_refreshes_total{job="nexora-api", outcome="auth.session_compromised"}
+                unless nexora_auth_refreshes_total{job="nexora-api", outcome="auth.session_compromised"} offset 15m)
+        labels: { severity: critical }
+        annotations:
+          summary: "Un jeton de rafraîchissement volé a été rejoué : toutes les sessions de l'utilisateur ont été fermées."
+          runbook: "runbook-production.md §6.4"
+
+      - alert: NexoraForceBruteConnexion
+        expr: sum(increase(nexora_auth_logins_total{job="nexora-api", outcome=~"invalid|locked"}[10m])) > 50
+        labels: { severity: warning }
+        annotations:
+          summary: "Plus de 50 échecs de connexion en 10 minutes."
+          runbook: "runbook-production.md §6.4"
+
+      - alert: NexoraConfirmationsForteEchouees
+        expr: sum(increase(nexora_security_step_ups_total{job="nexora-api", outcome!="granted"}[15m])) > 20
+        labels: { severity: warning }
+        annotations:
+          summary: "Plus de 20 confirmations d'identité refusées en 15 minutes (actions critiques)."
+          runbook: "runbook-production.md §6.4"
+
+  - name: nexora-traitements
+    rules:
+      - alert: NexoraTachePlanifieeEnEchec
+        expr: |
+          (sum by (task) (increase(nexora_scheduler_jobs_total{job="nexora-api", outcome="failed"}[1h])) > 0)
+            or sum by (task) (nexora_scheduler_jobs_total{job="nexora-api", outcome="failed"}
+                unless nexora_scheduler_jobs_total{job="nexora-api", outcome="failed"} offset 1h)
+        labels: { severity: warning }
+        annotations:
+          summary: "La tâche planifiée {{ $labels.task }} a échoué dans l'heure (relances, alertes, purges…)."
+          runbook: "runbook-production.md §6.5"

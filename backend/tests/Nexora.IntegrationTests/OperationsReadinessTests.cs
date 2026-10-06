@@ -65,7 +65,9 @@ public sealed class OperationsReadinessTests(FinanceEngineFixture fx)
              "no_open_p0", "no_open_p1_waiver", "performance_targets_met", "multi_tenant_isolation", "uat_accepted"]);
         r.Checks.Should().OnlyContain(c => new[] { "pass", "warn", "fail", "manual" }.Contains(c.Status));
         (r.Passed + r.Warnings + r.Failed + r.Manual).Should().Be(r.Checks.Count);
-        r.Checks.Single(c => c.Key == "migrations_applied").Status.Should().Be("pass");
+        // Finalisation phase 18 : contrôle réel (écart livré / appliqué). « warn » signale une migration retouchée après
+        // application sur une base de poste — jamais une migration en attente (« fail »), cf. ProductionReadinessTests.
+        r.Checks.Single(c => c.Key == "migrations_applied").Status.Should().BeOneOf("pass", "warn");
     }
 
     // ---- §32, §57 (Phase 49) : le signal d'isolation multi-tenant reflète la réalité du rôle connecté,

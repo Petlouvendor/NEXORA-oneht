@@ -26,7 +26,7 @@ public sealed class EfQuoteStore(
     private async Task<bool> SeesAllAsync(CancellationToken ct)
         => (await permissions.CurrentPermissionsAsync(tenant, ct)).Contains(Nexora.Application.Security.Permissions.Documents.ViewAll);
 
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     public Task<Guid> ResolveCurrencyIdAsync(string code, CancellationToken ct = default)
         => db.Database.SqlQuery<Guid>($"""SELECT id AS "Value" FROM nexora.currency WHERE code = {code}""").FirstAsync(ct);
@@ -136,7 +136,7 @@ public sealed class SqlDocumentService(
     NexoraDbContext db, IUnitOfWork uow, ITenantContext tenant,
     IDocumentNumberGenerator numbers, IDateTimeProvider clock, IPermissionService permissions) : IDocumentService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private static readonly JsonSerializerOptions SnapshotJson = new(JsonSerializerDefaults.Web);
 
@@ -524,7 +524,7 @@ public sealed class SqlDocumentService(
 
 public sealed class SqlDocumentQueries(NexoraDbContext db, ITenantContext tenant, IPermissionService permissions) : IDocumentQueries
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     /// <summary>
     /// Guide §7.2 : la liste des factures / reçus de l'entreprise, avec leurs montants, révèle le

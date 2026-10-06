@@ -15,7 +15,7 @@ namespace Nexora.Infrastructure.Reporting;
 /// </summary>
 public sealed class SqlBudgetService(NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow) : IBudgetService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record Row(Guid Id, string Name, int FiscalYear, string CurrencyCode, string Status,
         Guid? RevisedFrom, Guid? ApprovedBy, DateTimeOffset? ApprovedAt, DateTimeOffset UpdatedAt);

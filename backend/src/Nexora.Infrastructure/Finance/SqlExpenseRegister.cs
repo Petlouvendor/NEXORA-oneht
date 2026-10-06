@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Nexora.Application.Abstractions;
 using Nexora.Application.Finance;
 using Nexora.Infrastructure.Persistence;
+using Nexora.Domain.Common;
 
 namespace Nexora.Infrastructure.Finance;
 
@@ -17,7 +18,7 @@ public sealed class SqlExpenseRegister(NexoraDbContext db, ITenantContext tenant
     public async Task RegisterPaidAsync(Guid expenseId, DateOnly date, decimal net, decimal tax, string currency,
         Guid financialAccountId, string? description, CancellationToken ct = default)
     {
-        var company = tenant.ActiveCompanyId ?? throw new InvalidOperationException("Aucune entreprise active.");
+        var company = tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
         // Rejeu (même pièce) : rien à créer, et aucun numéro de séquence consommé pour rien.
         if (await db.Database.SqlQuery<bool>($"""
                 SELECT EXISTS (SELECT 1 FROM nexora.expense WHERE id = {expenseId}) AS "Value"

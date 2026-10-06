@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ApiError } from "@/core/apiClient";
 import { useAuth } from "@/auth/AuthContext";
 import { Tabs } from "@/shared/ui";
+import { usePrompt } from "@/shared/PromptDialog";
 import {
   goLiveReadiness,
   listDeployments,
@@ -19,6 +20,7 @@ import {
   DataCorrectionsSection, DiagnosticsSection, FeatureFlagsSection, JobsSection,
   MaintenanceWindowsSection, QueuesSection, RetentionSection,
 } from "@/operations/MaintenanceSections";
+import { ProductionSection } from "@/operations/ProductionSection";
 
 const rel = (iso: string | null) => {
   if (!iso) return "—";
@@ -47,6 +49,7 @@ export function OperationsPage() {
   const canManage = hasPermission("operations.manage");
   const canDecide = hasPermission("operations.correct_data");
   const [tab, setTab] = useState("overview");
+  const prompt = usePrompt();
 
   const load = useCallback(() => {
     setError(null);
@@ -72,12 +75,13 @@ export function OperationsPage() {
   const label: React.CSSProperties = { color: "var(--nx-text-2)", fontSize: 12, textTransform: "uppercase", marginBottom: 8 };
 
   return (
-    <div style={{ display: "grid", gap: 16 }}>
+    <div style={{ display: "grid", gap: 16, gridTemplateColumns: "minmax(0, 1fr)" }}>
       <h1 style={{ margin: 0 }}>Exploitation & maintenance</h1>
       <Tabs
         active={tab} onChange={setTab}
         tabs={[
           { id: "overview", label: "Vue d'ensemble" },
+          { id: "production", label: "Production" },
           { id: "jobs", label: "Jobs" },
           { id: "queues", label: "Files & dead-letter" },
           { id: "diagnostics", label: "Diagnostics" },
@@ -90,6 +94,7 @@ export function OperationsPage() {
       {error && <div className="nx-error-text">{error}</div>}
       {notice && <div style={{ color: "var(--nx-success)" }}>{notice}</div>}
 
+      {tab === "production" && <ProductionSection />}
       {tab === "jobs" && <JobsSection canManage={canManage} />}
       {tab === "queues" && <QueuesSection canManage={canManage} />}
       {tab === "diagnostics" && <DiagnosticsSection canManage={canManage} />}
@@ -168,7 +173,11 @@ export function OperationsPage() {
           <div style={label}>Journal des déploiements (§34, §38-39)</div>
           {canManage && (
             <button className="nx-btn nx-btn--ghost" style={{ padding: "4px 12px", fontSize: 13 }} disabled={busy}
-                    onClick={() => { const v = prompt("Version déployée :"); if (v) void run(() => recordDeployment({ version: v, environment: "production" }), "Déploiement journalisé"); }}>
+                    onClick={async () => {
+                      const v = await prompt.ask({ title: "Journaliser un déploiement", label: "Version déployée", required: true, minLength: 1,
+                        hint: "Version de l'image (ex. 1.18.0) ; le schéma de base courant est enregistré avec.", confirmLabel: "Journaliser" });
+                      if (v) void run(() => recordDeployment({ version: v, environment: "production" }), "Déploiement journalisé");
+                    }}>
               Journaliser un déploiement
             </button>
           )}
@@ -187,7 +196,11 @@ export function OperationsPage() {
                   <td style={td}>
                     {canManage && d.status === "succeeded" && !d.rolledBackFrom && (
                       <button className="nx-btn nx-btn--ghost" style={{ padding: "1px 8px", fontSize: 12, color: "var(--nx-warning)" }} disabled={busy}
-                              onClick={() => { const r = prompt("Motif du retour arrière :"); if (r) void run(() => rollbackDeployment(d.id, { reason: r }), "Retour arrière journalisé"); }}>
+                              onClick={async () => {
+                                const r = await prompt.ask({ title: `Retour arrière de ${d.version}`, label: "Motif du retour arrière", required: true,
+                                  multiline: true, danger: true, confirmLabel: "Journaliser le retour arrière" });
+                                if (r) void run(() => rollbackDeployment(d.id, { reason: r }), "Retour arrière journalisé");
+                              }}>
                         Rollback
                       </button>
                     )}
@@ -201,6 +214,7 @@ export function OperationsPage() {
       </section>
       )}
 
+      {prompt.dialog}
       {tab === "overview" && signoffs.length > 0 && (
         <section className="nx-card">
           <div style={label}>Validations Go-Live (§54)</div>

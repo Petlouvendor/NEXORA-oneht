@@ -3,6 +3,7 @@ using Nexora.Application.Abstractions;
 using Nexora.Application.Inventory;
 using Nexora.Contracts.Inventory;
 using Nexora.Infrastructure.Persistence;
+using Nexora.Domain.Common;
 
 namespace Nexora.Infrastructure.Inventory;
 
@@ -13,7 +14,7 @@ namespace Nexora.Infrastructure.Inventory;
 public sealed class SqlInventoryDocumentQueries(NexoraDbContext db, ITenantContext tenant, IPermissionService permissions)
     : IInventoryDocumentQueries
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Aucune entreprise active.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     /// <summary>Coûts et valeurs de stock : réservés à <c>inventory.view_valuation</c> (masqués à 0 sinon).</summary>
     private async Task<bool> CanSeeValuationAsync(CancellationToken ct)

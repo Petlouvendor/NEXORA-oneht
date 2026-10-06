@@ -3,6 +3,7 @@ using Nexora.Application.Abstractions;
 using Nexora.Application.Inventory;
 using Nexora.Domain.Inventory;
 using Nexora.Infrastructure.Persistence;
+using Nexora.Domain.Common;
 
 namespace Nexora.Infrastructure.Inventory;
 
@@ -14,7 +15,7 @@ namespace Nexora.Infrastructure.Inventory;
 public sealed class EfStockLedger(NexoraDbContext db, ITenantContext tenant) : IStockLedger
 {
     private Guid Company => tenant.ActiveCompanyId
-        ?? throw new InvalidOperationException("Aucune entreprise active.");
+        ?? throw TenantErrors.ActiveCompanyRequired();
 
     public async Task PostAsync(StockMovementRequest m, CancellationToken ct = default)
         => await PostManyAsync([m], ct);

@@ -11,7 +11,7 @@ namespace Nexora.Infrastructure.Sectors;
 /// <summary>Configuration sectorielle — activités, modules, terminologie (Phase 8 §3-4, §27-29).</summary>
 public sealed class SqlSectorConfigService(NexoraDbContext db, IUnitOfWork uow, ITenantContext tenant) : ISectorConfigService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Aucune entreprise active.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private static readonly string[] Activities =
     [
@@ -136,7 +136,7 @@ public sealed class SqlSectorConfigService(NexoraDbContext db, IUnitOfWork uow, 
 /// <summary>Moteur de champs personnalisés (Phase 8 §16). Valeurs typées et validées.</summary>
 public sealed class SqlCustomFieldService(NexoraDbContext db, IUnitOfWork uow, ITenantContext tenant) : ICustomFieldService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Aucune entreprise active.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private static readonly string[] Entities =
         ["product","customer","supplier","sale","purchase_order","establishment","employee","service","recipe","generic"];

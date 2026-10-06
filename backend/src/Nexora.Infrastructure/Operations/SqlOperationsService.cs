@@ -7,9 +7,9 @@ using Nexora.Application.Operations;
 using Nexora.Application.Reporting;
 using Nexora.Contracts.Operations;
 using Nexora.Domain.Common;
-using Nexora.Infrastructure.Identity;
 using Nexora.Infrastructure.Persistence;
 using Nexora.Infrastructure.Scheduling;
+using Nexora.Infrastructure.Setup;
 
 namespace Nexora.Infrastructure.Operations;
 
@@ -26,12 +26,14 @@ public sealed class SqlOperationsService(
     ITenantContext tenant,
     IUnitOfWork uow,
     IDateTimeProvider clock,
-    IOptions<JwtOptions> jwt,
     IOptions<SchedulerOptions> scheduler,
     IContinuityService continuity,
-    IDataQualityService dataQuality) : IOperationsService
+    IDataQualityService dataQuality,
+    MigrationStatusProbe migrationProbe,
+    Microsoft.Extensions.Configuration.IConfiguration configuration,
+    RuntimeEnvironment runtime) : IOperationsService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
     private static readonly string[] Environments = ["local", "test", "staging", "production"];
 
@@ -143,25 +145,29 @@ public sealed class SqlOperationsService(
         checks.Add(C("alerts_tested", "Alertes testées de bout en bout", "monitoring", "manual", "manual",
             "Vérifier qu'une alerte critique atteint bien l'astreinte (§31, §40)."));
 
-        // §18, §40, §51 : secrets de production
-        var key = jwt.Value.SigningKey ?? "";
-        var weakKey = string.IsNullOrWhiteSpace(key)
-            || key.Contains("dev-only", StringComparison.OrdinalIgnoreCase)
-            || key.Contains("insecure", StringComparison.OrdinalIgnoreCase)
-            || key.Contains("change-me", StringComparison.OrdinalIgnoreCase)
-            || key.Length < 32;
+        // §18, §40, §51 + finalisation phase 18 : configuration de production réelle (secrets, HTTPS, proxy,
+        // observabilité, journaux) — la même lecture que le garde de démarrage et la vue « Production ».
+        var config = ProductionConfiguration.Evaluate(configuration, runtime.Name).ToDictionary(c => c.Key);
         checks.Add(C("production_secrets", "Secrets de production configurés", "security",
-            weakKey ? "fail" : "pass", "auto",
-            weakKey ? "clé de signature JWT absente / de développement / trop courte — fournir via un gestionnaire de secrets (§18)"
-                    : "clé de signature JWT propre à l'environnement"));
+            config["secrets"].Status == "pass" ? "pass" : "fail", "auto", config["secrets"].Detail));
+        checks.Add(C("https", "HTTPS de bout en bout", "security",
+            config["https"].Status == "pass" ? "pass" : "fail", "auto", config["https"].Detail));
+        checks.Add(C("reverse_proxy", "Proxy inverse reconnu", "security", config["reverse_proxy"].Status, "auto",
+            config["reverse_proxy"].Detail));
+        checks.Add(C("observability", "Traces et métriques exportées", "monitoring", config["observability"].Status, "auto",
+            config["observability"].Detail));
+        checks.Add(C("structured_logs", "Journaux structurés collectés", "monitoring", config["structured_logs"].Status, "auto",
+            config["structured_logs"].Detail));
 
-        // §36 : migrations
-        var migCount = await db.Database.SqlQuery<int>($"""
-            SELECT COUNT(*)::int AS "Value" FROM nexora.schema_migration
-            """).FirstAsync(ct);
-        checks.Add(C("migrations_applied", "Migrations de base validées", "functional",
-            migCount >= 50 ? "pass" : "warn", "auto",
-            $"{migCount} migration(s) appliquée(s) et suivies par empreinte — à rejouer en staging avant production (§36)"));
+        // §36 + finalisation phase 18 : écart réel entre les migrations livrées et la base (avant : « ≥ 50 migrations »).
+        var migrations = await TryAsync(() => migrationProbe.GetAsync(ct));
+        checks.Add(C("migrations_applied", "Migrations de base à jour", "functional",
+            migrations is null ? "warn" : !migrations.UpToDate ? "fail" : !migrations.Consistent ? "warn" : "pass", "auto",
+            migrations is null ? "état des migrations illisible"
+                : !migrations.UpToDate ? $"{migrations.Pending.Count} migration(s) en attente ({string.Join(", ", migrations.Pending.Take(3))}) — lancer « migrate »"
+                : migrations.Drifted.Count > 0 ? $"migration(s) appliquée(s) modifiée(s) depuis : {string.Join(", ", migrations.Drifted)}"
+                : migrations.Unknown.Count > 0 ? $"base plus récente que l'application : {string.Join(", ", migrations.Unknown)}"
+                : $"{migrations.Applied} migration(s) appliquée(s), dernière {migrations.LatestApplied} — conforme à l'application"));
 
         // §31, §46 : qualité des données
         var dq = await TryAsync(() => dataQuality.EvaluateAsync(ct));

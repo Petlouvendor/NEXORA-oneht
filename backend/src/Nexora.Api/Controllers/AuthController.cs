@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Nexora.Application.Identity;
+using Nexora.Application.Observability;
 using Nexora.Application.Security;
 using Nexora.Application.UseCases.Auth;
 using Nexora.Contracts.Auth;
@@ -64,6 +65,7 @@ public sealed class AuthController(
     {
         var raw = Request.Cookies[RefreshCookie];
         var outcome = await sessions.RefreshAsync(raw ?? "", ClientIp(), ct);
+        NexoraMetrics.RecordRefresh(outcome.IsSuccess ? "rotated" : outcome.Error!.Code);
         if (!outcome.IsSuccess)
         {
             // Un autre onglet vient de renouveler : on garde son cookie (déjà posé) ; sinon on l'efface.
