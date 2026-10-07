@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ApiError } from "@/core/apiClient";
 import { useAuth } from "@/auth/AuthContext";
+import { useFormDialog } from "@/shared/FormDialog";
 import {
   advanceIncident,
   approveRestore,
@@ -39,6 +40,28 @@ const RUNBOOK = ["", "Détecter", "Protéger", "Isoler", "Évaluer", "Restaurer 
 const OVERALL_TONE: Record<string, string> = { operational: "var(--nx-success)", degraded: "var(--nx-warning)", incident: "var(--nx-error)", maintenance: "var(--nx-warning)" };
 const OVERALL_LABEL: Record<string, string> = { operational: "Opérationnel", degraded: "Dégradé", incident: "Incident en cours", maintenance: "Maintenance" };
 const DR_TEST_TYPES = ["tabletop", "restore", "failover_db", "failover_app", "network_outage", "server_outage", "storage_outage", "ransomware_simulation", "site_unavailable", "return_to_normal"];
+// Finalisation phase 20 : choix des formulaires = valeurs admises par la base (V049), libellés français.
+const DR_TEST_LABEL: Record<string, string> = {
+  tabletop: "Exercice sur table", restore: "Restauration", failover_db: "Bascule de la base", failover_app: "Bascule de l'application",
+  network_outage: "Coupure réseau", server_outage: "Panne de serveur", storage_outage: "Panne de stockage",
+  ransomware_simulation: "Simulation de rançongiciel", site_unavailable: "Site indisponible", return_to_normal: "Retour à la normale",
+};
+const SEVERITIES = [
+  { value: "p1", label: "P1 — critique (activité arrêtée)" }, { value: "p2", label: "P2 — majeur" },
+  { value: "p3", label: "P3 — modéré" }, { value: "p4", label: "P4 — mineur" },
+];
+const INCIDENT_CATEGORIES = [
+  ["server_failure", "Panne de serveur"], ["disk_failure", "Panne de disque"], ["db_corruption", "Corruption de base"],
+  ["human_error", "Erreur humaine"], ["accidental_deletion", "Suppression accidentelle"], ["ransomware", "Rançongiciel"],
+  ["network_loss", "Perte de réseau"], ["cloud_provider", "Hébergeur"], ["power", "Électricité"],
+  ["site_disaster", "Sinistre sur site"], ["deploy_error", "Erreur de déploiement"], ["other", "Autre"],
+].map(([value, label]) => ({ value, label }));
+const DETECTED_VIA = [
+  { value: "user_report", label: "Signalement d'un utilisateur" }, { value: "monitoring", label: "Surveillance" },
+  { value: "alert", label: "Alerte" }, { value: "scheduled_test", label: "Exercice programmé" }, { value: "deploy", label: "Déploiement" },
+];
+const minutesField = (name: string, label: string) =>
+  ({ name, label, type: "number" as const, min: 0, integer: true, hint: "En minutes ; vide si non mesuré." });
 
 /** Continuité, sauvegarde & reprise (Phase 36). */
 export function ContinuityPage() {
@@ -66,6 +89,89 @@ export function ContinuityPage() {
   }, []);
   useEffect(load, [load, activeCompanyId]);
 
+  const form = useFormDialog();
+
+  async function askRestore(backupId: string) {
+    const v = await form.ask({
+      title: "Restaurer une sauvegarde", confirmLabel: "Demander la restauration", danger: true,
+      intro: "La demande attend l'approbation d'une seconde personne avant toute restauration.",
+      fields: [{ name: "target", label: "Cible de restauration", required: true, hint: "Ex. base de production, base de secours…" }],
+    });
+    if (v) void run(() => requestRestore(backupId, v.target), "Demande de restauration créée — en attente d'un second approbateur");
+  }
+
+  async function askIncident() {
+    const v = await form.ask({
+      title: "Ouvrir un incident", confirmLabel: "Ouvrir",
+      fields: [
+        { name: "title", label: "Titre", required: true, minLength: 5 },
+        { name: "severity", label: "Gravité", type: "select", defaultValue: "p2", options: SEVERITIES },
+        { name: "category", label: "Catégorie", type: "select", defaultValue: "other", options: INCIDENT_CATEGORIES },
+        { name: "detectedVia", label: "Détecté par", type: "select", options: DETECTED_VIA },
+      ],
+    });
+    if (v) void run(() => openIncident({ severity: v.severity, category: v.category, title: v.title, detectedVia: v.detectedVia }), "Incident ouvert");
+  }
+
+  async function askLockDown(incidentId: string) {
+    const v = await form.ask({
+      title: "Verrouillage d'urgence", confirmLabel: "Verrouiller l'entreprise", danger: true,
+      intro: "Révoque immédiatement toutes les sessions et toutes les clés d'API actives de l'entreprise. Les utilisateurs devront se reconnecter.",
+      fields: [],
+    });
+    if (v) void run(() => lockDownIncident(incidentId).then((r) =>
+      setNotice(`Verrouillage effectué : ${r.sessionsRevoked} session(s), ${r.apiKeysRevoked} clé(s) d'API, ${r.usersAffected} utilisateur(s) touché(s)`)));
+  }
+
+  async function askResolve(incidentId: string) {
+    const v = await form.ask({
+      title: "Résoudre l'incident — post-mortem", confirmLabel: "Résoudre",
+      fields: [
+        { name: "cause", label: "Cause", type: "textarea", required: true, minLength: 5 },
+        { name: "impact", label: "Impact", type: "textarea", required: true },
+        { name: "actions", label: "Actions correctives", type: "textarea", required: true },
+        { name: "prevention", label: "Prévention", type: "textarea", required: true },
+        { name: "owner", label: "Responsable du suivi", required: true },
+        minutesField("rpoActualMinutes", "Perte de données observée (RPO)"),
+        minutesField("rtoActualMinutes", "Durée d'interruption observée (RTO)"),
+      ],
+    });
+    if (!v) return;
+    void run(() => resolveIncident(incidentId, {
+      rpoActualMinutes: v.rpoActualMinutes ? Number(v.rpoActualMinutes) : null,
+      rtoActualMinutes: v.rtoActualMinutes ? Number(v.rtoActualMinutes) : null,
+      postMortem: { cause: v.cause, impact: v.impact, actions: v.actions, prevention: v.prevention, owner: v.owner },
+    }), "Incident résolu");
+  }
+
+  async function askDrTest() {
+    const v = await form.ask({
+      title: "Programmer un exercice de reprise", confirmLabel: "Programmer",
+      fields: [
+        { name: "testType", label: "Type d'exercice", type: "select", defaultValue: "tabletop",
+          options: DR_TEST_TYPES.map((t) => ({ value: t, label: DR_TEST_LABEL[t] ?? t })) },
+        { name: "title", label: "Titre", required: true, minLength: 5 },
+        { name: "scheduledFor", label: "Prévu le", type: "date" },
+      ],
+    });
+    if (v) void run(() => scheduleDrTest({ testType: v.testType, title: v.title, scheduledFor: v.scheduledFor || null }), "Exercice programmé");
+  }
+
+  async function askDrResult(testId: string) {
+    const v = await form.ask({
+      title: "Consigner le résultat de l'exercice", confirmLabel: "Consigner",
+      fields: [
+        { name: "passed", label: "Résultat", type: "select", options: [{ value: "true", label: "Réussi" }, { value: "false", label: "Échoué" }] },
+        { name: "findings", label: "Constats", type: "textarea", required: true },
+        { name: "correctiveActions", label: "Actions correctives", type: "textarea" },
+        { name: "nextTestDue", label: "Prochain exercice dû le", type: "date" },
+      ],
+    });
+    if (v) void run(() => recordDrTestResult(testId, {
+      passed: v.passed === "true", findings: v.findings, correctiveActions: v.correctiveActions || null, nextTestDue: v.nextTestDue || null,
+    }), "Résultat consigné");
+  }
+
   async function run(fn: () => Promise<unknown>, msg?: string) {
     setBusy(true); setError(null); setNotice(null);
     try { await fn(); if (msg) setNotice(msg); load(); }
@@ -83,6 +189,7 @@ export function ContinuityPage() {
 
   return (
     <div style={{ display: "grid", gap: 16 }}>
+      {form.dialog}
       <h1 style={{ margin: 0 }}>Continuité & reprise</h1>
       {error && <div className="nx-error-text">{error}</div>}
       {notice && <div style={{ color: "var(--nx-success)" }}>{notice}</div>}
@@ -170,7 +277,7 @@ export function ContinuityPage() {
                                 onClick={() => run(() => restoreTest(b.id), "Test de restauration exécuté")}>Test resto</button>
                         {canRestore && (
                           <button className="nx-btn nx-btn--ghost" style={{ padding: "1px 8px", fontSize: 12, color: "var(--nx-warning)" }} disabled={busy}
-                                  onClick={() => { const t = prompt("Cible de restauration en production :"); if (t) void run(() => requestRestore(b.id, t), "Demande de restauration créée — en attente d'un second approbateur"); }}>
+                                  onClick={() => void askRestore(b.id)}>
                             Restaurer
                           </button>
                         )}
@@ -215,7 +322,7 @@ export function ContinuityPage() {
           <div style={label}>Incidents & runbook (§43-45)</div>
           {canManage && (
             <button className="nx-btn nx-btn--ghost" style={{ padding: "4px 12px", fontSize: 13 }} disabled={busy}
-                    onClick={() => { const t = prompt("Titre de l'incident :"); if (t) void run(() => openIncident({ severity: "p2", category: "other", title: t }), "Incident ouvert"); }}>
+                    onClick={() => void askIncident()}>
               Ouvrir un incident
             </button>
           )}
@@ -245,29 +352,12 @@ export function ContinuityPage() {
                 )}
                 {canRestore && i.domain === "security" && (
                   <button className="nx-btn nx-btn--ghost" style={{ padding: "1px 8px", fontSize: 12, color: "var(--nx-error)" }} disabled={busy}
-                          onClick={() => {
-                            if (!confirm("Verrouiller l'entreprise : révoque toutes les sessions et clés d'API actives. Confirmer ?")) return;
-                            void run(() => lockDownIncident(i.id).then((r) =>
-                              setNotice(`Verrouillage effectué : ${r.sessionsRevoked} session(s), ${r.apiKeysRevoked} clé(s) d'API, ${r.usersAffected} utilisateur(s) touché(s)`)));
-                          }}>
+                          onClick={() => void askLockDown(i.id)}>
                     Verrouillage d'urgence (§32)
                   </button>
                 )}
                 <button className="nx-btn nx-btn--ghost" style={{ padding: "1px 8px", fontSize: 12 }} disabled={busy}
-                        onClick={() => {
-                          const cause = prompt("Post-mortem — cause :"); if (!cause) return;
-                          void run(() => resolveIncident(i.id, {
-                            rpoActualMinutes: Number(prompt("RPO observé (min) :") ?? 0) || null,
-                            rtoActualMinutes: Number(prompt("RTO observé (min) :") ?? 0) || null,
-                            postMortem: {
-                              cause,
-                              impact: prompt("Impact :") ?? "",
-                              actions: prompt("Actions correctives :") ?? "",
-                              prevention: prompt("Prévention :") ?? "",
-                              owner: prompt("Responsable :") ?? "",
-                            },
-                          }), "Incident résolu");
-                        }}>
+                        onClick={() => void askResolve(i.id)}>
                   Résoudre
                 </button>
               </div>
@@ -286,12 +376,7 @@ export function ContinuityPage() {
           <div style={label}>Exercices de reprise (§44-45)</div>
           {canManage && (
             <button className="nx-btn nx-btn--ghost" style={{ padding: "4px 12px", fontSize: 13 }} disabled={busy}
-                    onClick={() => {
-                      const testType = prompt(`Type d'exercice (${DR_TEST_TYPES.join(", ")}) :`, "tabletop");
-                      if (!testType) return;
-                      const title = prompt("Titre de l'exercice :"); if (!title) return;
-                      void run(() => scheduleDrTest({ testType, title }), "Exercice programmé");
-                    }}>
+                    onClick={() => void askDrTest()}>
               Programmer un exercice
             </button>
           )}
@@ -310,14 +395,7 @@ export function ContinuityPage() {
                 <td style={td}>
                   {canManage && t.status === "scheduled" && (
                     <button className="nx-btn nx-btn--ghost" style={{ padding: "1px 8px", fontSize: 12 }} disabled={busy}
-                            onClick={() => {
-                              const passed = confirm("L'exercice a-t-il réussi ? (OK = réussi, Annuler = échoué)");
-                              void run(() => recordDrTestResult(t.id, {
-                                passed,
-                                findings: prompt("Constats :") ?? undefined,
-                                correctiveActions: prompt("Actions correctives :") ?? undefined,
-                              }), "Résultat consigné");
-                            }}>
+                            onClick={() => void askDrResult(t.id)}>
                     Consigner le résultat
                     </button>
                   )}

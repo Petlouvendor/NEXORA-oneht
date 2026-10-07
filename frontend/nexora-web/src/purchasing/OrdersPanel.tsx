@@ -13,6 +13,7 @@ import { getProduct, type ProductDetail } from "@/catalog/catalogApi";
 import {
   approvePurchaseOrder, cancelPurchaseOrder, closePurchaseOrder, createPurchaseOrder, getPurchaseOrder, listPurchaseOrders,
   sendPurchaseOrder, submitPurchaseOrder, updatePurchaseOrder, type PurchaseOrderDetail, type PurchaseOrderInput,
+  type PurchaseOrderSummary,
 } from "@/purchasing/purchasingApi";
 import {
   estimateLine, estimateTotals, knownPurchasePrice, ORDER_STATUS, ORDER_TONE, orderEditable, orderReceivable,
@@ -25,10 +26,18 @@ const linkStyle = { appearance: "none", background: "transparent", border: "none
   color: "var(--nx-brand)", font: "inherit" } as const;
 
 /** Commandes fournisseur : BROUILLON → SOUMISE → APPROUVÉE → ENVOYÉE → REÇUE (partiellement) → FACTURÉE ; soldée ou annulée. */
-export function OrdersPanel({ refs, onChanged }: { refs: PurchasingRefs; onChanged: () => void }) {
+export function OrdersPanel({ refs, onChanged, allOrders }: {
+  refs: PurchasingRefs; onChanged: () => void;
+  /** Liste complète déjà chargée par la page (indicateurs) : réutilisée sans filtre, au lieu d'un second appel. */
+  allOrders?: PurchaseOrderSummary[] | null;
+}) {
   const { hasPermission } = useAuth();
   const [status, setStatus] = useState("");
-  const orders = useAsync(() => listPurchaseOrders(status || undefined), [status]);
+  const shared = !status && allOrders !== undefined;
+  const filtered = useAsync(() => (shared ? Promise.resolve(null) : listPurchaseOrders(status || undefined)), [status, shared]);
+  const orders = shared
+    ? { data: allOrders, error: null as string | null, loading: allOrders === null, reload: () => undefined }
+    : filtered;
   const [editing, setEditing] = useState<PurchaseOrderDetail | "new" | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
   const reload = () => { orders.reload(); onChanged(); };

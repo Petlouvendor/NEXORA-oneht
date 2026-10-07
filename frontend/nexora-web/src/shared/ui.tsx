@@ -1,5 +1,5 @@
 import {
-  cloneElement, createContext, isValidElement, useContext, useEffect, useId, useRef, useState,
+  cloneElement, createContext, isValidElement, useContext, useEffect, useId, useMemo, useRef, useState,
   type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type Ref, type SelectHTMLAttributes,
 } from "react";
 import { Icon } from "@/shared/icons";
@@ -323,6 +323,25 @@ export interface Column<T> {
   header: string;
   render: (row: T) => ReactNode;
   numeric?: boolean;
+  /** Valeur de tri (finalisation phase 20). À défaut, la colonne se trie si la ligne a un champ simple de même nom. */
+  sortValue?: (row: T) => string | number | null | undefined;
+  /** false : jamais triable (colonne d'actions, par exemple). */
+  sortable?: boolean;
+}
+
+const normalize = (v: string) => v.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
+
+/** Texte de recherche d'une ligne : ses valeurs simples (et celles d'un niveau d'objet en dessous). */
+function rowText(row: unknown): string {
+  if (row == null || typeof row !== "object") return String(row ?? "");
+  const parts: string[] = [];
+  for (const v of Object.values(row as Record<string, unknown>)) {
+    if (v == null) continue;
+    if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") parts.push(String(v));
+    else if (typeof v === "object" && !Array.isArray(v))
+      for (const w of Object.values(v as Record<string, unknown>)) if (typeof w === "string" || typeof w === "number") parts.push(String(w));
+  }
+  return normalize(parts.join(" "));
 }
 
 /** Outils d'un tableau (export Excel / PDF) fournis par l'application selon les permissions — le kit
@@ -331,32 +350,90 @@ export type TableToolsRenderer = (p: { table: () => HTMLTableElement | null; tit
 export const TableToolsContext = createContext<TableToolsRenderer | null>(null);
 
 export function DataTable<T>({
-  columns, rows, rowKey, empty, footer, exportTitle,
+  columns, rows, rowKey, empty, footer, exportTitle, searchable,
 }: {
   columns: Array<Column<T>>; rows: T[]; rowKey: (row: T) => string;
   empty?: ReactNode; footer?: ReactNode;
   /** Titre du fichier exporté (défaut : titre de la carte ou de la page) ; <c>false</c> = pas d'export. */
   exportTitle?: string | false;
+  /** Filtre rapide : affiché dès 8 lignes par défaut (finalisation phase 20, §46). */
+  searchable?: boolean;
 }) {
   const tools = useContext(TableToolsContext);
   const ref = useRef<HTMLTableElement>(null);
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<{ key: string; dir: 1 | -1 } | null>(null);
+  const showSearch = searchable ?? rows.length >= 8;
+
+  // Valeur de tri d'une colonne : explicite, sinon champ simple de même nom (détecté sur les lignes).
+  const sorter = (c: Column<T>): ((row: T) => string | number | null | undefined) | null => {
+    if (c.sortable === false) return null;
+    if (c.sortValue) return c.sortValue;
+    const sample = rows.find((r) => (r as Record<string, unknown>)?.[c.key] != null) as Record<string, unknown> | undefined;
+    const v = sample?.[c.key];
+    return typeof v === "string" || typeof v === "number" ? (r: T) => (r as Record<string, unknown>)[c.key] as string | number : null;
+  };
+
+  const visible = useMemo(() => {
+    let out = rows;
+    const q = normalize(query.trim());
+    if (q) out = out.filter((r) => rowText(r).includes(q));
+    if (sort) {
+      const col = columns.find((c) => c.key === sort.key);
+      const get = col ? sorter(col) : null;
+      if (get) out = [...out].sort((a, b) => {
+        const x = get(a), y = get(b);
+        if (x == null && y == null) return 0;
+        if (x == null) return 1;
+        if (y == null) return -1;
+        return (typeof x === "number" && typeof y === "number" ? x - y : String(x).localeCompare(String(y), "fr", { numeric: true })) * sort.dir;
+      });
+    }
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, query, sort, columns]);
+
+  const toggleSort = (key: string) =>
+    setSort((s) => (!s || s.key !== key ? { key, dir: 1 } : s.dir === 1 ? { key, dir: -1 } : null));
+
   return (
     <div className="nx-scroll-x">
-      {tools && exportTitle !== false && rows.length > 0 && (
-        <div className="nx-table-tools" style={{ display: "flex", justifyContent: "flex-end", marginBottom: 2 }}>
-          {tools({ table: () => ref.current, title: exportTitle || undefined })}
+      {(showSearch || (tools && exportTitle !== false && rows.length > 0)) && (
+        <div className="nx-table-tools" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
+          {showSearch ? (
+            <input className="nx-input nx-table-search" type="search" value={query} onChange={(e) => setQuery(e.target.value)}
+              placeholder="Filtrer ce tableau…" aria-label="Filtrer ce tableau" style={{ maxWidth: 280, minHeight: 32 }} />
+          ) : <span />}
+          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {query && <span style={{ fontSize: 12, color: "var(--nx-text-2)" }} aria-live="polite">{visible.length} / {rows.length}</span>}
+            {tools && exportTitle !== false && rows.length > 0 && tools({ table: () => ref.current, title: exportTitle || undefined })}
+          </span>
         </div>
       )}
       <table className="nx-table" ref={ref}>
         <thead>
-          <tr>{columns.map((c) => <th key={c.key} className={c.numeric ? "nx-num" : undefined}>{c.header}</th>)}</tr>
+          <tr>{columns.map((c) => {
+            const sortable = rows.length > 1 && sorter(c) !== null;
+            const active = sort?.key === c.key;
+            return (
+              <th key={c.key} className={c.numeric ? "nx-num" : undefined}
+                aria-sort={sortable ? (active ? (sort!.dir === 1 ? "ascending" : "descending") : "none") : undefined}>
+                {sortable && c.header ? (
+                  <button type="button" className="nx-th-sort" onClick={() => toggleSort(c.key)}
+                    title={`Trier par ${c.header.toLowerCase()}`}>
+                    {c.header}<span aria-hidden="true" style={{ opacity: active ? 1 : 0.35 }}>{active ? (sort!.dir === 1 ? " ▲" : " ▼") : " ↕"}</span>
+                  </button>
+                ) : c.header}
+              </th>
+            );
+          })}</tr>
         </thead>
         <tbody>
-          {rows.length === 0 ? (
+          {visible.length === 0 ? (
             <tr><td colSpan={columns.length} style={{ color: "var(--nx-text-2)", padding: 20, textAlign: "center" }}>
-              {empty ?? "Rien à afficher."}
+              {rows.length > 0 && query ? `Aucune ligne ne correspond à « ${query} ».` : empty ?? "Rien à afficher."}
             </td></tr>
-          ) : rows.map((row) => (
+          ) : visible.map((row) => (
             <tr key={rowKey(row)}>
               {columns.map((c) => <td key={c.key} className={c.numeric ? "nx-num" : undefined}>{c.render(row)}</td>)}
             </tr>

@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { ApiError } from "@/core/apiClient";
+import { listUsers } from "@/admin/adminApi";
+import { listAccounts } from "@/accounting/accountingApi";
+import { useFormDialog } from "@/shared/FormDialog";
+import { usePrompt } from "@/shared/PromptDialog";
 import { Badge, Button, Card, DataTable, Money, SectionLabel, type Column } from "@/shared/ui";
 import {
   approveBudget, assignInsight, closeBudget, createBudget, deleteObjective, deleteReport,
@@ -66,6 +70,22 @@ export function KpiCatalogSection() {
 export function ObjectivesSection({ canManage }: { canManage: boolean }) {
   const objectives = useAsync(listObjectives);
   const score = useAsync(getObjectiveScore);
+  const form = useFormDialog();
+  async function newObjective() {
+    const kpis = await listKpiDefinitions().catch(() => []);
+    const v = await form.ask({
+      title: "Nouvel objectif", confirmLabel: "Enregistrer",
+      fields: [
+        { name: "kpiKey", label: "Indicateur", type: "select", required: true,
+          options: kpis.map((k) => ({ value: k.key, label: `${k.label} (${k.unit})` })) },
+        { name: "periodType", label: "Période", type: "select", defaultValue: "month", options: PERIODS },
+        { name: "targetValue", label: "Valeur cible", type: "number", required: true, min: 0 },
+        { name: "direction", label: "Sens", type: "select", options: [
+          { value: "min", label: "À atteindre (au moins la cible)" }, { value: "max", label: "Plafond (au plus la cible)" }] },
+      ],
+    });
+    if (v) void objectives.run(() => setObjective({ kpiKey: v.kpiKey, periodType: v.periodType, targetValue: Number(v.targetValue), direction: v.direction }));
+  }
 
   const cols: Array<Column<Objective>> = [
     { key: "k", header: "KPI", render: (o) => <code>{o.kpiKey}</code> },
@@ -101,15 +121,10 @@ export function ObjectivesSection({ canManage }: { canManage: boolean }) {
       </Card>
       <Card>
         <SectionLabel action={canManage && (
-          <Button size="sm" variant="ghost" disabled={objectives.busy} onClick={() => {
-            const kpiKey = prompt("Clé du KPI (ex. revenue, expenses) :"); if (!kpiKey) return;
-            const periodType = prompt("Période (day/week/month/quarter/year) :", "month") ?? "month";
-            const target = Number(prompt("Valeur cible :") ?? "0");
-            const direction = prompt("Sens (min = à atteindre / max = plafond) :", "min") ?? "min";
-            void objectives.run(() => setObjective({ kpiKey, periodType, targetValue: target, direction }));
-          }}>Nouvel objectif</Button>
+          <Button size="sm" variant="ghost" disabled={objectives.busy} onClick={() => void newObjective()}>Nouvel objectif</Button>
         )}>Objectifs (§39)</SectionLabel>
         {objectives.error && <div className="nx-error-text">{objectives.error}</div>}
+        {form.dialog}
         <DataTable columns={cols} rows={objectives.data ?? []} rowKey={(o) => o.id} empty="Aucun objectif." />
       </Card>
     </div>
@@ -122,6 +137,29 @@ export function ReportsSection({ canSchedule }: { canSchedule: boolean }) {
   const catalog = useAsync(listReports);
   const schedules = useAsync(listSchedules);
   const executions = useAsync(listExecutions);
+  const form = useFormDialog();
+  const reportOptions = () => (catalog.data?.standard ?? []).map((r) => ({ value: r.key, label: `${r.name} — ${r.category}` }));
+  async function newSavedReport() {
+    const v = await form.ask({
+      title: "Enregistrer un rapport", confirmLabel: "Enregistrer",
+      fields: [
+        { name: "name", label: "Nom", required: true },
+        { name: "reportKey", label: "Rapport standard", type: "select", required: true, options: reportOptions() },
+      ],
+    });
+    if (v) void catalog.run(() => saveReport({ name: v.name, reportKey: v.reportKey, filter: {} }));
+  }
+  async function newSchedule() {
+    const v = await form.ask({
+      title: "Planifier un rapport", confirmLabel: "Planifier",
+      fields: [
+        { name: "name", label: "Nom", required: true },
+        { name: "reportKey", label: "Rapport standard", type: "select", required: true, options: reportOptions() },
+        { name: "frequency", label: "Fréquence", type: "select", defaultValue: "weekly", options: FREQUENCIES },
+      ],
+    });
+    if (v) void schedules.run(() => saveSchedule({ name: v.name, reportKey: v.reportKey, frequency: v.frequency, recipients: [] }));
+  }
   const [result, setResult] = useState<{ key: string; json: string } | null>(null);
 
   const standardCols: Array<Column<ReportCatalogEntry>> = [
@@ -162,15 +200,12 @@ export function ReportsSection({ canSchedule }: { canSchedule: boolean }) {
       <Card>
         <SectionLabel>Catalogue de rapports standards (§48)</SectionLabel>
         {catalog.error && <div className="nx-error-text">{catalog.error}</div>}
+        {form.dialog}
         <DataTable columns={standardCols} rows={catalog.data?.standard ?? []} rowKey={(r) => r.key} empty="—" />
       </Card>
       <Card>
         <SectionLabel action={
-          <Button size="sm" variant="ghost" disabled={catalog.busy} onClick={() => {
-            const name = prompt("Nom du rapport enregistré :"); if (!name) return;
-            const reportKey = prompt("Clé du rapport (ex. sales_journal, stock_valuation, aging_receivables) :", "sales_journal"); if (!reportKey) return;
-            void catalog.run(() => saveReport({ name, reportKey, filter: {} }));
-          }}>Enregistrer un rapport</Button>
+          <Button size="sm" variant="ghost" disabled={catalog.busy || !catalog.data} onClick={() => void newSavedReport()}>Enregistrer un rapport</Button>
         }>Mes rapports enregistrés (§49)</SectionLabel>
         <DataTable columns={savedCols} rows={catalog.data?.saved ?? []} rowKey={(r) => r.id} empty="Aucun rapport enregistré." />
         {result && (
@@ -183,12 +218,7 @@ export function ReportsSection({ canSchedule }: { canSchedule: boolean }) {
       {canSchedule && (
         <Card>
           <SectionLabel action={
-            <Button size="sm" variant="ghost" disabled={schedules.busy} onClick={() => {
-              const name = prompt("Nom du rapport planifié :"); if (!name) return;
-              const reportKey = prompt("Clé du rapport :", "sales_journal") ?? "sales_journal";
-              const frequency = prompt("Fréquence (daily/weekly/monthly/on_close) :", "weekly") ?? "weekly";
-              void schedules.run(() => saveSchedule({ name, reportKey, frequency, recipients: [] }));
-            }}>Planifier un rapport</Button>
+            <Button size="sm" variant="ghost" disabled={schedules.busy || !catalog.data} onClick={() => void newSchedule()}>Planifier un rapport</Button>
           }>Rapports planifiés (§41)</SectionLabel>
           {schedules.error && <div className="nx-error-text">{schedules.error}</div>}
           <DataTable columns={scheduleCols} rows={schedules.data ?? []} rowKey={(s) => s.id} empty="Aucun rapport planifié." />
@@ -208,9 +238,40 @@ export function ReportsSection({ canSchedule }: { canSchedule: boolean }) {
 // --- §35-36 : prévisions -----------------------------------------------------
 
 const METRICS = ["revenue", "cash", "stock", "receivables", "expenses"];
+// Finalisation phase 20 : listes de choix des formulaires (avant : clés techniques à taper dans window.prompt).
+const METRIC_LABEL: Record<string, string> = {
+  revenue: "Chiffre d'affaires", cash: "Trésorerie", stock: "Valeur du stock", receivables: "Créances clients", expenses: "Dépenses",
+};
+const PERIODS = [
+  { value: "day", label: "Jour" }, { value: "week", label: "Semaine" }, { value: "month", label: "Mois" },
+  { value: "quarter", label: "Trimestre" }, { value: "year", label: "Année" },
+];
+const FREQUENCIES = [
+  { value: "daily", label: "Chaque jour" }, { value: "weekly", label: "Chaque semaine" },
+  { value: "monthly", label: "Chaque mois" }, { value: "on_close", label: "À chaque clôture" },
+];
+const SCENARIOS = [
+  { value: "base", label: "Tendance actuelle" }, { value: "optimistic", label: "Optimiste" },
+  { value: "prudent", label: "Prudent" }, { value: "custom", label: "Personnalisé" },
+];
+const MONTHS = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin", "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"];
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function ForecastsSection({ canGenerate }: { canGenerate: boolean }) {
   const forecasts = useAsync(() => listForecasts());
+  const form = useFormDialog();
+  async function newForecast() {
+    const v = await form.ask({
+      title: "Générer une prévision", confirmLabel: "Générer",
+      intro: "Une prévision est une estimation fondée sur l'historique récent — jamais une certitude.",
+      fields: [
+        { name: "metric", label: "Indicateur", type: "select", options: METRICS.map((m) => ({ value: m, label: METRIC_LABEL[m] ?? m })) },
+        { name: "horizonDays", label: "Horizon (jours)", type: "number", defaultValue: "30", required: true, min: 1, max: 365, integer: true },
+        { name: "scenario", label: "Scénario", type: "select", defaultValue: "base", options: SCENARIOS },
+      ],
+    });
+    if (v) void forecasts.run(() => generateForecast({ metric: v.metric, horizonDays: Number(v.horizonDays), scenario: v.scenario }));
+  }
   const cols: Array<Column<Forecast>> = [
     { key: "m", header: "Indicateur", render: (f) => <Badge>{f.metric}</Badge> },
     { key: "s", header: "Scénario", render: (f) => f.scenario },
@@ -223,14 +284,10 @@ export function ForecastsSection({ canGenerate }: { canGenerate: boolean }) {
   return (
     <Card>
       <SectionLabel action={canGenerate && (
-        <Button size="sm" variant="ghost" disabled={forecasts.busy} onClick={() => {
-          const metric = prompt(`Indicateur (${METRICS.join("/")}) :`, "revenue"); if (!metric) return;
-          const horizonDays = Number(prompt("Horizon en jours :", "30") ?? "30");
-          const scenario = prompt("Scénario (base/optimistic/prudent/custom) :", "base") ?? "base";
-          void forecasts.run(() => generateForecast({ metric, horizonDays, scenario }));
-        }}>Générer une prévision</Button>
+        <Button size="sm" variant="ghost" disabled={forecasts.busy} onClick={() => void newForecast()}>Générer une prévision</Button>
       )}>Prévisions — toujours une estimation (§35-36)</SectionLabel>
       {forecasts.error && <div className="nx-error-text">{forecasts.error}</div>}
+      {form.dialog}
       <div style={{ fontSize: 12, color: "var(--nx-text-2)", marginBottom: 8 }}>
         Une prévision est une estimation fondée sur l'historique récent — jamais une certitude (§35).
       </div>
@@ -243,6 +300,26 @@ export function ForecastsSection({ canGenerate }: { canGenerate: boolean }) {
 
 export function InsightsSection({ canManage }: { canManage: boolean }) {
   const insights = useAsync(() => listInsights());
+  const form = useFormDialog();
+  const prompt = usePrompt();
+  async function assign(insight: Insight) {
+    // Liste des utilisateurs si le rôle peut la lire ; sinon saisie de l'identifiant, contrôlée.
+    const users = await listUsers().catch(() => null);
+    const v = await form.ask({
+      title: `Assigner « ${insight.title} »`, confirmLabel: "Assigner",
+      fields: [users
+        ? { name: "userId", label: "Responsable", type: "select", required: true,
+            options: users.filter((u) => u.status === "active").map((u) => ({ value: u.id, label: u.fullName ? `${u.fullName} — ${u.email}` : u.email })) }
+        : { name: "userId", label: "Identifiant de l'utilisateur", required: true, hint: "Identifiant (UUID) visible dans Administration → Utilisateurs.",
+            validate: (x) => (UUID.test(x) ? null : "Identifiant (UUID) invalide.") }],
+    });
+    if (v) void insights.run(() => assignInsight(insight.id, v.userId));
+  }
+  async function dismiss(insight: Insight) {
+    const reason = await prompt.ask({ title: `Ignorer « ${insight.title} »`, label: "Motif", multiline: true, confirmLabel: "Ignorer",
+      hint: "Facultatif, mais utile au suivi : pourquoi cette anomalie n'appelle pas d'action ?" });
+    if (reason !== null) void insights.run(() => dismissInsight(insight.id, reason || undefined));
+  }
   const cols: Array<Column<Insight>> = [
     { key: "s", header: "", render: (i) => <Badge tone={i.severity === "critical" ? "error" : i.severity === "warning" ? "warning" : "info"}>{i.severity}</Badge> },
     { key: "t", header: "Insight", render: (i) => <><strong>{i.title}</strong><div style={{ color: "var(--nx-text-2)", fontSize: 12 }}>{i.detail}</div></> },
@@ -250,11 +327,8 @@ export function InsightsSection({ canManage }: { canManage: boolean }) {
     { key: "st", header: "Statut", render: (i) => <Badge>{i.status}</Badge> },
     { key: "a", header: "", render: (i) => canManage && i.status === "open" && (
       <div style={{ display: "flex", gap: 6 }}>
-        <Button size="sm" variant="ghost" onClick={() => {
-          const userId = prompt("Identifiant de l'utilisateur à assigner :"); if (!userId) return;
-          void insights.run(() => assignInsight(i.id, userId));
-        }}>Assigner</Button>
-        <Button size="sm" variant="ghost" onClick={() => insights.run(() => dismissInsight(i.id, prompt("Motif (optionnel) :") ?? undefined))}>Ignorer</Button>
+        <Button size="sm" variant="ghost" onClick={() => void assign(i)}>Assigner</Button>
+        <Button size="sm" variant="ghost" onClick={() => void dismiss(i)}>Ignorer</Button>
       </div>
     ) },
   ];
@@ -262,6 +336,8 @@ export function InsightsSection({ canManage }: { canManage: boolean }) {
     <Card>
       <SectionLabel>Insights — anomalies expliquées (§37-38)</SectionLabel>
       {insights.error && <div className="nx-error-text">{insights.error}</div>}
+      {form.dialog}
+      {prompt.dialog}
       <DataTable columns={cols} rows={insights.data ?? []} rowKey={(i) => i.id} empty="Aucune anomalie détectée." />
     </Card>
   );
@@ -279,6 +355,39 @@ const BUDGET_ACTIONS: Record<string, Array<{ label: string; fn: (id: string) => 
 export function BudgetsSection({ canManage }: { canManage: boolean }) {
   const budgets = useAsync(listBudgets);
   const [lines, setLines] = useState<{ budgetId: string; rows: BudgetLine[] } | null>(null);
+  const form = useFormDialog();
+  async function newBudget() {
+    const year = new Date().getFullYear();
+    const v = await form.ask({
+      title: "Nouveau budget", confirmLabel: "Créer",
+      fields: [
+        { name: "name", label: "Nom", required: true },
+        { name: "fiscalYear", label: "Exercice", type: "number", defaultValue: String(year), required: true, integer: true, min: year - 5, max: year + 5 },
+        { name: "currencyCode", label: "Devise", type: "select", defaultValue: "HTG",
+          options: ["HTG", "USD", "EUR", "CAD"].map((c) => ({ value: c, label: c })) },
+      ],
+    });
+    if (v) void budgets.run(() => createBudget({ name: v.name, fiscalYear: Number(v.fiscalYear), currencyCode: v.currencyCode }));
+  }
+  async function addLine(b: Budget) {
+    const accounts = await listAccounts().catch(() => []);
+    const v = await form.ask({
+      title: `Ligne du budget « ${b.name} »`, confirmLabel: "Ajouter",
+      fields: [
+        { name: "accountId", label: "Compte", type: "select",
+          options: [{ value: "", label: "— sans compte (enveloppe globale) —" }, ...accounts.map((a) => ({ value: a.id, label: `${a.code} — ${a.name}` }))] },
+        { name: "periodMonth", label: "Période", type: "select", defaultValue: "",
+          options: [{ value: "", label: "Toute l'année" }, ...MONTHS.map((m, i) => ({ value: String(i + 1), label: m }))] },
+        { name: "amount", label: `Montant (${b.currencyCode})`, type: "number", required: true, min: 0 },
+      ],
+    });
+    if (!v) return;
+    const existing = lines?.budgetId === b.id ? lines.rows : await getBudgetLines(b.id);
+    void budgets.run(() => setBudgetLines(b.id, [
+      ...existing.map((l) => ({ accountId: l.accountId, costCenterId: l.costCenterId, establishmentId: l.establishmentId, periodMonth: l.periodMonth, amount: l.amount })),
+      { accountId: v.accountId || null, periodMonth: v.periodMonth ? Number(v.periodMonth) : null, amount: Number(v.amount) },
+    ]));
+  }
 
   const cols: Array<Column<Budget>> = [
     { key: "n", header: "Nom", render: (b) => b.name },
@@ -289,10 +398,7 @@ export function BudgetsSection({ canManage }: { canManage: boolean }) {
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
         <Button size="sm" variant="ghost" onClick={async () => setLines({ budgetId: b.id, rows: await getBudgetLines(b.id) })}>Lignes</Button>
         {b.status === "draft" && (
-          <Button size="sm" variant="ghost" onClick={() => {
-            const amount = Number(prompt("Montant de la ligne (annuelle) :") ?? "0");
-            void budgets.run(() => setBudgetLines(b.id, [...(lines?.budgetId === b.id ? lines.rows : []).map((l) => ({ accountId: l.accountId, costCenterId: l.costCenterId, establishmentId: l.establishmentId, periodMonth: l.periodMonth, amount: l.amount })), { amount }]));
-          }}>+ Ligne</Button>
+          <Button size="sm" variant="ghost" onClick={() => void addLine(b)}>+ Ligne</Button>
         )}
         {(BUDGET_ACTIONS[b.status] ?? []).map((a) => (
           <Button key={a.label} size="sm" variant="ghost" onClick={() => budgets.run(() => a.fn(b.id))}>{a.label}</Button>
@@ -304,14 +410,10 @@ export function BudgetsSection({ canManage }: { canManage: boolean }) {
   return (
     <Card>
       <SectionLabel action={canManage && (
-        <Button size="sm" variant="ghost" disabled={budgets.busy} onClick={() => {
-          const name = prompt("Nom du budget :"); if (!name) return;
-          const fiscalYear = Number(prompt("Exercice :", String(new Date().getFullYear())) ?? new Date().getFullYear());
-          const currencyCode = prompt("Devise (code) :", "HTG") ?? "HTG";
-          void budgets.run(() => createBudget({ name, fiscalYear, currencyCode }));
-        }}>Nouveau budget</Button>
+        <Button size="sm" variant="ghost" disabled={budgets.busy} onClick={() => void newBudget()}>Nouveau budget</Button>
       )}>Budgets (§33-34)</SectionLabel>
       {budgets.error && <div className="nx-error-text">{budgets.error}</div>}
+      {form.dialog}
       <DataTable columns={cols} rows={budgets.data ?? []} rowKey={(b) => b.id} empty="Aucun budget." />
       {lines && (
         <div className="nx-card" style={{ marginTop: 10, background: "var(--nx-surface-2)" }}>

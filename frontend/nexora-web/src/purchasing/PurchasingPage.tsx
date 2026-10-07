@@ -103,7 +103,7 @@ export function PurchasingPage() {
       <Card>
         <Tabs tabs={tabs} active={tab} onChange={setTab} />
       </Card>
-      {tab === "orders" && <OrdersPanel refs={refs} onChanged={refresh} />}
+      {tab === "orders" && <OrdersPanel refs={refs} onChanged={refresh} allOrders={summary.data?.orders ?? null} />}
       {tab === "receipts" && <ReceiptsPanel refs={refs} onChanged={refresh} />}
       {tab === "invoices" && canViewPayables && <InvoicesPanel refs={refs} onChanged={refresh} />}
       {tab === "returns" && <ReturnsPanel refs={refs} onChanged={refresh} />}
