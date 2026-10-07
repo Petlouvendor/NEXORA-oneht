@@ -40,7 +40,7 @@ export function usePrompt(): { ask: (o: PromptOptions) => Promise<string | null>
 
   const close = (v: string | null) => { pending?.resolve(v); setPending(null); };
 
-  function confirm(e?: FormEvent) {
+  function submit(e?: FormEvent) {
     e?.preventDefault();
     if (!pending) return;
     const v = value.trim();
@@ -53,8 +53,8 @@ export function usePrompt(): { ask: (o: PromptOptions) => Promise<string | null>
     <TopLayer>
     <Modal title={pending.title} onClose={() => close(null)}
       footer={<><Button variant="ghost" onClick={() => close(null)}>Annuler</Button>
-        <Button variant={pending.danger ? "danger" : "primary"} onClick={() => confirm()}>{pending.confirmLabel ?? "Valider"}</Button></>}>
-      <form noValidate onSubmit={confirm} style={{ display: "grid", gap: 10 }}>
+        <Button variant={pending.danger ? "danger" : "primary"} onClick={() => submit()}>{pending.confirmLabel ?? "Valider"}</Button></>}>
+      <form noValidate onSubmit={submit} style={{ display: "grid", gap: 10 }}>
         <Field label={pending.label} required={pending.required} error={error} hint={pending.hint}>
           {pending.choices
             ? <Select value={value} onChange={(e) => setValue(e.target.value)}>

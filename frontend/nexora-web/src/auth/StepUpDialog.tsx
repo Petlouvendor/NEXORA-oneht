@@ -49,7 +49,7 @@ export function StepUpHost() {
 
   const close = (token: string | null) => { pending.resolve(token); setPending(null); };
 
-  async function confirm(e?: FormEvent) {
+  async function submit(e?: FormEvent) {
     e?.preventDefault();
     if (!password) { setError("Saisissez votre mot de passe."); return; }
     if (needsCode && !code.trim()) { setError("Saisissez le code de votre application d'authentification."); return; }
@@ -73,8 +73,8 @@ export function StepUpHost() {
     <TopLayer>
     <Modal title="Confirmation de sécurité" onClose={() => close(null)}
       footer={<><Button variant="ghost" onClick={() => close(null)}>Annuler</Button>
-        <Button disabled={busy || enrollment} onClick={() => confirm()}>Confirmer</Button></>}>
-      <form noValidate onSubmit={confirm} style={{ display: "grid", gap: 10 }}>
+        <Button disabled={busy || enrollment} onClick={() => submit()}>Confirmer</Button></>}>
+      <form noValidate onSubmit={submit} style={{ display: "grid", gap: 10 }}>
         <div><b>{STEP_UP_LABELS[pending.purpose] ?? "Action critique"}</b> — {pending.detail}</div>
         <div style={{ fontSize: 12, color: "var(--nx-text-2)" }}>
           Action sensible : confirmez votre identité. La confirmation vaut quelques minutes pour ce type d'action.

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { usePrompt } from "@/shared/PromptDialog";
 import { ApiError } from "@/core/apiClient";
 import { useAuth } from "@/auth/AuthContext";
 import {
@@ -43,6 +44,14 @@ export function BillingPortalPage() {
   }, []);
   useEffect(load, [load]);
 
+  const prompt = usePrompt();
+  async function askCancel(subscriptionId: string) {
+    const reason = await prompt.ask({ title: "Résilier l'abonnement", label: "Pourquoi souhaitez-vous résilier ?", multiline: true,
+      danger: true, confirmLabel: "Résilier en fin de période",
+      hint: "L'accès reste ouvert jusqu'à la fin de la période payée ; vous pouvez réactiver d'ici là." });
+    if (reason !== null) void run(() => selfCancel(subscriptionId, false, reason || undefined), "Résiliation en fin de période enregistrée");
+  }
+
   async function run(fn: () => Promise<unknown>, msg?: string) {
     setBusy(true); setError(null); setNotice(null);
     try { await fn(); if (msg) setNotice(msg); load(); }
@@ -60,6 +69,7 @@ export function BillingPortalPage() {
 
   return (
     <div style={{ display: "grid", gap: 16 }}>
+      {prompt.dialog}
       <h1 style={{ margin: 0 }}>Mon abonnement NEXORA</h1>
       {error && <div className="nx-error-text">{error}</div>}
       {notice && <div style={{ color: "var(--nx-success)" }}>{notice}</div>}
@@ -98,7 +108,7 @@ export function BillingPortalPage() {
                 ? <button className="nx-btn nx-btn--ghost" style={{ padding: "3px 12px", fontSize: 13 }} disabled={busy}
                           onClick={() => run(() => selfReactivate(sub.id), "Réactivation demandée")}>Réactiver</button>
                 : <button className="nx-btn nx-btn--ghost" style={{ padding: "3px 12px", fontSize: 13, color: "var(--nx-error)" }} disabled={busy}
-                          onClick={() => { const r = prompt("Pourquoi souhaitez-vous résilier ? (fin de période)"); if (r !== null) void run(() => selfCancel(sub.id, false, r || undefined), "Résiliation en fin de période enregistrée"); }}>Résilier</button>}
+                          onClick={() => void askCancel(sub.id)}>Résilier</button>}
             </div>
           </>
         ) : (
