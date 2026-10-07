@@ -82,12 +82,15 @@ export function DashboardPage() {
   const canAct = hasPermission("intelligence.act_on_recommendation");
   const canForecast = hasPermission("reporting.forecast");
 
+  // Finalisation phase 20 (§49) : rien n'est chargé avant que l'entreprise active soit connue — sinon chaque section
+  // partait deux fois au démarrage (sans entreprise, puis avec).
+  const ready = Boolean(activeCompanyId);
   const company = user?.companies.find((c) => c.companyId === activeCompanyId);
   const hello = greeting(new Date(), firstName(user?.fullName, user?.email));
   const today = dateLong();
 
   // Que se passe-t-il ? — période courante + période précédente de même durée (variations).
-  const cc = useSection<{ cur: CommandCenterResponse; prev: CommandCenterResponse | null }>(canPilot, async () => {
+  const cc = useSection<{ cur: CommandCenterResponse; prev: CommandCenterResponse | null }>(canPilot && ready, async () => {
     const cur = await getCommandCenter({ preset });
     const w = previousWindow(cur.from, cur.to);
     const prev = await getCommandCenter({ from: w.from, to: w.to }).catch(() => null);
@@ -95,10 +98,10 @@ export function DashboardPage() {
   }, [preset, activeCompanyId]);
 
   // Que dois-je faire ? — bandeau Intelligence + recommandations ouvertes (aussi utilisées par les risques).
-  const intel = useSection<IntelligenceDashboard>(canIntel, getIntelligenceDashboard, [activeCompanyId]);
-  const openRecs = useSection<Recommendation[]>(canIntel, () => listRecommendations("open"), [activeCompanyId]);
+  const intel = useSection<IntelligenceDashboard>(canIntel && ready, getIntelligenceDashboard, [activeCompanyId]);
+  const openRecs = useSection<Recommendation[]>(canIntel && ready, () => listRecommendations("open"), [activeCompanyId]);
 
-  const top = useSection(canSales, async () => {
+  const top = useSection(canSales && ready, async () => {
     const [products, customers, days] = await Promise.all([
       getTopProducts({ preset }, 5),
       getSalesBreakdown("customer", { preset }),
@@ -107,10 +110,10 @@ export function DashboardPage() {
     return { products, customers, days };
   }, [preset, activeCompanyId]);
 
-  const activity = useSection<ActivityEvent[]>(true, () => getActivity(10), [activeCompanyId]);
+  const activity = useSection<ActivityEvent[]>(ready, () => getActivity(10), [activeCompanyId]);
 
   // Qu'est-ce qui risque d'arriver ? — dernières prévisions CA & trésorerie (jamais présentées comme certaines).
-  const forecasts = useSection<Forecast[]>(canFinancial, async () => {
+  const forecasts = useSection<Forecast[]>(canFinancial && ready, async () => {
     const [rev, cash] = await Promise.all([listForecasts("revenue"), listForecasts("cash")]);
     const latest = (l: Forecast[]) => [...l].sort((a, b) => b.generatedAt.localeCompare(a.generatedAt))[0];
     return [latest(rev), latest(cash)].filter((f): f is Forecast => Boolean(f));

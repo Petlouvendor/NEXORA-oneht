@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, Suspense } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { ScreenErrorBoundary } from "@/shared/ScreenErrorBoundary";
 import { useAuth } from "@/auth/AuthContext";
 import { usePreferences } from "@/shared/PreferencesContext";
 import { NAV_GROUPS, ALL_NAV } from "@/app/nav";
@@ -37,13 +38,18 @@ export function AppLayout() {
   const userMenuRef = useClickOutside<HTMLDivElement>(() => setMenuOpen(false));
 
   const [unread, setUnread] = useState(0);
+  // Finalisation phase 20 (§49) : le compteur était rechargé à chaque changement de page (un appel par navigation) et
+  // deux fois au démarrage. Il l'est désormais au changement d'entreprise, toutes les 60 s, et en quittant l'écran
+  // Notifications (où l'on vient de lire).
+  const onNotifications = location.pathname.startsWith("/notifications");
   useEffect(() => {
+    if (!activeCompanyId) return;
     let alive = true;
     const poll = () => unreadCount().then((r) => { if (alive) setUnread(r.unread); }).catch(() => {});
     poll();
     const t = setInterval(poll, 60_000);
     return () => { alive = false; clearInterval(t); };
-  }, [activeCompanyId, location.pathname]);
+  }, [activeCompanyId, onNotifications]);
 
   const company = user?.companies.find((c) => c.companyId === activeCompanyId);
   const companyLabel = branding?.displayName || company?.companyName || "—";
@@ -192,7 +198,12 @@ export function AppLayout() {
         <main id="nx-main" className="nx-content" key={location.pathname}>
           {/* Export Excel / PDF de n'importe quel tableau affiché (reporting.export). */}
           <TableToolsContext.Provider value={tableTools}>
-            <Outlet />
+            {/* Finalisation phase 20 : écrans chargés à la demande — le cadre reste affiché pendant le chargement. */}
+            <ScreenErrorBoundary resetKey={location.pathname}>
+              <Suspense fallback={<div className="nx-page-loading" role="status" aria-live="polite">Chargement…</div>}>
+                <Outlet />
+              </Suspense>
+            </ScreenErrorBoundary>
           </TableToolsContext.Provider>
         </main>
       </div>
