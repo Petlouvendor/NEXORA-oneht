@@ -24,6 +24,7 @@ public interface IFinanceOperations
     Task<Result<PostingResultResponse>> RecordBankChargeAsync(RecordBankChargeRequest r, CancellationToken ct = default);
     Task<Result<PostingResultResponse>> RecordCashCountAsync(RecordCashCountRequest r, CancellationToken ct = default);
     Task<Result<PostingResultResponse>> RecordSupplierReturnAsync(RecordSupplierReturnRequest r, CancellationToken ct = default);
+    Task<Result<PostingResultResponse>> RecordGoodsReceiptAsync(RecordGoodsReceiptRequest r, CancellationToken ct = default);
 }
 
 /// <summary>
@@ -61,13 +62,21 @@ public sealed class FinanceOperations(
 
     public Task<Result<PostingResultResponse>> RecordSupplierInvoiceAsync(RecordSupplierInvoiceRequest r, CancellationToken ct) =>
         Run(new SupplierInvoiceRecorded(Company, r.OperationUuid, r.OccurredAt, r.SupplierInvoiceId, r.SupplierId,
-            new Money(r.NetAmount, r.Currency), new Money(r.TaxAmount, r.Currency), r.DueDate, r.CapitaliseToInventory)
+            new Money(r.NetAmount, r.Currency), new Money(r.TaxAmount, r.Currency), r.DueDate, r.CapitaliseToInventory,
+            Optional(r.StockNetAmount, r.Currency), Optional(r.StockAccruedAmount, r.Currency))
             { UserId = tenant.UserId }, ct);
+
+    public Task<Result<PostingResultResponse>> RecordGoodsReceiptAsync(RecordGoodsReceiptRequest r, CancellationToken ct) =>
+        Run(new GoodsReceiptRecorded(Company, r.OperationUuid, r.OccurredAt, r.GoodsReceiptId, r.SupplierId,
+            new Money(r.Value, r.Currency)) { UserId = tenant.UserId }, ct);
+
+    private static Money? Optional(decimal? amount, string currency) => amount is { } a ? new Money(a, currency) : null;
 
     public Task<Result<PostingResultResponse>> RecordCashPurchaseAsync(RecordCashPurchaseRequest r, CancellationToken ct) =>
         Run(new CashPurchaseRecorded(Company, r.OperationUuid, r.OccurredAt, r.ReferenceId,
             new Money(r.NetAmount, r.Currency), new Money(r.TaxAmount, r.Currency),
-            r.TenderFinancialAccountId, r.CapitaliseToInventory) { UserId = tenant.UserId }, ct);
+            r.TenderFinancialAccountId, r.CapitaliseToInventory,
+            Optional(r.StockNetAmount, r.Currency), Optional(r.StockAccruedAmount, r.Currency)) { UserId = tenant.UserId }, ct);
 
     /// <summary>
     /// Recette BUG-016 / résumé fonctionnel §11 : la pièce de dépense ET l'écriture sont créées
@@ -132,7 +141,8 @@ public sealed class FinanceOperations(
 
     public Task<Result<PostingResultResponse>> RecordSupplierReturnAsync(RecordSupplierReturnRequest r, CancellationToken ct) =>
         Run(new SupplierReturnRecorded(Company, r.OperationUuid, r.OccurredAt, r.SupplierReturnId, r.SupplierId,
-            new Money(r.NetAmount, r.Currency), new Money(r.TaxAmount, r.Currency), r.AgainstPayable) { UserId = tenant.UserId }, ct);
+            new Money(r.NetAmount, r.Currency), new Money(r.TaxAmount, r.Currency), r.AgainstPayable,
+            Optional(r.StockCost, r.Currency), r.Invoiced) { UserId = tenant.UserId }, ct);
 
     private async Task<Result<PostingResultResponse>> Run(FinancialEvent evt, CancellationToken ct)
     {

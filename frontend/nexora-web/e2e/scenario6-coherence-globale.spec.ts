@@ -43,12 +43,8 @@ test.describe("Scénario 6 — cohérence financière globale", () => {
   });
 
   test("stock : valeur du stock = compte 3110 Stocks marchandises", async () => {
-    // Défaut connu, révélé par cette suite (finalisation phase 19) : une réception augmente le stock valorisé SANS
-    // écriture ; le stock n'entre en comptabilité qu'à la facture fournisseur. Les réceptions non facturées manquent
-    // donc au compte 3110 (décalage de rattachement, définitif pour une réception jamais facturée). Correction
-    // proposée : compte « fournisseurs — factures non parvenues » à la réception, soldé par la facture. Décision
-    // demandée dans le rapport de phase ; ce test redeviendra bloquant une fois la correction faite.
-    test.fixme(true, "réceptions non facturées absentes du grand livre — décision en attente (rapport phase 19)");
+    // Compte 4081 (décision du 2026-10-09) : la réception passe D 3110 / C 4081 au coût de réception ; le stock et le
+    // 3110 avancent ensemble, la facture solde le 4081. Ce contrôle, ignoré depuis la phase 19, redevient bloquant.
     const balances = await v.get<Array<{ stockValue: number }>>("/stock/balances");
     const subledger = round(balances.reduce((t, b) => t + b.stockValue, 0));
     expect(round(balance("3110"))).toBe(subledger);

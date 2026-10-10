@@ -85,7 +85,20 @@ public interface IPurchasingStore
     Task ReplaceOrderLinesAsync(PurchaseOrder order, IReadOnlyList<PurchaseOrderLine> lines, CancellationToken ct = default);
     /// <summary>Change le statut seulement s'il est encore <paramref name="fromStatus"/>.</summary>
     Task SetOrderStatusIfAsync(Guid orderId, string fromStatus, string toStatus, CancellationToken ct = default);
+
+    // --- Compte 4081 (décision du 2026-10-09) --------------------------------------------
+    Task<string> CurrencyCodeAsync(Guid currencyId, CancellationToken ct = default);
+    /// <summary>Articles suivis en stock parmi <paramref name="productIds"/> (hors services et non stockés).</summary>
+    Task<IReadOnlySet<Guid>> StockedProductsAsync(IReadOnlyCollection<Guid> productIds, CancellationToken ct = default);
+    /// <summary>Par article : coût moyen des réceptions comptabilisées au 4081 (la réception citée, sinon celles de la
+    /// commande), et présence de réceptions antérieures au 4081 (sans écriture de réception).</summary>
+    Task<IReadOnlyDictionary<Guid, InvoiceStockBasis>> InvoiceStockBasisAsync(
+        Guid? goodsReceiptId, Guid? purchaseOrderId, IReadOnlyCollection<Guid> productIds, CancellationToken ct = default);
+    /// <summary>Réception comptabilisée au 4081 ? déjà facturée (facture citant la réception ou sa commande) ?</summary>
+    Task<(bool Accrued, bool Invoiced)> ReceiptAccountingStateAsync(Guid receiptId, CancellationToken ct = default);
 }
+
+public sealed record InvoiceStockBasis(decimal? AccruedUnitCost, bool HasLegacyReceipt);
 
 /// <summary>Fournisseur vu par les achats : statut, délai de paiement (jours) et limite de crédit.</summary>
 public sealed record SupplierPurchasingInfo(Guid SupplierId, string Status, int? PaymentTermsDays, decimal CreditLimit);
@@ -430,6 +443,17 @@ public sealed class PurchasingService(
             await store.AddReceiptAsync(receipt, token);
             await stock.PostManyAsync(movements, token);
 
+            // Compte 4081 (décision du 2026-10-09) : le stock reçu entre en comptabilité dès la réception — D stock /
+            // C fournisseurs, factures non parvenues — au coût de réception ; la facture soldera le 4081. Même
+            // transaction : pas de stock sans écriture si la période est close.
+            var value = R2(receipt.Lines.Sum(l => l.QuantityReceived * l.UnitCost));
+            if (value > 0m)
+            {
+                var posted = await finance.RecordGoodsReceiptAsync(new RecordGoodsReceiptRequest(
+                    receipt.Id, receipt.Id, c.SupplierId, receivedAt, value, await store.CurrencyCodeAsync(currencyId, token)), token);
+                if (!posted.IsSuccess) throw new InvalidOperationException(posted.Error!.Message);
+            }
+
             if (c.PurchaseOrderId is { } po)
                 await store.RefreshOrderStatusAsync(po, token);
 
@@ -495,6 +519,7 @@ public sealed class PurchasingService(
                 l.Quantity, l.UnitPrice, l.TaxId, l.Discount, lineNet));
         }
         var occurredAt = BusinessDate.Noon(c.InvoiceDate);   // jour de la facture, quel que soit le fuseau
+        var (stockNet, stockAccrued) = await StockPartAsync(c, ct);
 
         return await Guarded(() => uow.ExecuteInTransactionAsync<Result<RecordPurchaseInvoiceResult>>(async token =>
         {
@@ -508,10 +533,10 @@ public sealed class PurchasingService(
             var posted = c.OnCredit
                 ? await finance.RecordSupplierInvoiceAsync(new RecordSupplierInvoiceRequest(
                     c.OperationUuid, invoiceId, c.SupplierId, occurredAt, net, tax, c.Currency, dueDate,
-                    c.CapitaliseToInventory), token)
+                    c.CapitaliseToInventory, stockNet, stockAccrued), token)
                 : await finance.RecordCashPurchaseAsync(new RecordCashPurchaseRequest(
                     c.OperationUuid, invoiceId, occurredAt, net, tax, c.Currency, c.TenderFinancialAccountId!.Value,
-                    c.CapitaliseToInventory), token);
+                    c.CapitaliseToInventory, stockNet, stockAccrued), token);
 
             // L'écriture a échoué : on annule toute la transaction (pas de facture sans écriture).
             if (!posted.IsSuccess) throw new InvalidOperationException(posted.Error!.Message);
@@ -523,6 +548,45 @@ public sealed class PurchasingService(
 
             return Result.Success(new RecordPurchaseInvoiceResult(invoiceId, p.PayableId, p.JournalEntryId, p.EntryNumber, p.WasReplay));
         }, ct));
+    }
+
+    /// <summary>
+    /// Part de la facture qui solde le 4081 (décision du 2026-10-09) : pour chaque ligne d'article stocké, le montant
+    /// facturé et le coût auquel la réception l'a fait entrer en stock (réception citée, sinon réceptions de la
+    /// commande ; pas encore reçu : prix de la commande, à défaut prix facturé). L'écart part en écart sur prix d'achat.
+    /// Une ligne dont les réceptions datent d'avant le 4081 (sans écriture de réception) garde l'ancien traitement.
+    /// </summary>
+    private async Task<(decimal? StockNet, decimal? StockAccrued)> StockPartAsync(RecordPurchaseInvoiceCommand c, CancellationToken ct)
+    {
+        var productIds = c.Lines.Where(l => l.ProductId is not null).Select(l => l.ProductId!.Value).Distinct().ToList();
+        if (productIds.Count == 0) return (null, null);
+        var stocked = await store.StockedProductsAsync(productIds, ct);
+        if (stocked.Count == 0) return (null, null);
+        var basis = await store.InvoiceStockBasisAsync(c.GoodsReceiptId, c.PurchaseOrderId, stocked.ToList(), ct);
+        var order = c.PurchaseOrderId is { } poId ? await store.GetOrderAsync(poId, ct) : null;
+
+        decimal stockNet = 0m, accrued = 0m;
+        foreach (var l in c.Lines)
+        {
+            if (l.ProductId is not { } pid || !stocked.Contains(pid)) continue;
+            var lineNet = R2(l.Quantity * l.UnitPrice - l.Discount);
+            decimal? unitCost;
+            if (basis.TryGetValue(pid, out var b))
+            {
+                if (b.AccruedUnitCost is null && b.HasLegacyReceipt) continue;   // réception d'avant le 4081
+                unitCost = b.AccruedUnitCost;
+            }
+            else
+            {
+                // Pas encore reçu : prix de la commande (en unité de base), à défaut prix facturé — la réception à venir
+                // créditera le 4081 à son coût.
+                var poLine = order?.Lines.FirstOrDefault(x => x.ProductId == pid && x.PurchaseUnitId is null);
+                unitCost = poLine?.UnitPrice;
+            }
+            stockNet += lineNet;
+            accrued += unitCost is { } u ? R2(l.Quantity * u) : lineNet;
+        }
+        return stockNet == 0m && accrued == 0m ? (null, null) : (stockNet, accrued);
     }
 
     // ======================================================================== Retour
@@ -577,9 +641,17 @@ public sealed class PurchasingService(
                     $"Le retour ({net + tax}) dépasse le reste à payer de la dette ({payable.RemainingAmount}).");
         }
 
+        // Compte 4081 : une réception comptabilisée et pas encore facturée est annulée au 4081 (le fournisseur ne
+        // facturera que ce qui reste) ; une réception d'avant le 4081 garde l'ancien traitement.
+        var (accruedReceipt, invoiced) = c.GoodsReceiptId is { } rid
+            ? await store.ReceiptAccountingStateAsync(rid, ct)
+            : (true, true);
+        if (c.PayableId is not null) invoiced = true;
+
         return await Guarded(() => uow.ExecuteInTransactionAsync<Result<Guid>>(async token =>
         {
             var now = clock.UtcNow;
+            var stockCost = 0m;
 
             var ret = new Domain.Purchasing.SupplierReturn
             {
@@ -603,6 +675,7 @@ public sealed class PurchasingService(
             foreach (var l in c.Lines)
             {
                 var cost = await stock.AverageCostAsync(l.ProductId, c.InventoryLocationId, token);
+                stockCost += l.Quantity * cost;
                 ret.Lines.Add(new Domain.Purchasing.SupplierReturnLine
                 {
                     Id = Guid.NewGuid(), SupplierReturnId = ret.Id, CompanyId = Company,
@@ -617,7 +690,8 @@ public sealed class PurchasingService(
             await stock.PostManyAsync(movements, token);
 
             var post = await finance.RecordSupplierReturnAsync(new RecordSupplierReturnRequest(
-                c.OperationUuid, ret.Id, c.SupplierId, now, net, tax, c.Currency, c.PayableId is not null), token);
+                c.OperationUuid, ret.Id, c.SupplierId, now, net, tax, c.Currency, c.PayableId is not null,
+                accruedReceipt ? R2(stockCost) : null, invoiced), token);
             if (!post.IsSuccess) throw new InvalidOperationException(post.Error!.Message);
 
             return Result.Success(ret.Id);

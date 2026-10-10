@@ -13,11 +13,19 @@ public sealed record RecordCreditSaleRequest(
 
 public sealed record RecordSupplierInvoiceRequest(
     Guid OperationUuid, Guid SupplierInvoiceId, Guid SupplierId, DateTimeOffset OccurredAt,
-    decimal NetAmount, decimal TaxAmount, string Currency, DateOnly? DueDate, bool CapitaliseToInventory);
+    decimal NetAmount, decimal TaxAmount, string Currency, DateOnly? DueDate, bool CapitaliseToInventory,
+    decimal? StockNetAmount = null, decimal? StockAccruedAmount = null);
 
+/// <summary>Achat comptant. <paramref name="StockNetAmount"/> / <paramref name="StockAccruedAmount"/> : part
+/// facturée des marchandises stockées et leur coût de réception (solde du 4081), comme pour une facture.</summary>
 public sealed record RecordCashPurchaseRequest(
     Guid OperationUuid, Guid ReferenceId, DateTimeOffset OccurredAt,
-    decimal NetAmount, decimal TaxAmount, string Currency, Guid TenderFinancialAccountId, bool CapitaliseToInventory);
+    decimal NetAmount, decimal TaxAmount, string Currency, Guid TenderFinancialAccountId, bool CapitaliseToInventory,
+    decimal? StockNetAmount = null, decimal? StockAccruedAmount = null);
+
+/// <summary>Réception de marchandises stockées : D stock / C 4081 au coût de réception.</summary>
+public sealed record RecordGoodsReceiptRequest(
+    Guid OperationUuid, Guid GoodsReceiptId, Guid SupplierId, DateTimeOffset OccurredAt, decimal Value, string Currency);
 
 /// <summary>Dépense payée : crée la pièce <c>expense</c> (id = <paramref name="ExpenseId"/>) ET son écriture.</summary>
 public sealed record RecordExpenseRequest(
@@ -45,7 +53,8 @@ public sealed record RecordCashCountRequest(
 
 public sealed record RecordSupplierReturnRequest(
     Guid OperationUuid, Guid SupplierReturnId, Guid SupplierId, DateTimeOffset OccurredAt,
-    decimal NetAmount, decimal TaxAmount, string Currency, bool AgainstPayable);
+    decimal NetAmount, decimal TaxAmount, string Currency, bool AgainstPayable,
+    decimal? StockCost = null, bool Invoiced = true);
 
 public sealed record ReverseEntryRequest(string Reason, DateOnly? ReversalDate);
 

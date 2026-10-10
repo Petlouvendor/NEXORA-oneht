@@ -269,6 +269,67 @@ public sealed class EfPurchasingStore(NexoraDbContext db, ITenantContext tenant)
 
     private sealed record ReturnableRow(Guid ProductId, decimal Quantity);
 
+    public async Task<string> CurrencyCodeAsync(Guid currencyId, CancellationToken ct = default)
+        => await db.Database.SqlQuery<string>($"""
+            SELECT code AS "Value" FROM nexora.currency WHERE id = {currencyId}
+            """).FirstAsync(ct);
+
+    public async Task<IReadOnlySet<Guid>> StockedProductsAsync(IReadOnlyCollection<Guid> productIds, CancellationToken ct = default)
+    {
+        if (productIds.Count == 0) return new HashSet<Guid>();
+        var ids = productIds.Distinct().ToArray();
+        var rows = await db.Database.SqlQuery<Guid>($"""
+            SELECT id AS "Value" FROM nexora.product
+            WHERE company_id = {Company} AND id = ANY({ids}) AND product_type NOT IN ('service', 'non_stock')
+            """).ToListAsync(ct);
+        return rows.ToHashSet();
+    }
+
+    public async Task<IReadOnlyDictionary<Guid, InvoiceStockBasis>> InvoiceStockBasisAsync(
+        Guid? goodsReceiptId, Guid? purchaseOrderId, IReadOnlyCollection<Guid> productIds, CancellationToken ct = default)
+    {
+        if (productIds.Count == 0 || (goodsReceiptId is null && purchaseOrderId is null))
+            return new Dictionary<Guid, InvoiceStockBasis>();
+        var ids = productIds.Distinct().ToArray();
+        // Réception « comptabilisée » = une écriture de réception (source goods_receipt) existe : depuis le 4081.
+        var rows = await db.Database.SqlQuery<BasisRow>($"""
+            SELECT l.product_id AS "ProductId",
+                   SUM(l.quantity_received * l.unit_cost) FILTER (WHERE a.accrued)
+                     / NULLIF(SUM(l.quantity_received) FILTER (WHERE a.accrued), 0) AS "AccruedUnitCost",
+                   COALESCE(bool_or(NOT a.accrued), false) AS "HasLegacy"
+            FROM nexora.goods_receipt_line l
+            JOIN nexora.goods_receipt r ON r.id = l.goods_receipt_id
+            CROSS JOIN LATERAL (SELECT EXISTS (
+                SELECT 1 FROM nexora.journal_entry je
+                WHERE je.company_id = r.company_id AND je.source_type = 'goods_receipt' AND je.source_id = r.id
+                  AND je.status IN ('posted', 'reversed')) AS accrued) a
+            WHERE r.company_id = {Company} AND r.status = 'posted' AND l.product_id = ANY({ids})
+              AND (r.id = {goodsReceiptId} OR ({goodsReceiptId}::uuid IS NULL AND r.purchase_order_id = {purchaseOrderId}))
+            GROUP BY l.product_id
+            """).ToListAsync(ct);
+        return rows.ToDictionary(r => r.ProductId, r => new InvoiceStockBasis(r.AccruedUnitCost, r.HasLegacy));
+    }
+
+    private sealed record BasisRow(Guid ProductId, decimal? AccruedUnitCost, bool HasLegacy);
+
+    public async Task<(bool Accrued, bool Invoiced)> ReceiptAccountingStateAsync(Guid receiptId, CancellationToken ct = default)
+    {
+        var row = await db.Database.SqlQuery<ReceiptStateRow>($"""
+            SELECT EXISTS (SELECT 1 FROM nexora.journal_entry je
+                           WHERE je.company_id = r.company_id AND je.source_type = 'goods_receipt' AND je.source_id = r.id
+                             AND je.status IN ('posted', 'reversed')) AS "Accrued",
+                   EXISTS (SELECT 1 FROM nexora.supplier_invoice i
+                           WHERE i.company_id = r.company_id AND i.status <> 'cancelled'
+                             AND (i.goods_receipt_id = r.id
+                                  OR (r.purchase_order_id IS NOT NULL AND i.purchase_order_id = r.purchase_order_id))) AS "Invoiced"
+            FROM nexora.goods_receipt r
+            WHERE r.id = {receiptId} AND r.company_id = {Company}
+            """).FirstOrDefaultAsync(ct);
+        return row is null ? (false, false) : (row.Accrued, row.Invoiced);
+    }
+
+    private sealed record ReceiptStateRow(bool Accrued, bool Invoiced);
+
     public async Task AddReceiptAsync(GoodsReceipt receipt, CancellationToken ct = default) => await db.GoodsReceipts.AddAsync(receipt, ct);
 
     public Task<Guid?> FindReceiptByOperationAsync(Guid operationUuid, CancellationToken ct = default)
