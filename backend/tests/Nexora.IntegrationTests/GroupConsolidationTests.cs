@@ -296,7 +296,7 @@ public sealed class GroupConsolidationTests(FinanceEngineFixture fx)
                       JOIN nexora.inventory_location l ON l.store_id = r.store_id
                      WHERE r.company_id = {companyId}) AS "ReadyRegisters"
             """).FirstAsync();
-        ready.Should().Be(new ReadyState(29, 35, 4, 1));   // + 8 comptes et 8 correspondances de paie (V076)
+        ready.Should().Be(new ReadyState(30, 36, 4, 1));   // + 8 comptes et 8 correspondances de paie (V076), + 4081 (V096)
         (await db.Database.SqlQuery<bool>($"""
             SELECT EXISTS(SELECT 1 FROM nexora.company_activity WHERE company_id = {companyId} AND is_primary) AS "Value"
             """).FirstAsync()).Should().BeTrue();

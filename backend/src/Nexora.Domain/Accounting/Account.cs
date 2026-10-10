@@ -60,6 +60,8 @@ public static class AccountKeys
     public const string InventoryLoss = "inventory_loss";
     public const string GoodsInTransit = "goods_in_transit";
     public const string PurchasePriceVariance = "purchase_price_variance";
+    /// <summary>Fournisseurs — factures non parvenues (4081) : marchandises reçues, pas encore facturées.</summary>
+    public const string GoodsReceivedNotInvoiced = "goods_received_not_invoiced";
     public const string SalesReturns = "sales_returns";
     public const string StoreCredit = "store_credit";
     public const string TipsPayable = "tips_payable";

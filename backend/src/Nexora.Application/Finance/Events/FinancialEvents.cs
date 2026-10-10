@@ -32,16 +32,28 @@ public sealed record CreditSaleRecorded(
 /// <summary>Facture fournisseur à crédit (§12).</summary>
 public sealed record SupplierInvoiceRecorded(
     Guid CompanyId, Guid OperationUuid, DateTimeOffset OccurredAt,
-    Guid SupplierInvoiceId, Guid SupplierId, Money Net, Money Tax, DateOnly? DueDate, bool CapitaliseToInventory)
+    Guid SupplierInvoiceId, Guid SupplierId, Money Net, Money Tax, DateOnly? DueDate, bool CapitaliseToInventory,
+    Money? StockNet = null, Money? StockAccrued = null)
     : FinancialEvent(CompanyId, OperationUuid, OccurredAt)
 {
     public Money Total => Net.Add(Tax);
 }
 
+/// <summary>
+/// Réception de marchandises stockées (compte 4081, décision du 2026-10-09) : le stock entre en comptabilité dès la
+/// réception, au coût de réception, en contrepartie de « fournisseurs — factures non parvenues ». La facture solde
+/// ensuite ce compte.
+/// </summary>
+public sealed record GoodsReceiptRecorded(
+    Guid CompanyId, Guid OperationUuid, DateTimeOffset OccurredAt,
+    Guid GoodsReceiptId, Guid SupplierId, Money Value)
+    : FinancialEvent(CompanyId, OperationUuid, OccurredAt);
+
 /// <summary>Achat au comptant (§11).</summary>
 public sealed record CashPurchaseRecorded(
     Guid CompanyId, Guid OperationUuid, DateTimeOffset OccurredAt,
-    Guid ReferenceId, Money Net, Money Tax, Guid TenderFinancialAccountId, bool CapitaliseToInventory)
+    Guid ReferenceId, Money Net, Money Tax, Guid TenderFinancialAccountId, bool CapitaliseToInventory,
+    Money? StockNet = null, Money? StockAccrued = null)
     : FinancialEvent(CompanyId, OperationUuid, OccurredAt)
 {
     public Money Total => Net.Add(Tax);
@@ -118,7 +130,8 @@ public sealed record InventoryRevaluationRecorded(
 /// <summary>Retour fournisseur (Phase 5 §28).</summary>
 public sealed record SupplierReturnRecorded(
     Guid CompanyId, Guid OperationUuid, DateTimeOffset OccurredAt,
-    Guid SupplierReturnId, Guid SupplierId, Money Net, Money Tax, bool AgainstPayable)
+    Guid SupplierReturnId, Guid SupplierId, Money Net, Money Tax, bool AgainstPayable,
+    Money? StockCost = null, bool Invoiced = true)
     : FinancialEvent(CompanyId, OperationUuid, OccurredAt)
 {
     public Money Total => Net.Add(Tax);

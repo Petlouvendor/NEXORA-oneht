@@ -34,3 +34,36 @@ dates du journal d'audit.
 dépense du soir datée du 30 avril (reste dans son mois), session PostgreSQL au fuseau de l'entreprise et `current_date`
 égal au jour applicatif, fuseau inconnu refusé. Les trois tests qui échouaient chaque soir passent désormais à toute
 heure ; les tests qui calculaient leur « aujourd'hui » en UTC utilisent `TestDates.Today`.
+
+## Étape 2 — Compte 4081 « Fournisseurs — factures non parvenues » (décision du 2026-10-09)
+
+**Défaut.** Une réception augmentait le stock sans écriture ; le stock n'entrait en comptabilité qu'à la facture. Le
+compte 3110 restait en retard sur la valeur du stock tant que les factures n'étaient pas saisies (définitivement pour
+une réception jamais facturée). Le contrôle E2E « stock = 3110 » était ignoré depuis la phase 19.
+
+**Correction (option retenue par la direction).**
+
+| Opération | Écriture |
+|---|---|
+| Réception d'articles stockés | D 3110 Stock / C 4081, au coût de réception — même transaction que l'entrée en stock |
+| Facture (ou achat comptant) | D 4081 au coût de réception des articles facturés, D/C écart de prix en charge (`purchase_price_variance`, 6800 par défaut), D 4456 TVA / C 4011 (ou trésorerie) |
+| Lignes de frais, services, articles non stockés | Inchangé : stock ou achats selon « capitaliser en stock » |
+| Retour avant facture | D 4081 / C 3110 au coût de sortie du stock |
+| Retour après facture | D 4011 (ou attente) / C 3110 au coût de sortie, C 4456, écart de prix en charge |
+
+Coût de référence d'une ligne facturée : coût moyen des réceptions comptabilisées (la réception citée, sinon celles de
+la commande) ; pas encore reçu : prix de la commande, à défaut prix facturé — la réception créditera ensuite le 4081.
+
+**Reprise de l'existant.** V096 crée le 4081 et sa correspondance pour chaque entreprise, l'ajoute à l'initialisation
+des nouvelles entreprises et le rattache au compte de groupe du 4011. Aucune écriture passée n'est modifiée : une
+facture dont les réceptions sont antérieures au 4081 (sans écriture de réception) garde l'ancien traitement, pour ne
+pas laisser de solde débiteur artificiel au 4081.
+
+**Limites connues.** Une facture saisie avant la réception solde le 4081 au prix de la commande ; si le coût saisi à la
+réception diffère ensuite de ce prix, l'écart reste au 4081 (à solder par une écriture manuelle). Le retour avant facture est valorisé au coût moyen du stock
+au moment du retour, qui peut différer légèrement du coût de la réception.
+
+**Tests.** `GoodsReceivedNotInvoicedTests` : réception → 3110/4081 ; facture au coût de réception → 4081 soldé, dette
+créée, 3110 inchangé ; écart de prix → 6800 ; retour avant facture → 4081 / 3110. Contrôle E2E « stock = 3110 »
+réactivé, sur installation neuve.
+

@@ -23,6 +23,7 @@ public sealed class PostingRuleSet : IPostingRuleSet
             CashSaleRecorded e => await CashSale(e, ctx, ct),
             CreditSaleRecorded e => await CreditSale(e, ctx, ct),
             SupplierInvoiceRecorded e => await SupplierInvoice(e, ctx, ct),
+            GoodsReceiptRecorded e => await GoodsReceipt(e, ctx, ct),
             CashPurchaseRecorded e => await CashPurchase(e, ctx, ct),
             CustomerPaymentReceived e => await CustomerPayment(e, ctx, ct),
             SupplierPaymentMade e => await SupplierPayment(e, ctx, ct),
@@ -106,13 +107,61 @@ public sealed class PostingRuleSet : IPostingRuleSet
         var (netBase, _) = await ctx.ToFunctional(e.Net, e.OccurredAt, ct);
         var (taxBase, _) = await ctx.ToFunctional(e.Tax, e.OccurredAt, ct);
 
-        var debitKey = e.CapitaliseToInventory ? AccountKeys.Inventory : AccountKeys.Purchases;
-        d.Debit(await ctx.Account(debitKey, ct), e.Net, netBase, rateId);
+        await DebitPurchase(d, ctx, e.Net, netBase, rateId, e.StockNet, e.StockAccrued, e.CapitaliseToInventory, e.OccurredAt, ct);
         if (!e.Tax.IsZero)
             d.Debit(await ctx.Account(AccountKeys.PurchaseTaxInput, ct), e.Tax, taxBase, rateId);
         d.Credit(await ctx.Account(AccountKeys.AccountsPayable, ct), e.Total, totalBase, rateId,
             thirdPartyType: "supplier", thirdPartyId: e.SupplierId);
         return d;
+    }
+
+    /// <summary>
+    /// Réception (compte 4081) : D Stock / C Fournisseurs — factures non parvenues, au coût de réception. Le stock
+    /// et le compte 3110 avancent ensemble ; la facture soldera le 4081.
+    /// </summary>
+    private static async Task<JournalEntryDraft> GoodsReceipt(GoodsReceiptRecorded e, PostingContext ctx, CancellationToken ct)
+    {
+        var d = new JournalEntryDraft("AC", ctx.DateOf(e.OccurredAt), ctx.FunctionalCurrency,
+            "goods_receipt", e.GoodsReceiptId, "Réception de marchandises");
+        var (valueBase, rateId) = await ctx.ToFunctional(e.Value, e.OccurredAt, ct);
+        d.Debit(await ctx.Account(AccountKeys.Inventory, ct), e.Value, valueBase, rateId);
+        d.Credit(await ctx.Account(AccountKeys.GoodsReceivedNotInvoiced, ct), e.Value, valueBase, rateId,
+            thirdPartyType: "supplier", thirdPartyId: e.SupplierId);
+        return d;
+    }
+
+    /// <summary>
+    /// Débit d'un achat facturé. Marchandises stockées : solde du 4081 pour leur coût de réception
+    /// (<paramref name="stockAccrued"/>), et l'écart entre prix facturé et coût de réception en charge (écart sur prix
+    /// d'achat). Le reste de la facture (frais, services, articles non stockés) : stock ou achats selon
+    /// <paramref name="capitalise"/>. Sans montants stockés, comportement d'avant le 4081.
+    /// </summary>
+    private static async Task DebitPurchase(JournalEntryDraft d, PostingContext ctx, Money net, Money netBase, Guid? rateId,
+        Money? stockNet, Money? stockAccrued, bool capitalise, DateTimeOffset at, CancellationToken ct)
+    {
+        var stock = stockNet ?? Money.Zero(net.Currency);
+        var accrued = stockAccrued ?? stock;
+        var variance = stock - accrued;
+        var other = net - stock;
+        var (accruedBase, _) = await ctx.ToFunctional(accrued, at, ct);
+        var (varianceBase, _) = await ctx.ToFunctional(variance, at, ct);
+        var (otherBase, _) = await ctx.ToFunctional(other, at, ct);
+        // Arrondi de conversion : l'écart d'un centime va à la première ligne non nulle (écart, autre, 4081).
+        var rest = netBase - accruedBase - varianceBase - otherBase;
+        if (!rest.IsZero)
+        {
+            if (!variance.IsZero) varianceBase += rest;
+            else if (!other.IsZero) otherBase += rest;
+            else accruedBase += rest;
+        }
+        if (!accrued.IsZero)
+            d.Debit(await ctx.Account(AccountKeys.GoodsReceivedNotInvoiced, ct), accrued, accruedBase, rateId,
+                description: "Marchandises reçues facturées");
+        if (!variance.IsZero)
+            d.Debit(await ctx.Account(AccountKeys.PurchasePriceVariance, ct), variance, varianceBase, rateId,
+                description: "Écart sur prix d'achat");
+        if (!other.IsZero)
+            d.Debit(await ctx.Account(capitalise ? AccountKeys.Inventory : AccountKeys.Purchases, ct), other, otherBase, rateId);
     }
 
     private static async Task<JournalEntryDraft> CashPurchase(CashPurchaseRecorded e, PostingContext ctx, CancellationToken ct)
@@ -124,8 +173,7 @@ public sealed class PostingRuleSet : IPostingRuleSet
         var (netBase, _) = await ctx.ToFunctional(e.Net, e.OccurredAt, ct);
         var (taxBase, _) = await ctx.ToFunctional(e.Tax, e.OccurredAt, ct);
 
-        var debitKey = e.CapitaliseToInventory ? AccountKeys.Inventory : AccountKeys.Purchases;
-        d.Debit(await ctx.Account(debitKey, ct), e.Net, netBase, rateId);
+        await DebitPurchase(d, ctx, e.Net, netBase, rateId, e.StockNet, e.StockAccrued, e.CapitaliseToInventory, e.OccurredAt, ct);
         if (!e.Tax.IsZero)
             d.Debit(await ctx.Account(AccountKeys.PurchaseTaxInput, ct), e.Tax, taxBase, rateId);
         d.Credit(await ctx.TenderAccount(e.TenderFinancialAccountId, ct), e.Total, totalBase, rateId);
@@ -506,11 +554,38 @@ public sealed class PostingRuleSet : IPostingRuleSet
         var (netBase, _) = await ctx.ToFunctional(e.Net, e.OccurredAt, ct);
         var (taxBase, _) = await ctx.ToFunctional(e.Tax, e.OccurredAt, ct);
 
+        if (e.StockCost is { } cost)
+        {
+            var (costBase, _) = await ctx.ToFunctional(cost, e.OccurredAt, ct);
+            if (!e.Invoiced && !e.AgainstPayable)
+            {
+                // Retour avant facture : la réception est annulée pour ce qui repart, au coût de sortie du stock ; le
+                // fournisseur ne facturera que ce qui reste.
+                d.Debit(await ctx.Account(AccountKeys.GoodsReceivedNotInvoiced, ct), cost, costBase, rateId,
+                    thirdPartyType: "supplier", thirdPartyId: e.SupplierId);
+                d.Credit(await ctx.Account(AccountKeys.Inventory, ct), cost, costBase, rateId);
+                return d;
+            }
+        }
+
         // Contrepartie : dette fournisseur si retour sur achat à crédit, sinon compte d'attente (avoir à recevoir).
         var counterpart = e.AgainstPayable ? AccountKeys.AccountsPayable : AccountKeys.Suspense;
         d.Debit(await ctx.Account(counterpart, ct), e.Total, totalBase, rateId,
             thirdPartyType: "supplier", thirdPartyId: e.SupplierId);
-        d.Credit(await ctx.Account(AccountKeys.Inventory, ct), e.Net, netBase, rateId);
+        if (e.StockCost is { } stockCost)
+        {
+            // Retour après facture : le stock sort à son coût ; l'écart avec le prix crédité par le fournisseur va en
+            // écart sur prix d'achat (crédit si l'avoir dépasse le coût).
+            var (stockBase, _) = await ctx.ToFunctional(stockCost, e.OccurredAt, ct);
+            var gap = e.Net - stockCost;
+            if (gap.IsZero) stockBase = netBase;   // arrondi de conversion absorbé par la sortie de stock
+            d.Credit(await ctx.Account(AccountKeys.Inventory, ct), stockCost, stockBase, rateId);
+            if (!gap.IsZero)
+                d.Credit(await ctx.Account(AccountKeys.PurchasePriceVariance, ct), gap, netBase - stockBase, rateId,
+                    description: "Écart sur prix d'achat (retour)");
+        }
+        else
+            d.Credit(await ctx.Account(AccountKeys.Inventory, ct), e.Net, netBase, rateId);
         if (!e.Tax.IsZero)
             d.Credit(await ctx.Account(AccountKeys.PurchaseTaxInput, ct), e.Tax, taxBase, rateId);
         return d;
