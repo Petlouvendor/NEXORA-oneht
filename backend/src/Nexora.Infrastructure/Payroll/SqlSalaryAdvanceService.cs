@@ -30,7 +30,7 @@ public sealed class SqlSalaryAdvanceService(
     IApprovalWorkflowService approvals,
     IFinancialEngine engine,
     IDateTimeProvider clock,
-    ILogger<SqlSalaryAdvanceService> logger) : ISalaryAdvanceService
+    ILogger<SqlSalaryAdvanceService> logger, IBusinessCalendar calendar) : ISalaryAdvanceService
 {
     private Guid Company => PayrollRules.Company(tenant);
     private Guid UserId => PayrollRules.User(tenant);
@@ -463,7 +463,7 @@ public sealed class SqlSalaryAdvanceService(
                     """, token);
                 if (n != 1) throw new PayrollRefusal(Error.Conflict("payroll.advance_state", "Avance versée entre-temps."));
 
-                var first = row.FirstRecoveryDate ?? DateOnly.FromDateTime(paidAt.UtcDateTime);
+                var first = row.FirstRecoveryDate ?? calendar.DateOf(paidAt);
                 var schedule = AdvanceRules.BuildSchedule(amount, row.RecoveryMethod, row.InstallmentsCount, first, frequency);
                 foreach (var (seq, due, value) in schedule)
                     await db.Database.ExecuteSqlAsync($"""

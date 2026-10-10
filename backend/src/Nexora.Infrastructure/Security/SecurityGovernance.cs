@@ -86,7 +86,7 @@ public sealed class SqlSecurityFindingService(NexoraDbContext db, ITenantContext
 // -----------------------------------------------------------------------------
 
 /// <summary>Inventaire de certificats (§53). Table plateforme.</summary>
-public sealed class SqlSecurityCertificateService(NexoraDbContext db, IUnitOfWork uow, IDateTimeProvider clock)
+public sealed class SqlSecurityCertificateService(NexoraDbContext db, IUnitOfWork uow, IBusinessCalendar calendar)
     : ISecurityCertificateService
 {
     private static readonly string[] UsageTypes = ["tls", "signing", "webhook", "other"];
@@ -111,7 +111,7 @@ public sealed class SqlSecurityCertificateService(NexoraDbContext db, IUnitOfWor
     {
         if (!UsageTypes.Contains(r.UsageType)) return Error.Validation("certificate.usage_type", "Usage invalide (tls/signing/webhook/other).");
         if (string.IsNullOrWhiteSpace(r.Name)) return Error.Validation("certificate.name", "Nom requis.");
-        var today = DateOnly.FromDateTime(clock.UtcNow.UtcDateTime);
+        var today = calendar.Today;
         var status = r.NotAfter <= today ? "expired" : r.NotAfter <= today.AddDays(ExpiringSoonDays) ? "expiring_soon" : "active";
 
         var id = Guid.NewGuid();
@@ -128,7 +128,7 @@ public sealed class SqlSecurityCertificateService(NexoraDbContext db, IUnitOfWor
         var existing = await db.Database.SqlQueryRaw<Row>(Select + " WHERE id = {0}", id).FirstOrDefaultAsync(ct);
         if (existing is null) return Error.NotFound("certificate.not_found", "Certificat introuvable.");
 
-        var today = DateOnly.FromDateTime(clock.UtcNow.UtcDateTime);
+        var today = calendar.Today;
         var status = r.NotAfter <= today ? "expired" : r.NotAfter <= today.AddDays(ExpiringSoonDays) ? "expiring_soon" : "active";
         var newId = Guid.NewGuid();
         await uow.ExecuteInTransactionAsync(async token =>
@@ -147,7 +147,7 @@ public sealed class SqlSecurityCertificateService(NexoraDbContext db, IUnitOfWor
 
     public async Task<int> RefreshExpiryStatusAsync(CancellationToken ct = default)
     {
-        var today = DateOnly.FromDateTime(clock.UtcNow.UtcDateTime);
+        var today = calendar.Today;
         var n = await db.Database.ExecuteSqlAsync($"""
             UPDATE nexora.security_certificate
             SET status = CASE

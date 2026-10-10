@@ -258,7 +258,7 @@ public sealed class GroupConsolidationTests(FinanceEngineFixture fx)
         summary.Companies.Select(c => c.CompanyId).Should().Contain([Pharma, Resto, Market]);
 
         var taskId = await tasks.CreateAsync(Group, new CreateGroupTaskRequest(
-            "Clôturer mars — Restaurant", null, Resto, fx.UserId, "high", DateOnly.FromDateTime(DateTime.UtcNow).AddDays(15)));
+            "Clôturer mars — Restaurant", null, Resto, fx.UserId, "high", TestDates.Today.AddDays(15)));
         taskId.IsSuccess.Should().BeTrue(taskId.Error?.Message);
         (await tasks.ListAsync(Group)).Should().Contain(t => t.Id == taskId.Value && t.Priority == "high");
 
@@ -560,7 +560,7 @@ public sealed class GroupConsolidationTests(FinanceEngineFixture fx)
             INSERT INTO nexora.app_user (id, email, full_name, password_hash, status)
             VALUES ({stranger}, {$"x{stranger:N}@ailleurs.test"}::citext, 'Hors groupe', 'x', 'active')
             """);
-        var due = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(5);
+        var due = TestDates.Today.AddDays(5);
         (await tasks.CreateAsync(Group, new CreateGroupTaskRequest("Contrôle", null, null, stranger, "normal", due))).Error!.Code
             .Should().Be("group.task_assignee");
         (await tasks.CreateAsync(Group, new CreateGroupTaskRequest("Contrôle", null, null, null, "normal", new DateOnly(2020, 1, 1)))).Error!.Code

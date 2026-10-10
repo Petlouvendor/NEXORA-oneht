@@ -36,14 +36,14 @@ public sealed class QuoteService(
     IUnitOfWork uow,
     ITenantContext tenant,
     IDateTimeProvider clock,
-    ILogger<QuoteService> logger)
+    ILogger<QuoteService> logger, IBusinessCalendar calendar)
 {
     private Guid Company => tenant.ActiveCompanyId
         ?? throw TenantErrors.ActiveCompanyRequired();
 
     private static decimal Round(decimal v) => Math.Round(v, 2, MidpointRounding.ToEven);
 
-    private DateOnly Today => DateOnly.FromDateTime(clock.UtcNow.UtcDateTime);
+    private DateOnly Today => calendar.Today;
 
     public async Task<Result<Guid>> CreateAsync(CreateQuoteRequest r, CancellationToken ct = default)
     {
@@ -203,7 +203,7 @@ public sealed class QuoteService(
 
     /// <summary>Marque « expiré » les devis envoyés dont la validité est dépassée (§5) — branchable au planificateur.</summary>
     public Task<int> ExpireOverdueAsync(CancellationToken ct = default)
-        => store.ExpireOverdueAsync(DateOnly.FromDateTime(clock.UtcNow.UtcDateTime), ct);
+        => store.ExpireOverdueAsync(calendar.Today, ct);
 
     /// <summary>Un devis envoyé dont la validité est dépassée passe « expiré » (sans attendre le planificateur).</summary>
     private async Task<bool> ExpireIfOverdueAsync(Quote quote, CancellationToken ct)

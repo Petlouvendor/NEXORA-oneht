@@ -13,7 +13,7 @@ using Nexora.Infrastructure.Persistence;
 namespace Nexora.Infrastructure.Customers;
 
 /// <summary>Actions de recouvrement (§13) : appel, SMS, visite, note… jamais modifiées ni supprimées.</summary>
-public sealed class SqlCollectionActionService(NexoraDbContext db, ITenantContext tenant, IDateTimeProvider clock) : ICollectionActionService
+public sealed class SqlCollectionActionService(NexoraDbContext db, ITenantContext tenant, IBusinessCalendar calendar) : ICollectionActionService
 {
     private Guid Company => CustomerAccountRules.Company(tenant);
 
@@ -26,7 +26,7 @@ public sealed class SqlCollectionActionService(NexoraDbContext db, ITenantContex
         if (outcome is not null && !CustomerAccountRules.ActionOutcomes.Contains(outcome))
             return Error.Validation("collection.outcome", $"Résultat « {r.Outcome} » inconnu.");
         if (string.IsNullOrWhiteSpace(r.Note)) return Error.Validation("collection.note", "La note de suivi est obligatoire.");
-        if (r.NextActionDate is { } next && next < DateOnly.FromDateTime(clock.UtcNow.UtcDateTime))
+        if (r.NextActionDate is { } next && next < calendar.Today)
             return Error.Validation("collection.next_date", "La prochaine action ne peut pas être dans le passé.");
         if (!await db.Database.SqlQuery<bool>($"""
                 SELECT EXISTS(SELECT 1 FROM nexora.customer WHERE id = {customerId} AND company_id = {Company}) AS "Value"
@@ -52,7 +52,7 @@ public sealed class SqlCollectionActionService(NexoraDbContext db, ITenantContex
 
     private IQueryable<CollectionActionDto> Query(Guid? customerId, Guid? id, bool onlyDue)
     {
-        var today = DateOnly.FromDateTime(clock.UtcNow.UtcDateTime);
+        var today = calendar.Today;
         return db.Database.SqlQuery<CollectionActionDto>($"""
             SELECT a.id AS "Id", a.customer_id AS "CustomerId", c.name AS "CustomerName", a.receivable_id AS "ReceivableId",
                    r.credit_number AS "CreditNumber", a.action_type AS "ActionType", a.outcome AS "Outcome", a.note AS "Note",
@@ -75,7 +75,7 @@ public sealed class SqlCollectionActionService(NexoraDbContext db, ITenantContex
 /// Rapports clients (§26). Chaque rapport rend un tableau (colonnes + lignes) directement exportable ;
 /// les montants sont lus dans les tables sources, jamais recalculés côté navigateur.
 /// </summary>
-public sealed class SqlCustomerReports(NexoraDbContext db, ITenantContext tenant, IDateTimeProvider clock) : ICustomerReports
+public sealed class SqlCustomerReports(NexoraDbContext db, ITenantContext tenant, IBusinessCalendar calendar) : ICustomerReports
 {
     private Guid Company => CustomerAccountRules.Company(tenant);
     private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
@@ -102,7 +102,7 @@ public sealed class SqlCustomerReports(NexoraDbContext db, ITenantContext tenant
     {
         var def = Definitions.FirstOrDefault(d => d.Key == key);
         if (def is null) return Error.NotFound("customer_report.unknown", $"Rapport « {key} » inconnu.");
-        var today = DateOnly.FromDateTime(clock.UtcNow.UtcDateTime);
+        var today = calendar.Today;
         var start = from ?? today.AddDays(-30);
         var end = to ?? today;
         if (end < start) return Error.Validation("customer_report.period", "La fin de période précède son début.");
@@ -404,8 +404,8 @@ public sealed class SqlCustomerReports(NexoraDbContext db, ITenantContext tenant
 /// + responsable du client.
 /// </summary>
 public sealed class SqlCreditAlertScanner(
-    NexoraDbContext db, ITenantContext tenant, INotificationService notifications, IDateTimeProvider clock,
-    Application.Administration.ISettingsService settings, ILogger<SqlCreditAlertScanner> logger) : ICreditAlertScanner
+    NexoraDbContext db, ITenantContext tenant, INotificationService notifications,
+    Application.Administration.ISettingsService settings, ILogger<SqlCreditAlertScanner> logger, IBusinessCalendar calendar) : ICreditAlertScanner
 {
     private sealed record OverdueRow(Guid Id, Guid CustomerId, string Name, Guid? ManagerId, string CreditNumber, decimal Remaining,
         string Currency, DateOnly DueDate);
@@ -415,7 +415,7 @@ public sealed class SqlCreditAlertScanner(
     public async Task<int> ScanAsync(CancellationToken ct = default)
     {
         var company = CustomerAccountRules.Company(tenant);
-        var today = DateOnly.FromDateTime(clock.UtcNow.UtcDateTime);
+        var today = calendar.Today;
         var collectors = await CustomerAccountRules.HoldersAsync(db, tenant, Permissions.Credit.Collect, null, ct);
         var sent = 0;
 

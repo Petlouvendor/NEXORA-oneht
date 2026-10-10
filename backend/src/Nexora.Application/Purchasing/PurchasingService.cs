@@ -119,7 +119,7 @@ public sealed class PurchasingService(
     IUnitOfWork uow,
     ITenantContext tenant,
     IDateTimeProvider clock,
-    IUnitConverter converter)
+    IUnitConverter converter, IBusinessCalendar calendar)
 {
     private Guid Company => tenant.ActiveCompanyId
         ?? throw TenantErrors.ActiveCompanyRequired();
@@ -173,7 +173,7 @@ public sealed class PurchasingService(
             DocumentNumber = await store.NextNumberAsync("purchase_order", ct),
             Status = c.Submit ? PurchaseOrderStatus.Submitted : PurchaseOrderStatus.Draft,
             CurrencyId = header.Value,
-            OrderDate = DateOnly.FromDateTime(clock.UtcNow.UtcDateTime),
+            OrderDate = calendar.Today,
             ExpectedDate = c.ExpectedDate,
             Notes = c.Notes,
             CreatedBy = tenant.UserId,
@@ -221,7 +221,7 @@ public sealed class PurchasingService(
             return Error.Conflict("purchasing.supplier_inactive", $"Ce fournisseur est « {supplier.Status} » : aucune commande possible.");
         var currency = await store.CurrencyIdOrNullAsync(c.Currency, ct);
         if (currency is null) return Error.Validation("purchasing.currency_unknown", $"Devise « {c.Currency} » inconnue.");
-        if (c.ExpectedDate is { } d && d < DateOnly.FromDateTime(clock.UtcNow.UtcDateTime).AddDays(-1))
+        if (c.ExpectedDate is { } d && d < calendar.Today.AddDays(-1))
             return Error.Validation("purchasing.expected_date", "La date de livraison prévue est déjà passée.");
         return Result.Success(currency.Value);
     }
@@ -390,7 +390,7 @@ public sealed class PurchasingService(
                 Guid? lotId = null;
                 if (accepted > 0 && !string.IsNullOrWhiteSpace(l.LotNumber))
                     lotId = await store.EnsureLotAsync(l.ProductId, l.LotNumber!, l.ExpirationDate,
-                        c.SupplierId, DateOnly.FromDateTime(receivedAt.UtcDateTime), token);
+                        c.SupplierId, calendar.DateOf(receivedAt), token);
 
                 if (accepted > 0)
                 {
@@ -494,7 +494,7 @@ public sealed class PurchasingService(
             invoiceLines.Add(new SupplierInvoiceLineRow(l.ProductId, string.IsNullOrWhiteSpace(l.Description) ? "" : l.Description.Trim(),
                 l.Quantity, l.UnitPrice, l.TaxId, l.Discount, lineNet));
         }
-        var occurredAt = c.InvoiceDate.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+        var occurredAt = BusinessDate.Noon(c.InvoiceDate);   // jour de la facture, quel que soit le fuseau
 
         return await Guarded(() => uow.ExecuteInTransactionAsync<Result<RecordPurchaseInvoiceResult>>(async token =>
         {

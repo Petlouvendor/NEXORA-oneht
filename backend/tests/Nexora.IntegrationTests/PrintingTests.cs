@@ -280,7 +280,7 @@ public sealed class PrintingTests(FinanceEngineFixture fx)
         var receipt = (await po.ReceiveAsync(new ReceiveGoodsCommand(Guid.NewGuid(), Supplier1, Officine, order,
             [new ReceiveLine(product, null, 10m, 500m, null, null)], null, null))).Value;
         var invoice = (await po.RecordInvoiceAsync(new RecordPurchaseInvoiceCommand(
-            Guid.NewGuid(), Supplier1, order, "HTG", DateOnly.FromDateTime(DateTime.UtcNow), DateOnly.FromDateTime(DateTime.UtcNow.AddDays(30)),
+            Guid.NewGuid(), Supplier1, order, "HTG", TestDates.Today, DateOnly.FromDateTime(DateTime.UtcNow.AddDays(30)),
             OnCredit: true, null, [new InvoiceLine(product, "Achat reçu", 10m, 500m, null, 0m, 0m)], true,
             SupplierReference: $"FA-{Guid.NewGuid():N}"[..14]))).Value!;
         var paid = await po.PayPayableAsync(invoice.PayableId!.Value, new PayPayableRequest(Guid.NewGuid(), 2_000m, CashAccount, "CHQ-77"));

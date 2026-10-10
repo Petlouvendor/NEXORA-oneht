@@ -134,7 +134,7 @@ public sealed class EfQuoteStore(
 
 public sealed class SqlDocumentService(
     NexoraDbContext db, IUnitOfWork uow, ITenantContext tenant,
-    IDocumentNumberGenerator numbers, IDateTimeProvider clock, IPermissionService permissions) : IDocumentService
+    IDocumentNumberGenerator numbers, IDateTimeProvider clock, IPermissionService permissions, IBusinessCalendar calendar) : IDocumentService
 {
     private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
@@ -432,7 +432,7 @@ public sealed class SqlDocumentService(
             FROM nexora.sales_order_line l WHERE l.sales_order_id = {id} ORDER BY l.description
             """).ToListAsync(ct);
         return new SourceData("customer", o.CustomerId, o.CustomerName, o.Currency, o.CurrencyId,
-            o.Subtotal - o.DiscountTotal, o.TaxTotal, o.Total, DateOnly.FromDateTime(clock.UtcNow.UtcDateTime),
+            o.Subtotal - o.DiscountTotal, o.TaxTotal, o.Total, calendar.Today,
             null, o.EstablishmentId, lines, o.DocumentNumber);
     }
 
@@ -453,7 +453,7 @@ public sealed class SqlDocumentService(
             FROM nexora.quote_line l WHERE l.quote_id = {id} ORDER BY l.line_number
             """).ToListAsync(ct);
         return new SourceData("customer", q.CustomerId, q.CustomerName, q.Currency, q.CurrencyId,
-            q.Subtotal - q.DiscountTotal, q.TaxTotal, q.Total, DateOnly.FromDateTime(clock.UtcNow.UtcDateTime),
+            q.Subtotal - q.DiscountTotal, q.TaxTotal, q.Total, calendar.Today,
             null, q.EstablishmentId, lines, q.DocumentNumber);
     }
 

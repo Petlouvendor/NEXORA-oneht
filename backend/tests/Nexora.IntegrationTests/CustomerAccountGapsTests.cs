@@ -34,7 +34,7 @@ public sealed class CustomerAccountGapsTests(FinanceEngineFixture fx)
     private static readonly Guid BoxUnit = Guid.Parse("dce00000-0000-0000-0000-00000000a011");
     private static readonly Guid CashAccount = Guid.Parse("dce00000-0000-0000-0000-00000000a051");
     private static readonly Guid CashMethod = Guid.Parse("dce00000-0000-0000-0000-00000000a081");
-    private static DateOnly Today => DateOnly.FromDateTime(DateTime.UtcNow);
+    private static DateOnly Today => TestDates.Today;
 
     private AsyncServiceScope Scope() => fx.Provider.CreateAsyncScope();
 

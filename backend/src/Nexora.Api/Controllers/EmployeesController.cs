@@ -1,3 +1,4 @@
+using Nexora.Application.Abstractions;
 using Asp.Versioning;
 using Microsoft.AspNetCore.Mvc;
 using Nexora.Api.Security;
@@ -102,8 +103,8 @@ public sealed class EmployeesController(
     /// <summary>Rémunération applicable à une date, reconstituée depuis l'historique (§8).</summary>
     [HttpGet("employees/{id:guid}/compensation")]
     [RequirePermission(Permissions.Payroll.ViewSalaries)]
-    public async Task<IActionResult> Compensation(Guid id, [FromQuery] DateOnly? date, CancellationToken ct)
-        => FromResult(await employees.ApplicableSalaryAsync(id, date ?? DateOnly.FromDateTime(DateTime.UtcNow), ct));
+    public async Task<IActionResult> Compensation(Guid id, [FromQuery] DateOnly? date, [FromServices] IBusinessCalendar calendar, CancellationToken ct)
+        => FromResult(await employees.ApplicableSalaryAsync(id, date ?? await calendar.TodayAsync(ct), ct));
 
     [HttpGet("employees/{id:guid}/pay-elements")]
     [RequirePermission(Permissions.Payroll.ViewSalaries)]

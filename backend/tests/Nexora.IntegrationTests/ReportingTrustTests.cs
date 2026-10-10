@@ -83,7 +83,7 @@ public sealed class ReportingTrustTests(FinanceEngineFixture fx)
         var dq = sc.ServiceProvider.GetRequiredService<IDataQualityService>();
 
         var draft = await journal.CreateDraftAsync(new CreateJournalEntryRequest(
-            "OD", DateOnly.FromDateTime(DateTime.UtcNow), "HTG", "Brouillon qualité test",
+            "OD", TestDates.Today, "HTG", "Brouillon qualité test",
             [new JournalEntryLineInput("5711", 100m, 0m), new JournalEntryLineInput("7011", 0m, 100m)]));
         draft.IsSuccess.Should().BeTrue(draft.Error?.Message);
 

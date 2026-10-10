@@ -18,7 +18,7 @@ public sealed class ReversalService(
     IDocumentNumberGenerator numbers,
     IUnitOfWork uow,
     ITenantContext tenant,
-    ILogger<ReversalService> logger) : IReversalService
+    ILogger<ReversalService> logger, IBusinessCalendar calendar) : IReversalService
 {
     public async Task<Result<Guid>> ReverseAsync(
         Guid journalEntryId, string reason, DateOnly? reversalDate = null, CancellationToken ct = default)
@@ -31,7 +31,7 @@ public sealed class ReversalService(
         if (source.Status != JournalEntryStatus.Posted)
             return Error.Conflict("accounting.entry_not_posted", "Seule une écriture validée peut être extournée.");
 
-        var date = reversalDate ?? DateOnly.FromDateTime(DateTime.UtcNow);
+        var date = reversalDate ?? calendar.Today;
 
         try
         {

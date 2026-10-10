@@ -95,7 +95,7 @@ public sealed class CustomerCollectionsTests(FinanceEngineFixture fx)
         var rid = await NewReceivable(cust, 100000m, dueOffsetDays: -10);
 
         var promise = await col.CreatePromiseAsync(new CreatePromiseRequest(
-            cust, 100000m, DateOnly.FromDateTime(DateTime.UtcNow).AddDays(7), "phone", [rid], "Appel du 30"));
+            cust, 100000m, TestDates.Today.AddDays(7), "phone", [rid], "Appel du 30"));
         promise.IsSuccess.Should().BeTrue(promise.Error?.Message);
 
         await PayReceivable(rid, 100000m);
@@ -113,7 +113,7 @@ public sealed class CustomerCollectionsTests(FinanceEngineFixture fx)
         var cust = await NewCustomer();
         var rid = await NewReceivable(cust, 50000m, -3);
         var promise = (await col.CreatePromiseAsync(new CreatePromiseRequest(
-            cust, 50000m, DateOnly.FromDateTime(DateTime.UtcNow).AddDays(3), "email", [rid], null))).Value;
+            cust, 50000m, TestDates.Today.AddDays(3), "email", [rid], null))).Value;
 
         // Finalisation phase 9 : avant l'échéance, le client a encore le temps — la promesse n'est pas « non tenue ».
         (await col.SettlePromiseAsync(promise)).Error!.Code.Should().Be("credit.promise_not_due");
@@ -178,7 +178,7 @@ public sealed class CustomerCollectionsTests(FinanceEngineFixture fx)
         var q = s.ServiceProvider.GetRequiredService<ICreditPortfolioQueries>();
         var cust = await NewCustomer();
         var rid = await NewReceivable(cust, 120000m, dueOffsetDays: -45);   // 31–60 j
-        await col.CreatePromiseAsync(new CreatePromiseRequest(cust, 120000m, DateOnly.FromDateTime(DateTime.UtcNow).AddDays(5), "phone", [rid], null));
+        await col.CreatePromiseAsync(new CreatePromiseRequest(cust, 120000m, TestDates.Today.AddDays(5), "phone", [rid], null));
 
         var collections = await q.CollectionsAsync(onlyOverdue: true);
         var row = collections.Should().Contain(x => x.CustomerId == cust).Which;
@@ -219,7 +219,7 @@ public sealed class CustomerCollectionsTests(FinanceEngineFixture fx)
         var other = await NewCustomer();
         var rid = await NewReceivable(cust, 20000m, -10);
         var foreign = await NewReceivable(other, 5000m, -10);
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var today = TestDates.Today;
 
         (await col.CreatePromiseAsync(new CreatePromiseRequest(cust, 5000m, today.AddDays(-1), "phone", [rid], null)))
             .Error!.Code.Should().Be("credit.promise_date");
@@ -279,7 +279,7 @@ public sealed class CustomerCollectionsTests(FinanceEngineFixture fx)
         (await col.OpenDisputeAsync(new OpenDisputeRequest(cust, rid, 1000m, "Autre motif"))).Error!.Code.Should().Be("credit.dispute_exists");
         (await col.WriteOffReceivableAsync(rid, new WriteOffReceivableRequest(Guid.NewGuid(), 20000m, "Client disparu")))
             .Error!.Code.Should().Be("credit.receivable_in_dispute");
-        (await col.CreatePromiseAsync(new CreatePromiseRequest(cust, 1000m, DateOnly.FromDateTime(DateTime.UtcNow).AddDays(3), "phone", [rid], null)))
+        (await col.CreatePromiseAsync(new CreatePromiseRequest(cust, 1000m, TestDates.Today.AddDays(3), "phone", [rid], null)))
             .Error!.Code.Should().Be("credit.promise_disputed");
 
         (await col.ResolveDisputeAsync(d.Value, new ResolveDisputeRequest("resolved_company", ""))).Error!.Code.Should().Be("credit.dispute_resolution");
@@ -292,7 +292,7 @@ public sealed class CustomerCollectionsTests(FinanceEngineFixture fx)
         rec.RemainingAmount.Should().Be(20000m);
         // Retard calculé par le service sur sa propre horloge (UTC) : le test ne suppose pas la date locale de PostgreSQL
         // (entre 20 h et minuit à Haïti, UTC est déjà au lendemain).
-        rec.DaysOverdue.Should().Be(DateOnly.FromDateTime(DateTime.UtcNow).DayNumber - rec.DueDate!.Value.DayNumber);
+        rec.DaysOverdue.Should().Be(TestDates.Today.DayNumber - rec.DueDate!.Value.DayNumber);
         rec.DaysOverdue.Should().BeInRange(20, 21);
         rec.OpenDisputeId.Should().BeNull();
         (await q.DisputesAsync(cust, null)).Single().Status.Should().Be("resolved_company");
@@ -310,7 +310,7 @@ public sealed class CustomerCollectionsTests(FinanceEngineFixture fx)
         await NewReceivable(cust, 10000m, -5);
 
         var first = await actions.LogAsync(cust, new Nexora.Contracts.Customers.CreateCollectionActionRequest("call", "Pas de réponse", "no_answer", null,
-            DateOnly.FromDateTime(DateTime.UtcNow)));
+            TestDates.Today));
         first.IsSuccess.Should().BeTrue(first.Error?.Message);
         (await q.FollowUpsAsync()).Should().Contain(f => f.Kind == "action" && f.CustomerId == cust);
         await actions.LogAsync(cust, new Nexora.Contracts.Customers.CreateCollectionActionRequest("call", "Rappel fait, paiera vendredi", "reached"));

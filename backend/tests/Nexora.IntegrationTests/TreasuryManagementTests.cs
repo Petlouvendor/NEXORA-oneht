@@ -103,10 +103,10 @@ public sealed class TreasuryManagementTests(FinanceEngineFixture fx)
             var t = s.ServiceProvider.GetRequiredService<ITreasuryManagementService>();
             var ledger = (await t.LedgerOptionsAsync("expense")).First(a => a.Code == "6800");
             category = (await e.CreateCategoryAsync(new SaveExpenseCategoryRequest($"Entretien {U()}", null, ledger.Id))).Value;
-            (await e.CreateAsync(new SaveExpenseRequest("", category, null, 10m, 0m, "HTG", DateOnly.FromDateTime(DateTime.UtcNow), null)))
+            (await e.CreateAsync(new SaveExpenseRequest("", category, null, 10m, 0m, "HTG", TestDates.Today, null)))
                 .Error!.Code.Should().Be("expense.description");
             var created = await e.CreateAsync(new SaveExpenseRequest("Réparation climatiseur", category, null, 1000m, 100m, "HTG",
-                DateOnly.FromDateTime(DateTime.UtcNow), "FACT-77"));
+                TestDates.Today, "FACT-77"));
             created.IsSuccess.Should().BeTrue(created.Error?.Message);
             expenseId = created.Value;
             (await e.ApproveAsync(expenseId)).Error!.Code.Should().Be("expense.self_approval");
@@ -145,7 +145,7 @@ public sealed class TreasuryManagementTests(FinanceEngineFixture fx)
         await using (var s = Scope())
         {
             var e = s.ServiceProvider.GetRequiredService<IExpenseService>();
-            var other = (await e.CreateAsync(new SaveExpenseRequest("Taxi", category, null, 50m, 0m, "HTG", DateOnly.FromDateTime(DateTime.UtcNow), null))).Value;
+            var other = (await e.CreateAsync(new SaveExpenseRequest("Taxi", category, null, 50m, 0m, "HTG", TestDates.Today, null))).Value;
             (await e.CancelAsync(other, new ExpenseDecisionRequest(" "))).Error!.Code.Should().Be("expense.reason_required");
             (await e.CancelAsync(other, new ExpenseDecisionRequest("Saisie en double"))).IsSuccess.Should().BeTrue();
             (await e.GetAsync(other)).Value!.DecisionReason.Should().Be("Saisie en double");
@@ -161,7 +161,7 @@ public sealed class TreasuryManagementTests(FinanceEngineFixture fx)
         var otherBank = (await t.CreateAccountAsync(new SaveFinancialAccountRequest($"Autre banque {U()}", "bank", "HTG", null, null))).Value;
         (await t.TransferAsync(new TreasuryTransferRequest(Guid.NewGuid(), CashAccount, htgBank, 500m, "Dépôt"))).IsSuccess.Should().BeTrue();
         (await t.TransferAsync(new TreasuryTransferRequest(Guid.NewGuid(), CashAccount, otherBank, 75m, null))).IsSuccess.Should().BeTrue();
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var today = TestDates.Today;
 
         (await bank.ImportStatementAsync(new ImportStatementRequest(htgBank, "R1", today, 0m, 999m,
             [new StatementLineInput(today, 500m, "Dépôt", "DEP-1")]))).Error!.Code.Should().Be("integrations.statement_unbalanced");

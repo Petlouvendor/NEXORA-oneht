@@ -242,7 +242,7 @@ public sealed class SqlTreasuryManagementService(
 /// <summary>Dépenses (phase 7) — voir <see cref="IExpenseService"/>.</summary>
 public sealed class SqlExpenseService(
     NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow, IFinanceOperations ops,
-    IDocumentNumberGenerator numbers, IDateTimeProvider clock) : IExpenseService
+    IDocumentNumberGenerator numbers, IDateTimeProvider clock, IBusinessCalendar calendar) : IExpenseService
 {
     private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
@@ -353,7 +353,7 @@ public sealed class SqlExpenseService(
             return Error.Validation("expense.description", "Description obligatoire (500 caractères au plus).");
         if (r.Amount <= 0m) return Error.Validation("expense.amount", "Le montant hors taxe doit être positif.");
         if (r.TaxAmount < 0m || r.TaxAmount > r.Amount) return Error.Validation("expense.tax", "Taxe invalide (entre 0 et le montant HT).");
-        if (r.ExpenseDate > DateOnly.FromDateTime(clock.UtcNow.UtcDateTime).AddDays(1))
+        if (r.ExpenseDate > calendar.Today.AddDays(1))
             return Error.Validation("expense.date", "La date de la dépense ne peut être dans le futur.");
         var category = await db.Database.SqlQuery<string?>($"""
             SELECT status AS "Value" FROM nexora.expense_category WHERE id = {r.CategoryId} AND company_id = {Company}

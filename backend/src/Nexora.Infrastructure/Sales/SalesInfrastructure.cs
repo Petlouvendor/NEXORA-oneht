@@ -16,7 +16,8 @@ internal static class SalesHelpers
 
     public static async Task<string> NextNumber(NexoraDbContext db, ITenantContext t, string type, CancellationToken ct)
     {
-        var year = DateTime.UtcNow.Year;
+        // Année locale de l'entreprise : next_document_number prend current_date (session au fuseau de l'entreprise).
+        int? year = null;
         var rows = await db.Database
             .SqlQuery<string>($"""SELECT nexora.next_document_number({Company(t)}, {type}, {(Guid?)null}, {year}) AS "Value" """)
             .ToListAsync(ct);

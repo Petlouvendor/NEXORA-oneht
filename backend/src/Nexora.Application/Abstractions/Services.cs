@@ -22,6 +22,49 @@ public interface IDateTimeProvider
     DateTimeOffset UtcNow { get; }
 }
 
+/// <summary>
+/// Date métier (analyse 2026-10, §5.5) : le jour civil dans le fuseau de l'entreprise active
+/// (<c>company.timezone</c>, Haïti par défaut) — jamais le jour UTC, qui bascule au lendemain dès 20 h en Haïti.
+/// Toute date d'opération (écriture, échéance, « aujourd'hui » d'un rapport) passe par ce service ; la base suit le
+/// même fuseau (session PostgreSQL réglée à l'ouverture de connexion).
+/// </summary>
+public interface IBusinessCalendar
+{
+    /// <summary>Fuseau de l'entreprise active (lu en base au plus une fois par requête, puis gardé en cache).</summary>
+    TimeZoneInfo Zone { get; }
+
+    /// <summary>Jour civil courant de l'entreprise (horloge <see cref="IDateTimeProvider"/>).</summary>
+    DateOnly Today { get; }
+
+    /// <summary>Jour civil d'un instant, dans le fuseau de l'entreprise.</summary>
+    DateOnly DateOf(DateTimeOffset instant);
+
+    /// <summary>Fuseau de l'entreprise active, sans appel bloquant.</summary>
+    Task<TimeZoneInfo> ZoneAsync(CancellationToken ct = default);
+
+    /// <summary>Jour civil courant de l'entreprise (horloge <see cref="IDateTimeProvider"/>).</summary>
+    Task<DateOnly> TodayAsync(CancellationToken ct = default);
+
+    /// <summary>Jour civil d'un instant, dans le fuseau de l'entreprise.</summary>
+    Task<DateOnly> DateOfAsync(DateTimeOffset instant, CancellationToken ct = default);
+}
+
+/// <summary>Conversion instant → jour civil dans un fuseau donné.</summary>
+public static class BusinessDate
+{
+    /// <summary>Fuseau appliqué quand aucune entreprise n'est active.</summary>
+    public const string DefaultZoneId = "America/Port-au-Prince";
+
+    public static DateOnly Of(DateTimeOffset instant, TimeZoneInfo zone)
+        => DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(instant, zone).DateTime);
+
+    /// <summary>
+    /// Instant représentant un jour civil saisi (date de facture, de comptage…) : midi UTC, qui reste ce même jour
+    /// dans tout fuseau de UTC−11 à UTC+11. Minuit UTC tomberait la veille au soir en Haïti.
+    /// </summary>
+    public static DateTimeOffset Noon(DateOnly day) => new(day.ToDateTime(new TimeOnly(12, 0)), TimeSpan.Zero);
+}
+
 /// <summary>Unité de travail transactionnelle (Phase 3 §15 : atomicité, rollback complet).</summary>
 public interface IUnitOfWork
 {

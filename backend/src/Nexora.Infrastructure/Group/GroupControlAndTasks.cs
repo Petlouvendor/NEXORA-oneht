@@ -88,7 +88,7 @@ public sealed class SqlGroupControlCenter(NexoraDbContext db, ITenantContext ten
 }
 
 /// <summary>Tâches de contrôle groupe (Phase 9 §25).</summary>
-public sealed class SqlGroupTaskService(NexoraDbContext db, IUnitOfWork uow, ITenantContext tenant, IDateTimeProvider clock) : IGroupTaskService
+public sealed class SqlGroupTaskService(NexoraDbContext db, IUnitOfWork uow, ITenantContext tenant, IBusinessCalendar calendar) : IGroupTaskService
 {
     private static readonly string[] Priorities = ["low", "normal", "high", "urgent"];
     private static readonly string[] Statuses = ["open", "in_progress", "blocked", "done", "cancelled"];
@@ -104,7 +104,7 @@ public sealed class SqlGroupTaskService(NexoraDbContext db, IUnitOfWork uow, ITe
         if (request.Description is { Length: > 2000 }) return Error.Validation("group.task_description", "Description : 2000 caractères au plus.");
         var priority = (request.Priority ?? "").Trim().ToLowerInvariant();
         if (!Priorities.Contains(priority)) return Error.Validation("group.task_priority", "Priorité invalide.");
-        if (request.DueDate is { } due && due < DateOnly.FromDateTime(clock.UtcNow.UtcDateTime).AddDays(-1))
+        if (request.DueDate is { } due && due < calendar.Today.AddDays(-1))
             return Error.Validation("group.task_due", "L'échéance ne peut pas être passée.");
         using (tenant.BeginSystemScope())
         {
@@ -170,7 +170,7 @@ public sealed class SqlGroupTaskService(NexoraDbContext db, IUnitOfWork uow, ITe
 
 /// <summary>Ajout / archivage d'entreprise sans nouvelle installation (Phase 9 §28-29).</summary>
 public sealed class SqlCompanyProvisioningService(
-    NexoraDbContext db, IUnitOfWork uow, ITenantContext tenant) : ICompanyProvisioningService
+    NexoraDbContext db, IUnitOfWork uow, ITenantContext tenant, IBusinessCalendar calendar) : ICompanyProvisioningService
 {
     internal static readonly string[] Activities =
     [
@@ -197,7 +197,7 @@ public sealed class SqlCompanyProvisioningService(
         if (currencyId is null) return Error.Validation("company.currency", $"Devise « {request.Currency} » inconnue.");
 
         var companyId = Guid.NewGuid();
-        var year = DateOnly.FromDateTime(DateTime.UtcNow).Year;
+        var year = calendar.Today.Year;
 
         await uow.ExecuteInTransactionAsync(async token =>
         {

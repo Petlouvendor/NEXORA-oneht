@@ -31,7 +31,7 @@ public sealed class SalesService(
     IUnitOfWork uow,
     ITenantContext tenant,
     IDateTimeProvider clock,
-    ILogger<SalesService> logger)
+    ILogger<SalesService> logger, IBusinessCalendar calendar)
 {
     private Guid Company => tenant.ActiveCompanyId
         ?? throw TenantErrors.ActiveCompanyRequired();
@@ -213,7 +213,7 @@ public sealed class SalesService(
         // (ni relancé, ni compté dans l'aging) — la durée de la fiche client ou le réglage s'applique.
         var creditDueDate = cmd.CreditDueDate;
         if (creditAmount > 0m && creditDueDate is null && cmd.CustomerId is { } dueCustomer)
-            creditDueDate = await credit.DefaultDueDateAsync(dueCustomer, DateOnly.FromDateTime(soldAt.UtcDateTime), ct);
+            creditDueDate = await credit.DefaultDueDateAsync(dueCustomer, calendar.DateOf(soldAt), ct);
 
         try
         {
@@ -411,7 +411,7 @@ public sealed class SalesService(
                 var posted = await engine.HandleAsync(new PosSaleRecorded(
                     Company, cmd.OperationUuid, soldAt, sale.Id, cmd.CustomerId,
                     netMoney, taxMoney, tenderSplits, new Money(creditAmount + storeCredit, cmd.Currency),
-                    creditDueDate ?? (storeCredit > 0m ? DateOnly.FromDateTime(soldAt.UtcDateTime) : null),
+                    creditDueDate ?? (storeCredit > 0m ? calendar.DateOf(soldAt) : null),
                     cogsTotal > 0m ? new Money(cogsTotal, cmd.Currency) : null), token);
                 if (!posted.IsSuccess) throw new InvalidOperationException(posted.Error!.Message);
 

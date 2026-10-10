@@ -103,6 +103,9 @@ public static class DependencyInjection
         services.AddScoped<IMfaService, SqlMfaService>();
 
         services.AddSingleton<IDateTimeProvider, SystemDateTimeProvider>();
+        // Date métier dans le fuseau de l'entreprise (analyse 2026-10 §5.5).
+        services.AddSingleton<CompanyTimeZoneCache>();
+        services.AddScoped<IBusinessCalendar, BusinessCalendar>();
         services.AddSingleton<IPasswordHasher>(new BcryptPasswordHasher());
         services.AddScoped<ITokenService, JwtTokenService>();
 
