@@ -3,6 +3,7 @@ using Nexora.Application.Abstractions;
 using Nexora.Application.Customers;
 using Nexora.Application.Printing;
 using Nexora.Application.Purchasing;
+using Nexora.Application.Security;
 using Nexora.Contracts.Customers;
 using Nexora.Contracts.Printing;
 using Nexora.Domain.Common;
@@ -56,10 +57,21 @@ public sealed partial class SqlReceiptService(
         // Toute nouvelle sortie d'une même pièce est une copie : elle le dit (anti-fraude).
         var logKey = $"receipt:{kind}";
         var previous = await print.PreviousPrintsAsync(logKey, id, ct);
+        // Réimprimer un ticket de vente est un geste sensible (ticket rejoué pour un retour ou un remboursement) :
+        // il exige pos.reprint, que portent les rôles de caisse et d'encadrement, pas l'auditeur ni le vendeur.
+        if (kind == PrintableKinds.Sale && previous > 0 && !await HasAsync(Permissions.Pos.Reprint, ct))
+            return Error.Forbidden("print.reprint_forbidden",
+                "Ce ticket a déjà été imprimé : sa réimpression exige le droit « Réimprimer un ticket » (pos.reprint).");
         var doc = built.Doc;
         if (previous > 0)
             doc = doc with { Stamp = doc.Stamp is null ? $"DUPLICATA — copie n° {previous}" : $"{doc.Stamp} · DUPLICATA n° {previous}" };
         return Result.Success(await print.RenderAsync(doc, f, logKey, built.FileName, built.Sensitivity, id, built.EstablishmentId, ct));
+    }
+
+    private async Task<bool> HasAsync(string permission, CancellationToken ct)
+    {
+        var perms = await permissions.CurrentPermissionsAsync(tenant, ct);
+        return perms.Contains(permission) && (tenant.ApiScopes is null || tenant.ApiScopes.Contains(permission));
     }
 
     private async Task<string> LevelAsync(string kind, CancellationToken ct)

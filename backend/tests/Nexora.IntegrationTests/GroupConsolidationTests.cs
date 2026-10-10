@@ -377,7 +377,7 @@ public sealed class GroupConsolidationTests(FinanceEngineFixture fx)
 
         // Le même type de droit, attribué au niveau du groupe, vaut pour le groupe entier.
         var auditor = await perms.LoadProfileAsync(await UserWithRoleAsync("auditor", "GROUP", null));
-        auditor.GroupPermissionsFor(Group).Should().Contain(["group.view", "consolidation.view"]);
+        auditor.GroupPermissionsFor(Group).Should().Contain(["group.view", "reporting.view_group"]);   // consolidation.view : supprimée (V097, jamais vérifiée)
         auditor.PermissionsFor(Resto).Should().Contain("group.view");
     }
 
