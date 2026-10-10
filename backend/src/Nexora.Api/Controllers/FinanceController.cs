@@ -29,13 +29,13 @@ public sealed class FinanceController(IFinanceOperations ops) : ApiControllerBas
         => FromResult(await ops.RecordCreditSaleAsync(r, ct));
 
     [HttpPost("supplier-invoices")]
-    [RequirePermission("purchasing.create")]
+    [RequirePermission(Permissions.Purchasing.Create)]
     [Idempotent]
     public async Task<IActionResult> SupplierInvoice([FromBody] RecordSupplierInvoiceRequest r, CancellationToken ct)
         => FromResult(await ops.RecordSupplierInvoiceAsync(r, ct));
 
     [HttpPost("expenses")]
-    [RequirePermission("finance.pay")]
+    [RequirePermission(Permissions.Finance.Pay)]
     [Idempotent]
     public async Task<IActionResult> Expense([FromBody] RecordExpenseRequest r, CancellationToken ct)
         => FromResult(await ops.RecordExpenseAsync(r, ct));

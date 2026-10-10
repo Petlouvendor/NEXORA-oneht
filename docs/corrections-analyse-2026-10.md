@@ -67,3 +67,19 @@ au moment du retour, qui peut différer légèrement du coût de la réception.
 créée, 3110 inchangé ; écart de prix → 6800 ; retour avant facture → 4081 / 3110. Contrôle E2E « stock = 3110 »
 réactivé, sur installation neuve.
 
+## Étape 3 — Permissions sans effet (§6.2)
+
+**Défaut.** 102 des 316 permissions proposées dans l'administration n'étaient vérifiées nulle part : les retirer d'un
+rôle ne restreignait rien. C'étaient les restes d'une matrice générique créer / modifier / supprimer / exporter des
+premières migrations (`crm.*`, `analytics.*`, `cash.*`, `payments.*`, `synchronization.*`…) ; les actions réelles
+sont protégées par d'autres permissions (`purchasing.approve_order`, `reporting.export`…). Aucun écran ne s'en servait.
+
+**Correction.**
+- `pos.reprint` correspond à une vraie action et est désormais vérifiée : réimprimer un ticket de vente déjà sorti
+  (duplicata) l'exige. Les rôles caissier, caissier principal, responsable, direction et administrateurs la portent
+  déjà ; l'auditeur et le vendeur, non (conception d'origine des rôles). Refus : `print.reprint_forbidden`.
+- V097 supprime les 101 autres ; leurs attributions aux rôles disparaissent avec elles (clé en cascade, tracée par
+  l'audit des rôles).
+
+**Garde-fou.** `PermissionCatalogTests` : toute permission en base est déclarée par le code (`Permissions`), et toute
+permission déclarée existe en base. Une permission décorative ne peut plus réapparaître sans faire échouer la suite.

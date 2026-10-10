@@ -30,6 +30,8 @@ public static class Permissions
         public const string CashInOut = "pos.cash_in_out";
         public const string ViewCustomerBalance = "pos.view_customer_balance";
         public const string ManageOrder = "pos.manage_order";
+        /// <summary>Réimprimer un ticket de vente déjà sorti (duplicata) — analyse 2026-10 : permission enfin vérifiée.</summary>
+        public const string Reprint = "pos.reprint";
 
         // Validations Manager du guide fonctionnel (§8, §10, §12, §13) — V064.
         // Refund = valider une demande de retour / exécuter un retour-remboursement.
@@ -209,6 +211,8 @@ public static class Permissions
     public static class Purchasing
     {
         public const string View = "purchasing.view";
+        /// <summary>Saisie directe d'une facture fournisseur dans le moteur comptable (API finance).</summary>
+        public const string Create = "purchasing.create";
         public const string Order = "purchasing.order";
         public const string Receive = "purchasing.receive";
         public const string Invoice = "purchasing.invoice";
