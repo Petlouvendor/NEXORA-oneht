@@ -83,3 +83,18 @@ sont protégées par d'autres permissions (`purchasing.approve_order`, `reportin
 
 **Garde-fou.** `PermissionCatalogTests` : toute permission en base est déclarée par le code (`Permissions`), et toute
 permission déclarée existe en base. Une permission décorative ne peut plus réapparaître sans faire échouer la suite.
+
+## Étape 4 — Formulaires en fenêtre ouverts jusqu'à la réponse du serveur (§8.5)
+
+**Défaut.** `useFormDialog` et `usePrompt` rendaient la saisie puis se fermaient ; l'écran appelait le serveur
+ensuite. Un refus (règle métier, droit, période close) s'affichait sur la page, mais la saisie était perdue — un
+post-mortem d'incident ou une ligne de budget était à retaper. Le test E2E « formulaires » relisait l'incident avant la
+fin de son enregistrement et échouait par intermittence.
+
+**Correction.** Option `onSubmit` sur les deux fenêtres : l'enregistrement se fait dans la fenêtre, bouton occupé et
+« Annuler » désactivé pendant l'appel ; un refus s'affiche dans la fenêtre, saisie intacte ; la fenêtre ne se ferme
+qu'après succès. Les 23 fenêtres de l'application (continuité, BI, intelligence, exploitation, maintenance, plateforme,
+facturation) enregistrent ainsi ; l'écran ne fait plus qu'afficher le message de réussite et recharger.
+
+**Tests.** `formDialog.test.tsx` : refus → fenêtre ouverte, motif affiché, saisie conservée ; nouvel essai réussi →
+fenêtre fermée avec les valeurs. Le test E2E « formulaires » attend désormais la vraie fin de l'enregistrement.

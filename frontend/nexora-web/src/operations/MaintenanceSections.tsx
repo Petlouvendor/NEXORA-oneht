@@ -225,8 +225,8 @@ export function FeatureFlagsSection({ canManage }: { canManage: boolean }) {
                   onClick={async () => {
                     const key = await prompt.ask({ title: "Nouvelle bascule globale", label: "Clé de la bascule", required: true, minLength: 2,
                       hint: "Ex. caisse.nouveau_ticket — 2 à 100 caractères. Créée activée ; « Désactiver » sert de coupe-circuit.",
-                      confirmLabel: "Créer" });
-                    if (key) void flags.run(() => saveFeatureFlag({ key, scope: "global", enabled: true }));
+                      confirmLabel: "Créer", onSubmit: (k) => saveFeatureFlag({ key: k, scope: "global", enabled: true }) });
+                    if (key) flags.load();
                   }}>
             Nouvelle bascule globale
           </button>
@@ -467,8 +467,9 @@ export function DataCorrectionsSection({ canManage, canDecide }: { canManage: bo
                         <button className="nx-btn nx-btn--ghost" style={{ padding: "1px 8px", fontSize: 12, color: "var(--nx-error)" }} disabled={corr.busy}
                                 onClick={async () => {
                                   const n = await prompt.ask({ title: "Refuser la correction", label: "Motif du refus", required: true,
-                                    multiline: true, danger: true, confirmLabel: "Refuser" });
-                                  if (n) void corr.run(() => decideDataCorrection(c.id, false, n));
+                                    multiline: true, danger: true, confirmLabel: "Refuser",
+                                    onSubmit: (reason) => decideDataCorrection(c.id, false, reason) });
+                                  if (n) corr.load();
                                 }}>Refuser</button>
                       </div>
                     )}

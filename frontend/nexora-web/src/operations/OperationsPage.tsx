@@ -59,6 +59,9 @@ export function OperationsPage() {
   }, []);
   useEffect(load, [load, activeCompanyId]);
 
+  /** Après un enregistrement fait dans une fenêtre (qui affiche elle-même un refus) : message et rechargement. */
+  const saved = (msg: string) => void run(async () => undefined, msg);
+
   async function run(fn: () => Promise<unknown>, msg?: string) {
     setBusy(true); setError(null); setNotice(null);
     try { await fn(); if (msg) setNotice(msg); load(); }
@@ -175,8 +178,9 @@ export function OperationsPage() {
             <button className="nx-btn nx-btn--ghost" style={{ padding: "4px 12px", fontSize: 13 }} disabled={busy}
                     onClick={async () => {
                       const v = await prompt.ask({ title: "Journaliser un déploiement", label: "Version déployée", required: true, minLength: 1,
-                        hint: "Version de l'image (ex. 1.18.0) ; le schéma de base courant est enregistré avec.", confirmLabel: "Journaliser" });
-                      if (v) void run(() => recordDeployment({ version: v, environment: "production" }), "Déploiement journalisé");
+                        hint: "Version de l'image (ex. 1.18.0) ; le schéma de base courant est enregistré avec.", confirmLabel: "Journaliser",
+                        onSubmit: (version) => recordDeployment({ version, environment: "production" }) });
+                      if (v) saved("Déploiement journalisé");
                     }}>
               Journaliser un déploiement
             </button>
@@ -198,8 +202,9 @@ export function OperationsPage() {
                       <button className="nx-btn nx-btn--ghost" style={{ padding: "1px 8px", fontSize: 12, color: "var(--nx-warning)" }} disabled={busy}
                               onClick={async () => {
                                 const r = await prompt.ask({ title: `Retour arrière de ${d.version}`, label: "Motif du retour arrière", required: true,
-                                  multiline: true, danger: true, confirmLabel: "Journaliser le retour arrière" });
-                                if (r) void run(() => rollbackDeployment(d.id, { reason: r }), "Retour arrière journalisé");
+                                  multiline: true, danger: true, confirmLabel: "Journaliser le retour arrière",
+                                  onSubmit: (reason) => rollbackDeployment(d.id, { reason }) });
+                                if (r) saved("Retour arrière journalisé");
                               }}>
                         Rollback
                       </button>

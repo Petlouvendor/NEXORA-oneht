@@ -242,8 +242,9 @@ export function RecommendationOutcomesSection({ canAct }: { canAct: boolean }) {
     const note = await prompt.ask({
       title: outcome === "positive" ? "Résultat positif" : "Résultat négatif", label: "Note", multiline: true, confirmLabel: "Consigner",
       hint: "Facultative : ce que la recommandation a réellement produit (sert à l'apprentissage des règles).",
+      onSubmit: (n) => resolveRecommendation(id, outcome, n || undefined),
     });
-    if (note !== null) void recs.run(() => resolveRecommendation(id, outcome, note || undefined));
+    if (note !== null) recs.load();
   }
   const cols: Array<Column<Recommendation>> = [
     { key: "t", header: "Recommandation acceptée", render: (r) => r.title },
@@ -323,13 +324,14 @@ export function RulesSection({ canManage }: { canManage: boolean }) {
           options: [{ value: "high", label: "Haute" }, { value: "medium", label: "Moyenne" }, { value: "low", label: "Basse" }] },
         { name: "enabled", label: "État", type: "select", options: [{ value: "true", label: "Activée" }, { value: "false", label: "Désactivée" }] },
       ],
+      onSubmit: (f) => {
+        const label = f.label || system.find((r) => r.key === f.key)?.label || f.key;
+        return saveRule({
+          key: f.key, category: "custom", label, threshold: {}, defaultPriority: f.defaultPriority, actionLabel: label, enabled: f.enabled === "true",
+        });
+      },
     });
-    if (!v) return;
-    const base = system.find((r) => r.key === v.key);
-    const label = v.label || base?.label || v.key;
-    void rules.run(() => saveRule({
-      key: v.key, category: "custom", label, threshold: {}, defaultPriority: v.defaultPriority, actionLabel: label, enabled: v.enabled === "true",
-    }));
+    if (v) rules.load();
   }
   const cols: Array<Column<IntelligenceRule>> = [
     { key: "k", header: "Clé", render: (r) => <code>{r.key}</code> },

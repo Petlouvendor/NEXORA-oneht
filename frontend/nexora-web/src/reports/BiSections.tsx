@@ -83,8 +83,9 @@ export function ObjectivesSection({ canManage }: { canManage: boolean }) {
         { name: "direction", label: "Sens", type: "select", options: [
           { value: "min", label: "À atteindre (au moins la cible)" }, { value: "max", label: "Plafond (au plus la cible)" }] },
       ],
+      onSubmit: (f) => setObjective({ kpiKey: f.kpiKey, periodType: f.periodType, targetValue: Number(f.targetValue), direction: f.direction }),
     });
-    if (v) void objectives.run(() => setObjective({ kpiKey: v.kpiKey, periodType: v.periodType, targetValue: Number(v.targetValue), direction: v.direction }));
+    if (v) objectives.load();
   }
 
   const cols: Array<Column<Objective>> = [
@@ -146,8 +147,9 @@ export function ReportsSection({ canSchedule }: { canSchedule: boolean }) {
         { name: "name", label: "Nom", required: true },
         { name: "reportKey", label: "Rapport standard", type: "select", required: true, options: reportOptions() },
       ],
+      onSubmit: (f) => saveReport({ name: f.name, reportKey: f.reportKey, filter: {} }),
     });
-    if (v) void catalog.run(() => saveReport({ name: v.name, reportKey: v.reportKey, filter: {} }));
+    if (v) catalog.load();
   }
   async function newSchedule() {
     const v = await form.ask({
@@ -157,8 +159,9 @@ export function ReportsSection({ canSchedule }: { canSchedule: boolean }) {
         { name: "reportKey", label: "Rapport standard", type: "select", required: true, options: reportOptions() },
         { name: "frequency", label: "Fréquence", type: "select", defaultValue: "weekly", options: FREQUENCIES },
       ],
+      onSubmit: (f) => saveSchedule({ name: f.name, reportKey: f.reportKey, frequency: f.frequency, recipients: [] }),
     });
-    if (v) void schedules.run(() => saveSchedule({ name: v.name, reportKey: v.reportKey, frequency: v.frequency, recipients: [] }));
+    if (v) schedules.load();
   }
   const [result, setResult] = useState<{ key: string; json: string } | null>(null);
 
@@ -269,8 +272,9 @@ export function ForecastsSection({ canGenerate }: { canGenerate: boolean }) {
         { name: "horizonDays", label: "Horizon (jours)", type: "number", defaultValue: "30", required: true, min: 1, max: 365, integer: true },
         { name: "scenario", label: "Scénario", type: "select", defaultValue: "base", options: SCENARIOS },
       ],
+      onSubmit: (f) => generateForecast({ metric: f.metric, horizonDays: Number(f.horizonDays), scenario: f.scenario }),
     });
-    if (v) void forecasts.run(() => generateForecast({ metric: v.metric, horizonDays: Number(v.horizonDays), scenario: v.scenario }));
+    if (v) forecasts.load();
   }
   const cols: Array<Column<Forecast>> = [
     { key: "m", header: "Indicateur", render: (f) => <Badge>{f.metric}</Badge> },
@@ -312,13 +316,15 @@ export function InsightsSection({ canManage }: { canManage: boolean }) {
             options: users.filter((u) => u.status === "active").map((u) => ({ value: u.id, label: u.fullName ? `${u.fullName} — ${u.email}` : u.email })) }
         : { name: "userId", label: "Identifiant de l'utilisateur", required: true, hint: "Identifiant (UUID) visible dans Administration → Utilisateurs.",
             validate: (x) => (UUID.test(x) ? null : "Identifiant (UUID) invalide.") }],
+      onSubmit: (f) => assignInsight(insight.id, f.userId),
     });
-    if (v) void insights.run(() => assignInsight(insight.id, v.userId));
+    if (v) insights.load();
   }
   async function dismiss(insight: Insight) {
     const reason = await prompt.ask({ title: `Ignorer « ${insight.title} »`, label: "Motif", multiline: true, confirmLabel: "Ignorer",
-      hint: "Facultatif, mais utile au suivi : pourquoi cette anomalie n'appelle pas d'action ?" });
-    if (reason !== null) void insights.run(() => dismissInsight(insight.id, reason || undefined));
+      hint: "Facultatif, mais utile au suivi : pourquoi cette anomalie n'appelle pas d'action ?",
+      onSubmit: (r) => dismissInsight(insight.id, r || undefined) });
+    if (reason !== null) insights.load();
   }
   const cols: Array<Column<Insight>> = [
     { key: "s", header: "", render: (i) => <Badge tone={i.severity === "critical" ? "error" : i.severity === "warning" ? "warning" : "info"}>{i.severity}</Badge> },
@@ -366,8 +372,9 @@ export function BudgetsSection({ canManage }: { canManage: boolean }) {
         { name: "currencyCode", label: "Devise", type: "select", defaultValue: "HTG",
           options: ["HTG", "USD", "EUR", "CAD"].map((c) => ({ value: c, label: c })) },
       ],
+      onSubmit: (f) => createBudget({ name: f.name, fiscalYear: Number(f.fiscalYear), currencyCode: f.currencyCode }),
     });
-    if (v) void budgets.run(() => createBudget({ name: v.name, fiscalYear: Number(v.fiscalYear), currencyCode: v.currencyCode }));
+    if (v) budgets.load();
   }
   async function addLine(b: Budget) {
     const accounts = await listAccounts().catch(() => []);
@@ -380,13 +387,15 @@ export function BudgetsSection({ canManage }: { canManage: boolean }) {
           options: [{ value: "", label: "Toute l'année" }, ...MONTHS.map((m, i) => ({ value: String(i + 1), label: m }))] },
         { name: "amount", label: `Montant (${b.currencyCode})`, type: "number", required: true, min: 0 },
       ],
+      onSubmit: async (f) => {
+        const existing = lines?.budgetId === b.id ? lines.rows : await getBudgetLines(b.id);
+        await setBudgetLines(b.id, [
+          ...existing.map((l) => ({ accountId: l.accountId, costCenterId: l.costCenterId, establishmentId: l.establishmentId, periodMonth: l.periodMonth, amount: l.amount })),
+          { accountId: f.accountId || null, periodMonth: f.periodMonth ? Number(f.periodMonth) : null, amount: Number(f.amount) },
+        ]);
+      },
     });
-    if (!v) return;
-    const existing = lines?.budgetId === b.id ? lines.rows : await getBudgetLines(b.id);
-    void budgets.run(() => setBudgetLines(b.id, [
-      ...existing.map((l) => ({ accountId: l.accountId, costCenterId: l.costCenterId, establishmentId: l.establishmentId, periodMonth: l.periodMonth, amount: l.amount })),
-      { accountId: v.accountId || null, periodMonth: v.periodMonth ? Number(v.periodMonth) : null, amount: Number(v.amount) },
-    ]));
+    if (v) budgets.load();
   }
 
   const cols: Array<Column<Budget>> = [

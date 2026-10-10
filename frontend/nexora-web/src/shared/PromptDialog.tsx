@@ -15,6 +15,8 @@ export interface PromptOptions {
   /** Liste de choix (remplace la saisie libre). */
   choices?: Array<{ value: string; label: string }>;
   multiline?: boolean;
+  /** Enregistrement fait dans la fenêtre : ouverte jusqu'à la réponse, refus affiché sans perdre la saisie. */
+  onSubmit?: (value: string) => Promise<unknown>;
 }
 
 interface Pending extends PromptOptions { resolve: (value: string | null) => void }
@@ -28,6 +30,7 @@ export function usePrompt(): { ask: (o: PromptOptions) => Promise<string | null>
   const [pending, setPending] = useState<Pending | null>(null);
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const pendingRef = useRef<Pending | null>(null);
   pendingRef.current = pending;
 
@@ -35,26 +38,38 @@ export function usePrompt(): { ask: (o: PromptOptions) => Promise<string | null>
     pendingRef.current?.resolve(null);
     setValue(o.defaultValue ?? o.choices?.[0]?.value ?? "");
     setError(null);
+    setBusy(false);
     setPending({ ...o, resolve });
   }), []);
 
   const close = (v: string | null) => { pending?.resolve(v); setPending(null); };
+  const cancel = () => { if (!busy) close(null); };
 
-  function submit(e?: FormEvent) {
+  async function submit(e?: FormEvent) {
     e?.preventDefault();
-    if (!pending) return;
+    if (!pending || busy) return;
     const v = value.trim();
     const min = pending.minLength ?? 3;
     if (pending.required && v.length < min) { setError(min > 1 ? `${min} caractères au moins.` : "Obligatoire."); return; }
-    close(v);
+    if (!pending.onSubmit) { close(v); return; }
+    setBusy(true);
+    setError(null);
+    try {
+      await pending.onSubmit(v);
+      close(v);
+    } catch (err) {
+      setError(err instanceof Error && err.message ? err.message : "Enregistrement impossible. Réessayez.");
+    } finally {
+      setBusy(false);
+    }
   }
 
   const dialog = pending ? (
     <TopLayer>
-    <Modal title={pending.title} onClose={() => close(null)}
-      footer={<><Button variant="ghost" onClick={() => close(null)}>Annuler</Button>
-        <Button variant={pending.danger ? "danger" : "primary"} onClick={() => submit()}>{pending.confirmLabel ?? "Valider"}</Button></>}>
-      <form noValidate onSubmit={submit} style={{ display: "grid", gap: 10 }}>
+    <Modal title={pending.title} onClose={cancel}
+      footer={<><Button variant="ghost" onClick={cancel} disabled={busy}>Annuler</Button>
+        <Button variant={pending.danger ? "danger" : "primary"} onClick={() => void submit()} loading={busy}>{pending.confirmLabel ?? "Valider"}</Button></>}>
+      <form noValidate onSubmit={(e) => void submit(e)} style={{ display: "grid", gap: 10 }} aria-busy={busy}>
         <Field label={pending.label} required={pending.required} error={error} hint={pending.hint}>
           {pending.choices
             ? <Select value={value} onChange={(e) => setValue(e.target.value)}>
