@@ -28,6 +28,12 @@ export interface FormDialogOptions {
   intro?: ReactNode;
   confirmLabel?: string;
   danger?: boolean;
+  /**
+   * Enregistrement fait DANS la fenêtre (analyse 2026-10, §8.5) : elle reste ouverte, bouton occupé, jusqu'à la
+   * réponse du serveur ; un refus s'affiche dans la fenêtre sans perdre la saisie. Sans lui, la fenêtre rend les
+   * valeurs et se ferme aussitôt.
+   */
+  onSubmit?: (values: Record<string, string>) => Promise<unknown>;
 }
 
 interface Pending extends FormDialogOptions { resolve: (values: Record<string, string> | null) => void }
@@ -47,6 +53,8 @@ export function useFormDialog(): { ask: (o: FormDialogOptions) => Promise<Record
   const [pending, setPending] = useState<Pending | null>(null);
   const [values, setValues] = useState<Record<string, string>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
   const pendingRef = useRef<Pending | null>(null);
   pendingRef.current = pending;
 
@@ -54,10 +62,13 @@ export function useFormDialog(): { ask: (o: FormDialogOptions) => Promise<Record
     pendingRef.current?.resolve(null);
     setValues(initial(o.fields));
     setErrors({});
+    setFormError(null);
+    setBusy(false);
     setPending({ ...o, resolve });
   }), []);
 
   const close = (v: Record<string, string> | null) => { pending?.resolve(v); setPending(null); };
+  const cancel = () => { if (!busy) close(null); };
 
   function check(f: FormField, raw: string, all: Record<string, string>): string | null {
     const v = raw.trim();
@@ -74,9 +85,9 @@ export function useFormDialog(): { ask: (o: FormDialogOptions) => Promise<Record
     return f.validate?.(v, all) ?? null;
   }
 
-  function submit(e?: FormEvent) {
+  async function submit(e?: FormEvent) {
     e?.preventDefault();
-    if (!pending) return;
+    if (!pending || busy) return;
     const next: Record<string, string> = {};
     for (const f of pending.fields) {
       const err = check(f, values[f.name] ?? "", values);
@@ -89,18 +100,29 @@ export function useFormDialog(): { ask: (o: FormDialogOptions) => Promise<Record
       const v = (values[f.name] ?? "").trim();
       out[f.name] = f.type === "number" ? v.replace(",", ".") : v;
     }
-    close(out);
+    if (!pending.onSubmit) { close(out); return; }
+    setBusy(true);
+    setFormError(null);
+    try {
+      await pending.onSubmit(out);
+      close(out);
+    } catch (err) {
+      setFormError(err instanceof Error && err.message ? err.message : "Enregistrement impossible. Réessayez.");
+    } finally {
+      setBusy(false);
+    }
   }
 
   const set = (name: string, v: string) => setValues((cur) => ({ ...cur, [name]: v }));
 
   const dialog = pending ? (
     <TopLayer>
-      <Modal title={pending.title} onClose={() => close(null)}
-        footer={<><Button variant="ghost" onClick={() => close(null)}>Annuler</Button>
-          <Button variant={pending.danger ? "danger" : "primary"} onClick={() => submit()}>{pending.confirmLabel ?? "Valider"}</Button></>}>
-        <form noValidate onSubmit={submit} style={{ display: "grid", gap: 10 }}>
+      <Modal title={pending.title} onClose={cancel}
+        footer={<><Button variant="ghost" onClick={cancel} disabled={busy}>Annuler</Button>
+          <Button variant={pending.danger ? "danger" : "primary"} onClick={() => void submit()} loading={busy}>{pending.confirmLabel ?? "Valider"}</Button></>}>
+        <form noValidate onSubmit={(e) => void submit(e)} style={{ display: "grid", gap: 10 }} aria-busy={busy}>
           {pending.intro && <div style={{ color: "var(--nx-text-2)", fontSize: 13 }}>{pending.intro}</div>}
+          {formError && <div className="nx-err" role="alert">{formError}</div>}
           {pending.fields.map((f, i) => (
             <Field key={f.name} label={f.label} required={f.required} error={errors[f.name]} hint={f.hint}>
               {f.type === "select"

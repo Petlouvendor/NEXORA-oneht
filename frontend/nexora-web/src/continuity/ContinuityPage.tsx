@@ -96,8 +96,9 @@ export function ContinuityPage() {
       title: "Restaurer une sauvegarde", confirmLabel: "Demander la restauration", danger: true,
       intro: "La demande attend l'approbation d'une seconde personne avant toute restauration.",
       fields: [{ name: "target", label: "Cible de restauration", required: true, hint: "Ex. base de production, base de secours…" }],
+      onSubmit: (f) => requestRestore(backupId, f.target),
     });
-    if (v) void run(() => requestRestore(backupId, v.target), "Demande de restauration créée — en attente d'un second approbateur");
+    if (v) saved("Demande de restauration créée — en attente d'un second approbateur");
   }
 
   async function askIncident() {
@@ -109,18 +110,23 @@ export function ContinuityPage() {
         { name: "category", label: "Catégorie", type: "select", defaultValue: "other", options: INCIDENT_CATEGORIES },
         { name: "detectedVia", label: "Détecté par", type: "select", options: DETECTED_VIA },
       ],
+      onSubmit: (f) => openIncident({ severity: f.severity, category: f.category, title: f.title, detectedVia: f.detectedVia }),
     });
-    if (v) void run(() => openIncident({ severity: v.severity, category: v.category, title: v.title, detectedVia: v.detectedVia }), "Incident ouvert");
+    if (v) saved("Incident ouvert");
   }
 
   async function askLockDown(incidentId: string) {
+    let done = "Verrouillage effectué";
     const v = await form.ask({
       title: "Verrouillage d'urgence", confirmLabel: "Verrouiller l'entreprise", danger: true,
       intro: "Révoque immédiatement toutes les sessions et toutes les clés d'API actives de l'entreprise. Les utilisateurs devront se reconnecter.",
       fields: [],
+      onSubmit: async () => {
+        const r = await lockDownIncident(incidentId);
+        done = `Verrouillage effectué : ${r.sessionsRevoked} session(s), ${r.apiKeysRevoked} clé(s) d'API, ${r.usersAffected} utilisateur(s) touché(s)`;
+      },
     });
-    if (v) void run(() => lockDownIncident(incidentId).then((r) =>
-      setNotice(`Verrouillage effectué : ${r.sessionsRevoked} session(s), ${r.apiKeysRevoked} clé(s) d'API, ${r.usersAffected} utilisateur(s) touché(s)`)));
+    if (v) saved(done);
   }
 
   async function askResolve(incidentId: string) {
@@ -135,13 +141,13 @@ export function ContinuityPage() {
         minutesField("rpoActualMinutes", "Perte de données observée (RPO)"),
         minutesField("rtoActualMinutes", "Durée d'interruption observée (RTO)"),
       ],
+      onSubmit: (f) => resolveIncident(incidentId, {
+        rpoActualMinutes: f.rpoActualMinutes ? Number(f.rpoActualMinutes) : null,
+        rtoActualMinutes: f.rtoActualMinutes ? Number(f.rtoActualMinutes) : null,
+        postMortem: { cause: f.cause, impact: f.impact, actions: f.actions, prevention: f.prevention, owner: f.owner },
+      }),
     });
-    if (!v) return;
-    void run(() => resolveIncident(incidentId, {
-      rpoActualMinutes: v.rpoActualMinutes ? Number(v.rpoActualMinutes) : null,
-      rtoActualMinutes: v.rtoActualMinutes ? Number(v.rtoActualMinutes) : null,
-      postMortem: { cause: v.cause, impact: v.impact, actions: v.actions, prevention: v.prevention, owner: v.owner },
-    }), "Incident résolu");
+    if (v) saved("Incident résolu");
   }
 
   async function askDrTest() {
@@ -153,8 +159,9 @@ export function ContinuityPage() {
         { name: "title", label: "Titre", required: true, minLength: 5 },
         { name: "scheduledFor", label: "Prévu le", type: "date" },
       ],
+      onSubmit: (f) => scheduleDrTest({ testType: f.testType, title: f.title, scheduledFor: f.scheduledFor || null }),
     });
-    if (v) void run(() => scheduleDrTest({ testType: v.testType, title: v.title, scheduledFor: v.scheduledFor || null }), "Exercice programmé");
+    if (v) saved("Exercice programmé");
   }
 
   async function askDrResult(testId: string) {
@@ -166,10 +173,16 @@ export function ContinuityPage() {
         { name: "correctiveActions", label: "Actions correctives", type: "textarea" },
         { name: "nextTestDue", label: "Prochain exercice dû le", type: "date" },
       ],
+      onSubmit: (f) => recordDrTestResult(testId, {
+        passed: f.passed === "true", findings: f.findings, correctiveActions: f.correctiveActions || null, nextTestDue: f.nextTestDue || null,
+      }),
     });
-    if (v) void run(() => recordDrTestResult(testId, {
-      passed: v.passed === "true", findings: v.findings, correctiveActions: v.correctiveActions || null, nextTestDue: v.nextTestDue || null,
-    }), "Résultat consigné");
+    if (v) saved("Résultat consigné");
+  }
+
+  /** Après un enregistrement fait dans une fenêtre (qui affiche elle-même un refus) : message et rechargement. */
+  function saved(msg: string) {
+    setError(null); setNotice(msg); load();
   }
 
   async function run(fn: () => Promise<unknown>, msg?: string) {

@@ -48,9 +48,13 @@ export function BillingPortalPage() {
   async function askCancel(subscriptionId: string) {
     const reason = await prompt.ask({ title: "Résilier l'abonnement", label: "Pourquoi souhaitez-vous résilier ?", multiline: true,
       danger: true, confirmLabel: "Résilier en fin de période",
-      hint: "L'accès reste ouvert jusqu'à la fin de la période payée ; vous pouvez réactiver d'ici là." });
-    if (reason !== null) void run(() => selfCancel(subscriptionId, false, reason || undefined), "Résiliation en fin de période enregistrée");
+      hint: "L'accès reste ouvert jusqu'à la fin de la période payée ; vous pouvez réactiver d'ici là.",
+      onSubmit: (r) => selfCancel(subscriptionId, false, r || undefined) });
+    if (reason !== null) saved("Résiliation en fin de période enregistrée");
   }
+
+  /** Après un enregistrement fait dans une fenêtre (qui affiche elle-même un refus) : message et rechargement. */
+  const saved = (msg: string) => void run(async () => undefined, msg);
 
   async function run(fn: () => Promise<unknown>, msg?: string) {
     setBusy(true); setError(null); setNotice(null);

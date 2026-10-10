@@ -78,14 +78,19 @@ export function PlatformConsolePage() {
   const prompt = usePrompt();
   async function askSuspend(subscriptionId: string) {
     const reason = await prompt.ask({ title: "Suspendre l'abonnement", label: "Motif de suspension", required: true, multiline: true,
-      danger: true, confirmLabel: "Suspendre", hint: "L'entreprise perd l'accès jusqu'à la réactivation ; le motif est journalisé." });
-    if (reason) void run(() => platformSuspend(subscriptionId, reason), "Suspendu");
+      danger: true, confirmLabel: "Suspendre", hint: "L'entreprise perd l'accès jusqu'à la réactivation ; le motif est journalisé.",
+      onSubmit: (r) => platformSuspend(subscriptionId, r) });
+    if (reason) saved("Suspendu");
   }
   async function askReject(appId: string) {
     const notes = await prompt.ask({ title: "Refuser l'application", label: "Motif du refus", required: true, multiline: true,
-      danger: true, confirmLabel: "Refuser", hint: "Transmis à l'éditeur de l'application." });
-    if (notes) void run(() => reviewApp(appId, "reject", notes), "Application refusée");
+      danger: true, confirmLabel: "Refuser", hint: "Transmis à l'éditeur de l'application.",
+      onSubmit: (n) => reviewApp(appId, "reject", n) });
+    if (notes) saved("Application refusée");
   }
+
+  /** Après un enregistrement fait dans une fenêtre (qui affiche elle-même un refus) : message et rechargement. */
+  const saved = (msg: string) => void run(async () => undefined, msg);
 
   async function run(fn: () => Promise<unknown>, msg?: string) {
     setBusy(true); setError(null); setNotice(null);
