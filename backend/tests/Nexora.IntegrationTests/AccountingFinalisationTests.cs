@@ -26,7 +26,7 @@ public sealed class AccountingFinalisationTests(FinanceEngineFixture fx)
     }
 
     private static string U() => Guid.NewGuid().ToString("N")[..6].ToUpperInvariant();
-    private static DateOnly Today => DateOnly.FromDateTime(DateTime.UtcNow);
+    private static DateOnly Today => TestDates.Today;
 
     [Fact]
     public async Task Invalid_lines_are_refused_with_a_clear_error_and_a_foreign_currency_entry_keeps_its_currency()

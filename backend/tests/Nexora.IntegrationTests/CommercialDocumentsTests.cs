@@ -76,7 +76,7 @@ public sealed class CommercialDocumentsTests(FinanceEngineFixture fx)
         var quotes = s.ServiceProvider.GetRequiredService<QuoteService>();
 
         var created = await quotes.CreateAsync(new CreateQuoteRequest(
-            Customer, "HTG", Officine, DateOnly.FromDateTime(DateTime.UtcNow).AddDays(30), "Paiement à 30 j", null,
+            Customer, "HTG", Officine, TestDates.Today.AddDays(30), "Paiement à 30 j", null,
             [new QuoteLineInput(Product, 4m, 25_000m, 0m, null)]));
         created.IsSuccess.Should().BeTrue(created.Error?.Message);
 

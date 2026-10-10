@@ -24,7 +24,7 @@ namespace Nexora.Infrastructure.Mobile;
 /// </summary>
 public sealed class SqlDeliveryService(
     NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow, OrderService orders, INotificationService notifications,
-    ISettingsService settings) : IDeliveryService
+    ISettingsService settings, IBusinessCalendar calendar) : IDeliveryService
 {
     public const string LocationSetting = "field_ops.capture_location";
     private static readonly string[] Closed = ["delivered", "returned"];
@@ -112,7 +112,7 @@ public sealed class SqlDeliveryService(
     {
         if (request.Stops is null || request.Stops.Count == 0) return Error.Validation("delivery_route.stops", "Au moins un arrêt requis.");
         if (request.Stops.Count > 100) return Error.Validation("delivery_route.stops", "Cent arrêts au plus par tournée.");
-        if (request.RouteDate < DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-1))
+        if (request.RouteDate < calendar.Today.AddDays(-1))
             return Error.Validation("delivery_route.date", "La date de tournée ne peut pas être passée.");
         if (request.Vehicle is { Length: > 80 }) return Error.Validation("delivery_route.vehicle", "Véhicule : 80 caractères au plus.");
         if (request.DriverUserId is { } driver

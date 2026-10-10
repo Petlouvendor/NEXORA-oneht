@@ -140,7 +140,7 @@ public sealed class SecurityGovernanceTests(FinanceEngineFixture fx)
         await using var s = Scope();
         As(s.ServiceProvider, Direction);
         var certs = s.ServiceProvider.GetRequiredService<ISecurityCertificateService>();
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var today = TestDates.Today;
 
         var expiring = await certs.RegisterAsync(new RegisterCertificateRequest(
             "api.nexora.test", "tls", "Test CA", "aa:bb", today.AddDays(-30), today.AddDays(10)));
@@ -228,7 +228,7 @@ public sealed class SecurityGovernanceTests(FinanceEngineFixture fx)
 
         await findings.ReportAsync(new ReportFindingRequest("pentest", "critical", "Test tableau de bord"));
         await certs.RegisterAsync(new RegisterCertificateRequest("dashboard-test.nexora.test", "tls", null, null,
-            DateOnly.FromDateTime(DateTime.UtcNow), DateOnly.FromDateTime(DateTime.UtcNow).AddDays(5)));
+            TestDates.Today, TestDates.Today.AddDays(5)));
         await continuity.OpenIncidentAsync(new OpenIncidentRequest("p2", "phishing", "Test tableau de bord", Domain: "security"));
 
         var after = await dashboard.DashboardAsync();

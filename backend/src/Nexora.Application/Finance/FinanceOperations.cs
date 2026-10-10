@@ -43,7 +43,7 @@ public sealed class FinanceOperations(
     IAccountResolver accounts,
     IExpenseRegister expenses,
     IUnitOfWork uow,
-    ITenantContext tenant) : IFinanceOperations
+    ITenantContext tenant, IBusinessCalendar calendar) : IFinanceOperations
 {
     private Guid Company => tenant.ActiveCompanyId
         ?? throw TenantErrors.ActiveCompanyRequired();
@@ -84,7 +84,7 @@ public sealed class FinanceOperations(
         {
             return await uow.ExecuteInTransactionAsync<Result<PostingResultResponse>>(async token =>
             {
-                await expenses.RegisterPaidAsync(r.ExpenseId, DateOnly.FromDateTime(r.OccurredAt.UtcDateTime), r.NetAmount, r.TaxAmount,
+                await expenses.RegisterPaidAsync(r.ExpenseId, calendar.DateOf(r.OccurredAt), r.NetAmount, r.TaxAmount,
                     r.Currency, r.TenderFinancialAccountId, r.Description, token);
                 var posted = await Run(new ExpenseRecorded(Company, r.OperationUuid, r.OccurredAt, r.ExpenseId,
                     new Money(r.NetAmount, r.Currency), new Money(r.TaxAmount, r.Currency),

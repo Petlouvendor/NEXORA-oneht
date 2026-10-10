@@ -106,7 +106,7 @@ public sealed class MobileFieldOpsTests(FinanceEngineFixture fx)
         await devices.RegisterPushTokenAsync(registered.Value, new RegisterPushTokenRequest("push-token-1", "fcm"));
 
         var delivery = For<IDeliveryService>(s.ServiceProvider, Direction);
-        var created = await delivery.CreateRouteAsync(new CreateDeliveryRouteRequest(Direction, DateOnly.FromDateTime(DateTime.UtcNow), "Moto-1",
+        var created = await delivery.CreateRouteAsync(new CreateDeliveryRouteRequest(Direction, TestDates.Today, "Moto-1",
             [new CreateDeliveryStopInput(null, null, "12 Rue Test", 18.5392m, -72.3364m, "+509-0000-0000")]));
         created.IsSuccess.Should().BeTrue(created.Error?.Message);
         created.Value!.Stops.Should().HaveCount(1);
@@ -138,7 +138,7 @@ public sealed class MobileFieldOpsTests(FinanceEngineFixture fx)
     {
         await using var s = Scope();
         var delivery = For<IDeliveryService>(s.ServiceProvider, Direction);
-        var created = await delivery.CreateRouteAsync(new CreateDeliveryRouteRequest(Direction, DateOnly.FromDateTime(DateTime.UtcNow), null,
+        var created = await delivery.CreateRouteAsync(new CreateDeliveryRouteRequest(Direction, TestDates.Today, null,
             [new CreateDeliveryStopInput(null, null, "Adresse offline", null, null, null)]));
         var stopId = created.Value!.Stops[0].Id;
 
@@ -207,7 +207,7 @@ public sealed class MobileFieldOpsTests(FinanceEngineFixture fx)
     {
         await using var s = Scope();
         var delivery = For<IDeliveryService>(s.ServiceProvider, Direction);
-        await delivery.CreateRouteAsync(new CreateDeliveryRouteRequest(Direction, DateOnly.FromDateTime(DateTime.UtcNow), null,
+        await delivery.CreateRouteAsync(new CreateDeliveryRouteRequest(Direction, TestDates.Today, null,
             [new CreateDeliveryStopInput(null, null, "Adresse bootstrap", null, null, null)]));
 
         var interventions = For<IFieldInterventionService>(s.ServiceProvider, Direction);
@@ -238,7 +238,7 @@ public sealed class MobileFieldOpsTests(FinanceEngineFixture fx)
     {
         await using var s = Scope();
         var delivery = For<IDeliveryService>(s.ServiceProvider, Direction);
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var today = TestDates.Today;
 
         (await delivery.CreateRouteAsync(new CreateDeliveryRouteRequest(Cashier, today, null, [new CreateDeliveryStopInput(null, null, "x", null, null, null)])))
             .Error!.Code.Should().Be("delivery_route.driver", "le caissier n'a pas accès au terrain");
@@ -297,7 +297,7 @@ public sealed class MobileFieldOpsTests(FinanceEngineFixture fx)
     {
         await using var s = Scope();
         var delivery = For<IDeliveryService>(s.ServiceProvider, Direction);
-        var route = (await delivery.CreateRouteAsync(new CreateDeliveryRouteRequest(Direction, DateOnly.FromDateTime(DateTime.UtcNow), null,
+        var route = (await delivery.CreateRouteAsync(new CreateDeliveryRouteRequest(Direction, TestDates.Today, null,
             [new CreateDeliveryStopInput(null, null, "Rue C", null, null, null)]))).Value!;
         var stopId = route.Stops[0].Id;
         var sig = await Proof(s.ServiceProvider, "signature", stopId);

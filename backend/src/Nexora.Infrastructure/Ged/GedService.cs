@@ -16,7 +16,7 @@ namespace Nexora.Infrastructure.Ged;
 /// cycle de vie et les verrous. La détection de doublon (§39) compare des empreintes SHA-256,
 /// jamais bloquante — une décision humaine.
 /// </summary>
-public sealed class SqlGedService(NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow) : IGedService
+public sealed class SqlGedService(NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow, IBusinessCalendar calendar) : IGedService
 {
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
     private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
@@ -365,7 +365,7 @@ public sealed class SqlGedService(NexoraDbContext db, ITenantContext tenant, IUn
         var row = await GetRowAsync(id, ct);
         if (row is null) return Error.NotFound("document.not_found", "Document introuvable.");
         if (row.LegalHold) return Error.Forbidden("document.legal_hold", "Document sous legal hold — suppression impossible (§29).");
-        if (row.RetentionUntil is { } until && until > DateOnly.FromDateTime(DateTime.UtcNow))
+        if (row.RetentionUntil is { } until && until > calendar.Today)
             return Error.Forbidden("document.retention", $"Document sous rétention jusqu'au {until:yyyy-MM-dd} (§28).");
 
         await db.Database.ExecuteSqlAsync($"""
@@ -385,7 +385,7 @@ public sealed class SqlGedService(NexoraDbContext db, ITenantContext tenant, IUn
             """).FirstOrDefaultAsync(ct);
         if (row is null) return Error.NotFound("document.not_found", "Aucune demande de suppression en attente.");
         if (row.LegalHold) return Error.Forbidden("document.legal_hold", "Document sous legal hold (§29).");
-        if (row.RetentionUntil is { } until && until > DateOnly.FromDateTime(DateTime.UtcNow))
+        if (row.RetentionUntil is { } until && until > calendar.Today)
             return Error.Forbidden("document.retention", "Document encore sous rétention (§28).");
         if (row.RequestedBy is { } requester && requester == tenant.UserId)
             return Error.Forbidden("document.four_eyes", "Le demandeur ne peut pas confirmer sa propre suppression (§30).");

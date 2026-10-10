@@ -1,3 +1,4 @@
+using Nexora.Application.Abstractions;
 using Microsoft.EntityFrameworkCore;
 using Nexora.Application.Inventory;
 using Nexora.Application.Migration;
@@ -401,7 +402,7 @@ internal sealed class OpeningStockImporter(NexoraDbContext db, IStockLedger stoc
         if (!ctx.DryRun)
         {
             var occurred = TabularParser.ParseDate(F(m, "count_date")) is { } d
-                ? new DateTimeOffset(d.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero) : (DateTimeOffset?)null;
+                ? BusinessDate.Noon(d) : (DateTimeOffset?)null;
             await stock.PostAsync(new StockMovementRequest(pid, lid, MovementType.Opening, qty, cost,
                 ReferenceType: "import", ReferenceId: ctx.ImportJobId, OccurredAt: occurred), ct);
         }

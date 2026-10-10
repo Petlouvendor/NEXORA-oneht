@@ -14,7 +14,7 @@ namespace Nexora.Infrastructure.Reporting;
 /// <c>target/actual</c> — dans les deux cas, ≥100 % signifie l'objectif tenu (§40).
 /// </summary>
 public sealed class SqlObjectiveService(NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow,
-    IKpiService kpi, IDateTimeProvider clock, IKpiGovernanceService kpiCatalog, IPermissionService permissions) : IObjectiveService
+    IKpiService kpi, IDateTimeProvider clock, IKpiGovernanceService kpiCatalog, IPermissionService permissions, IBusinessCalendar calendar) : IObjectiveService
 {
     private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
@@ -49,7 +49,7 @@ public sealed class SqlObjectiveService(NexoraDbContext db, ITenantContext tenan
         if (request.Weight <= 0) return Error.Validation("objective.weight", "Le poids doit être positif.");
         if (request.TargetValue < 0) return Error.Validation("objective.target_value", "La cible ne peut pas être négative.");
 
-        var effectiveFrom = request.EffectiveFrom ?? DateOnly.FromDateTime(clock.UtcNow.Date);
+        var effectiveFrom = request.EffectiveFrom ?? calendar.Today;
         var id = request.Id ?? Guid.NewGuid();
         await db.Database.ExecuteSqlAsync($"""
             INSERT INTO nexora.kpi_target
@@ -79,7 +79,7 @@ public sealed class SqlObjectiveService(NexoraDbContext db, ITenantContext tenan
 
     public async Task<ObjectiveScoreDto> ScoreAsync(CancellationToken ct = default)
     {
-        var today = DateOnly.FromDateTime(clock.UtcNow.Date);
+        var today = calendar.Today;
         var active = (await db.Database.SqlQueryRaw<Row>(
             Select + " WHERE company_id = {0} AND status = 'active' AND effective_from <= {1} AND (effective_to IS NULL OR effective_to >= {1})",
             Company, today).ToListAsync(ct));

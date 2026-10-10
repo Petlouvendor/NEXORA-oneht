@@ -201,8 +201,10 @@ public sealed class MarketplaceEcosystemTests(FinanceEngineFixture fx)
 
         var usage = s.ServiceProvider.GetRequiredService<IDeveloperUsageQuery>();
         var report = await usage.UsageAsync(30);
+        // Jour civil de l'entreprise (comme current_date côté base) — pas le jour UTC, déjà au lendemain le soir.
+        var today = await s.ServiceProvider.GetRequiredService<IBusinessCalendar>().TodayAsync();
         report.Should().ContainSingle(u => u.ApiKeyId == created.Value.Key.Id)
-            .Which.Daily.Should().ContainSingle(d => d.Date == DateOnly.FromDateTime(DateTime.UtcNow))
+            .Which.Daily.Should().ContainSingle(d => d.Date == today)
             .Which.RequestCount.Should().Be(3);
     }
 }

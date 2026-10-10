@@ -39,6 +39,7 @@ public sealed class FinancialEngine(
     IFinancialAccountStore financialAccounts,
     IUnitOfWork uow,
     ITenantContext tenant,
+    IBusinessCalendar calendar,
     ILogger<FinancialEngine> logger) : IFinancialEngine
 {
     public async Task<Result<PostingResult>> HandleAsync(FinancialEvent evt, CancellationToken ct = default)
@@ -54,8 +55,8 @@ public sealed class FinancialEngine(
 
         var func = await currency.FunctionalCurrencyAsync(ct);
         var decimals = await currency.DecimalPlacesAsync(func, ct);
-        var ctx = new PostingContext(accounts, fx, func, decimals);
-        var date = DateOnly.FromDateTime(evt.OccurredAt.UtcDateTime);
+        var ctx = new PostingContext(accounts, fx, func, decimals, await calendar.ZoneAsync(ct));
+        var date = ctx.DateOf(evt.OccurredAt);
 
         AccountingPeriod period;
         try
@@ -425,7 +426,7 @@ public sealed class FinancialEngine(
 
     private async Task<JournalEntryDraft> BuildCustomerPaymentDraft(CustomerPaymentReceived e, PostingContext ctx, CancellationToken ct)
     {
-        var d = new JournalEntryDraft("CA", DateOnly.FromDateTime(e.OccurredAt.UtcDateTime), ctx.FunctionalCurrency,
+        var d = new JournalEntryDraft("CA", ctx.DateOf(e.OccurredAt), ctx.FunctionalCurrency,
             "payment", null, "Encaissement client");
         var (tenderBase, rateId) = await ctx.ToFunctional(e.Amount, e.OccurredAt, ct);
         d.Debit(await ctx.TenderAccount(e.TenderFinancialAccountId, ct), e.Amount, tenderBase, rateId);
@@ -437,7 +438,7 @@ public sealed class FinancialEngine(
 
     private async Task<JournalEntryDraft> BuildSupplierPaymentDraft(SupplierPaymentMade e, PostingContext ctx, CancellationToken ct)
     {
-        var d = new JournalEntryDraft("BQ", DateOnly.FromDateTime(e.OccurredAt.UtcDateTime), ctx.FunctionalCurrency,
+        var d = new JournalEntryDraft("BQ", ctx.DateOf(e.OccurredAt), ctx.FunctionalCurrency,
             "payment", null, "Règlement fournisseur");
         var (tenderBase, rateId) = await ctx.ToFunctional(e.Amount, e.OccurredAt, ct);
         d.Credit(await ctx.TenderAccount(e.TenderFinancialAccountId, ct), e.Amount, tenderBase, rateId);
@@ -474,7 +475,7 @@ public sealed class FinancialEngine(
             }
 
             var alloc = new Money(a.Amount, ccy);
-            var issueAt = issueDate.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+            var issueAt = BusinessDate.Noon(issueDate);
             var (reliefBase, _) = await ctx.ToFunctional(alloc, issueAt, ct);   // solde relevé au coût d'origine
 
             if (isReceivable) d.Credit(control, alloc, reliefBase, description: "Règlement créance",

@@ -154,7 +154,7 @@ public sealed class SqlManualJournalService(
     IAccountingPeriods periods,
     IDocumentNumberGenerator numbers,
     ICompanyCurrencyContext currency,
-    IExchangeRateProvider fx) : IManualJournalService
+    IExchangeRateProvider fx, IBusinessCalendar calendar) : IManualJournalService
 {
     private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
@@ -373,7 +373,7 @@ public sealed class SqlManualJournalService(
                 $"Ligne {invalid.i + 1} : saisissez un montant positif au débit OU au crédit (pas les deux, pas zéro).");
         if (r.Lines.Any(l => string.IsNullOrWhiteSpace(l.AccountCode)))
             return Error.Validation("accounting.account_required", "Chaque ligne doit indiquer un compte.");
-        if (r.EntryDate > DateOnly.FromDateTime(DateTime.UtcNow).AddDays(1))
+        if (r.EntryDate > calendar.Today.AddDays(1))
             return Error.Validation("accounting.future_date", "La date de l'écriture ne peut être dans le futur.");
         var currencyKnown = await db.Database.SqlQuery<bool>($"""
             SELECT EXISTS(SELECT 1 FROM nexora.currency WHERE code = {r.Currency}) AS "Value"
@@ -443,7 +443,7 @@ public sealed class SqlManualJournalService(
         Guid? rateId = null;
         if (!string.Equals(ccy, func, StringComparison.OrdinalIgnoreCase))
         {
-            var at = date.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+            var at = BusinessDate.Noon(date);
             if (l.Debit > 0m) { var (m, rid) = await fx.ConvertAsync(new Money(l.Debit, ccy), func, at, ct); baseDebit = m.Amount; rateId = rid; }
             if (l.Credit > 0m) { var (m, rid) = await fx.ConvertAsync(new Money(l.Credit, ccy), func, at, ct); baseCredit = m.Amount; rateId = rid; }
         }

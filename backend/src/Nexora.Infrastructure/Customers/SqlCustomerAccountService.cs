@@ -32,7 +32,7 @@ public sealed class SqlCustomerAccountService(
     IDateTimeProvider clock,
     CustomerAccountNotifier notifier,
     Nexora.Application.Sales.ICreditControl creditControl,
-    ILogger<SqlCustomerAccountService> logger) : ICustomerAccountService
+    ILogger<SqlCustomerAccountService> logger, IBusinessCalendar calendar) : ICustomerAccountService
 {
     private Guid Company => CustomerAccountRules.Company(tenant);
     private Guid UserId => CustomerAccountRules.User(tenant);
@@ -306,7 +306,7 @@ public sealed class SqlCustomerAccountService(
                     if (entry is { } je)
                     {
                         var reversed = await reversals.ReverseAsync(je, $"Annulation du versement {p.PaymentNumber} — {reason}",
-                            DateOnly.FromDateTime(now.UtcDateTime), token);
+                            calendar.DateOf(now), token);
                         if (!reversed.IsSuccess) throw new AccountRefusal(reversed.Error!);
                         reversal = reversed.Value;
                     }
@@ -502,7 +502,7 @@ public sealed class SqlCustomerAccountService(
             return Error.Validation("credit.currency", $"Devise « {currency} » inconnue.");
 
         var now = clock.UtcNow;
-        var due = r.DueDate ?? await creditControl.DefaultDueDateAsync(customerId, DateOnly.FromDateTime(now.UtcDateTime), ct);
+        var due = r.DueDate ?? await creditControl.DefaultDueDateAsync(customerId, calendar.DateOf(now), ct);
         try
         {
             var receivableId = await uow.ExecuteInTransactionAsync(async token =>
@@ -535,7 +535,7 @@ public sealed class SqlCustomerAccountService(
     {
         var reason = r.Reason?.Trim() ?? "";
         if (reason.Length < 5) return Error.Validation("credit.schedule_reason", "Le motif de l'échéancier est obligatoire.");
-        var today = DateOnly.FromDateTime(clock.UtcNow.UtcDateTime);
+        var today = calendar.Today;
 
         try
         {

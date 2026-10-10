@@ -95,7 +95,7 @@ public sealed class StockLifecycleTests(FinanceEngineFixture fx)
         var db = s.ServiceProvider.GetRequiredService<NexoraDbContext>();
         var id = await NewProduct(s.ServiceProvider, "EXP", trackLots: true);
 
-        var past = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-3);
+        var past = TestDates.Today.AddDays(-3);
         await Receive(s.ServiceProvider, id, Officine, 40m, 10m, "LOT-OLD", past);
         (await ledger.OnHandAsync(id, Officine)).Should().Be(40m);
 
@@ -209,7 +209,7 @@ public sealed class StockLifecycleTests(FinanceEngineFixture fx)
         await using var s = Scope();
         var lots = s.ServiceProvider.GetRequiredService<ILotService>();
         var id = await NewProduct(s.ServiceProvider, "EXPR", trackLots: true);
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var today = TestDates.Today;
         await Receive(s.ServiceProvider, id, Officine, 10m, 5m, "LOT-NEAR", today.AddDays(10));
         await Receive(s.ServiceProvider, id, Officine, 10m, 5m, "LOT-GONE", today.AddDays(-2));
 
@@ -232,7 +232,7 @@ public sealed class StockLifecycleTests(FinanceEngineFixture fx)
         await catalog.SetReorderRuleAsync(new SetReorderRuleCommand(lowId, Officine, 5m, 100m, 20m, 80m, 3, false));
         await Receive(s.ServiceProvider, lowId, Officine, 10m, 10m);            // 10 <= reorder point 20
         await Receive(s.ServiceProvider, lotId, Officine, 8m, 5m, "LOT-SOON",
-            DateOnly.FromDateTime(DateTime.UtcNow).AddDays(7));
+            TestDates.Today.AddDays(7));
 
         var alerts = await queries.AlertsAsync();
         alerts.Should().Contain(a => a.ProductId == lowId && a.AlertType == "low_stock");

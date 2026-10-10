@@ -46,6 +46,17 @@ public sealed class RlsConnectionInterceptor(ITenantContext tenant) : DbConnecti
             ? string.Join(",", e.Select(g => g.ToString("D", CultureInfo.InvariantCulture)))
             : string.Empty;
 
+        // Fuseau de session = fuseau de l'entreprise active (analyse 2026-10 §5.5) : current_date, les conversions
+        // horodatage → date et les valeurs par défaut des colonnes date donnent le jour civil de l'entreprise, comme
+        // IBusinessCalendar côté application. Le fuseau est validé à l'écriture (V095) ; sans entreprise active, celui
+        // du serveur reste en place.
+        var zone = tenant.ActiveCompanyId is { } active
+            ? $"""
+              SELECT set_config('TimeZone', c.timezone, false) FROM nexora.company c
+               WHERE c.id = '{active.ToString("D", CultureInfo.InvariantCulture)}';
+              """
+            : string.Empty;
+
         // Valeurs = uuid/uuid-lists uniquement (aucune entrée utilisateur libre) → littéraux sûrs.
         return $"""
             SET nexora.bypass_rls = 'off';
@@ -53,6 +64,7 @@ public sealed class RlsConnectionInterceptor(ITenantContext tenant) : DbConnecti
             SET nexora.group_ids = '{groups}';
             SET nexora.user_id = '{user}';
             SET nexora.establishment_ids = '{establishments}';
+            {zone}
             """;
     }
 }

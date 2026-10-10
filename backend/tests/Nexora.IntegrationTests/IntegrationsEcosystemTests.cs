@@ -168,7 +168,7 @@ public sealed class IntegrationsEcosystemTests(FinanceEngineFixture fx)
             """).FirstAsync();
         payments.Should().Be(0);
 
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var today = TestDates.Today;
         var report = await recon.ReconcileAsync(today.AddDays(-1), today.AddDays(1));
         report.Findings.Should().Contain(f => f.Kind == "amount_mismatch" && f.IntentId == intent.Id);
     }

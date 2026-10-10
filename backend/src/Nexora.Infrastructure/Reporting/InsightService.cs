@@ -18,8 +18,8 @@ namespace Nexora.Infrastructure.Reporting;
 /// jamais déclenchée automatiquement (§38) : seule une notification et, si assigné, une tâche.
 /// </summary>
 public sealed class SqlInsightService(
-    NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow, IDateTimeProvider clock,
-    ITreasuryQueries treasury, INotificationService notifications) : IInsightService
+    NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow,
+    ITreasuryQueries treasury, INotificationService notifications, IBusinessCalendar calendar) : IInsightService
 {
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
 
@@ -77,7 +77,7 @@ public sealed class SqlInsightService(
 
     public async Task<int> ScanAsync(CancellationToken ct = default)
     {
-        var today = DateOnly.FromDateTime(clock.UtcNow.Date);
+        var today = calendar.Today;
         var created = 0;
         created += await ScanRevenueDrop(today, ct);
         created += await ScanMarginDrop(today, ct);

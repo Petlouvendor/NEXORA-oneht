@@ -29,7 +29,7 @@ public sealed class SqlCustomerExpenseService(
     ICreditControl creditControl,
     IPosApprovalNotifier notifier,
     IDateTimeProvider clock,
-    ILogger<SqlCustomerExpenseService> logger) : ICustomerExpenseService
+    ILogger<SqlCustomerExpenseService> logger, IBusinessCalendar calendar) : ICustomerExpenseService
 {
     private const string Kind = "Dépense client";
     private Guid Company => CustomerAccountRules.Company(tenant);
@@ -116,7 +116,7 @@ public sealed class SqlCustomerExpenseService(
                 (id, company_id, expense_number, customer_id, category, description, amount, currency_id, expense_date,
                  billable, due_date, status, document_id, establishment_id, created_by, submitted_at, operation_uuid)
             VALUES ({id}, {Company}, {number}, {customerId}, {category}, {r.Description.Trim()}, {amount}, {customer.CurrencyId},
-                    {r.ExpenseDate ?? DateOnly.FromDateTime(clock.UtcNow.UtcDateTime)}, {r.Billable}, {r.DueDate}, {status},
+                    {r.ExpenseDate ?? calendar.Today}, {r.Billable}, {r.DueDate}, {status},
                     {r.DocumentId}, {customer.EstablishmentId}, {UserId}, {(r.Submit ? clock.UtcNow : (DateTimeOffset?)null)},
                     {r.OperationUuid})
             """, ct);
@@ -164,7 +164,7 @@ public sealed class SqlCustomerExpenseService(
                 var dueDate = row.DueDate;
                 if (row.Billable)
                 {
-                    dueDate ??= await creditControl.DefaultDueDateAsync(row.CustomerId, DateOnly.FromDateTime(now.UtcDateTime), token);
+                    dueDate ??= await creditControl.DefaultDueDateAsync(row.CustomerId, calendar.DateOf(now), token);
                     var posted = await engine.HandleAsync(new CustomerExpenseBilled(
                         Company, row.OperationUuid, now, row.Id, row.CustomerId, new Money(row.Amount, row.Currency), dueDate,
                         $"{row.ExpenseNumber} — {row.Description}") { UserId = tenant.UserId }, token);
@@ -254,7 +254,7 @@ public sealed class SqlCustomerExpenseService(
                     if (row.JournalEntryId is { } je)
                     {
                         var reversed = await reversals.ReverseAsync(je, $"Annulation de la dépense {row.ExpenseNumber} — {reason}",
-                            DateOnly.FromDateTime(now.UtcDateTime), token);
+                            calendar.DateOf(now), token);
                         if (!reversed.IsSuccess) throw new AccountRefusal(reversed.Error!);
                         reversal = reversed.Value;
                     }

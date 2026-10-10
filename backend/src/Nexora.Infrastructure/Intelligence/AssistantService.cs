@@ -19,9 +19,9 @@ namespace Nexora.Infrastructure.Intelligence;
 /// journalise la question dans <c>assistant_query</c> pour l'observabilité (§38).
 /// </summary>
 public sealed class SqlAssistantService(
-    NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow, IDateTimeProvider clock,
+    NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow,
     IKpiService kpi, IInsightService insights, IRecommendationService recommendations, IAskNexora ask,
-    IPermissionService permissions) : IAssistantService
+    IPermissionService permissions, IBusinessCalendar calendar) : IAssistantService
 {
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
     private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
@@ -50,7 +50,7 @@ public sealed class SqlAssistantService(
         if (!Allowed(r))
             throw new DomainException(Error.Forbidden("assistant.briefing_forbidden",
                 $"Le briefing « {r} » n'est pas accessible avec vos permissions."));
-        var today = DateOnly.FromDateTime(clock.UtcNow.Date);
+        var today = calendar.Today;
 
         if (r == "caissier")
         {

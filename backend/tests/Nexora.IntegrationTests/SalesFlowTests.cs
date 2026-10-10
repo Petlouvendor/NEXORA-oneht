@@ -200,7 +200,7 @@ public sealed class SalesFlowTests(FinanceEngineFixture fx)
         var q = s.ServiceProvider.GetRequiredService<ISalesQueries>();
         var cust = await NewCustomer();
         var p = await NewProduct(s.ServiceProvider, 80m, 10m);
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var today = TestDates.Today;
         CreateQuoteRequest Req(decimal qty, DateOnly? until) => new(cust, "HTG", null, until, "Paiement à 30 jours", null,
             [new QuoteLineInput(p, qty, null, 0m, null)]);
 

@@ -27,7 +27,7 @@ public sealed class PosSalesTests(FinanceEngineFixture fx)
     private AsyncServiceScope Scope() => fx.Provider.CreateAsyncScope();
 
     // Échéance future : un crédit échu bloque désormais toute nouvelle vente à crédit du client (module clients §12).
-    private static DateOnly Due => DateOnly.FromDateTime(DateTime.UtcNow).AddDays(30);
+    private static DateOnly Due => TestDates.Today.AddDays(30);
 
     private async Task<Guid> NewCustomer(decimal creditLimit)
     {

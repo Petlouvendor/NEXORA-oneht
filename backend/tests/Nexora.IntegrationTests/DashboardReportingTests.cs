@@ -119,7 +119,7 @@ public sealed class DashboardReportingTests(FinanceEngineFixture fx)
     {
         var p = await Stocked("AGE", 100m, 40m, 50m);
         var customer = await NewCustomer(500_000m);
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var today = TestDates.Today;
 
         await using var s = Scope();
         var sale = await s.ServiceProvider.GetRequiredService<SalesService>().CheckoutAsync(

@@ -190,14 +190,14 @@ public sealed class SqlCollectionsStore(NexoraDbContext db, ITenantContext tenan
 }
 
 /// <summary>Lectures crédit & recouvrement (Phase 27 §15, §29, §35).</summary>
-public sealed class SqlCreditPortfolioQueries(NexoraDbContext db, ITenantContext tenant, IDateTimeProvider clock) : ICreditPortfolioQueries
+public sealed class SqlCreditPortfolioQueries(NexoraDbContext db, ITenantContext tenant, IBusinessCalendar calendar) : ICreditPortfolioQueries
 {
     private Guid Company => tenant.ActiveCompanyId
         ?? throw TenantErrors.ActiveCompanyRequired();
 
     public async Task<IReadOnlyList<CollectionsRowDto>> CollectionsAsync(bool onlyOverdue, CancellationToken ct = default)
     {
-        var today = DateOnly.FromDateTime(clock.UtcNow.UtcDateTime);
+        var today = calendar.Today;
         return await db.Database.SqlQuery<CollectionsRowDto>($"""
             SELECT c.id AS "CustomerId", c.name AS "CustomerName", COALESCE(rcur.code, cur.code) AS "Currency",
                    COALESCE(SUM(r.remaining_amount), 0) AS "TotalOutstanding",
@@ -229,7 +229,7 @@ public sealed class SqlCreditPortfolioQueries(NexoraDbContext db, ITenantContext
 
     public async Task<AgingSummaryDto> AgingSummaryAsync(CancellationToken ct = default)
     {
-        var today = DateOnly.FromDateTime(clock.UtcNow.UtcDateTime);
+        var today = calendar.Today;
         var currency = await db.Database.SqlQuery<string>($"""
             SELECT code AS "Value" FROM nexora.currency cur
             JOIN nexora.company co ON co.default_currency_id = cur.id WHERE co.id = {Company}
@@ -278,7 +278,7 @@ public sealed class SqlCreditPortfolioQueries(NexoraDbContext db, ITenantContext
         var currency = await db.Database.SqlQuery<string>($"""
             SELECT cur.code AS "Value" FROM nexora.customer c JOIN nexora.currency cur ON cur.id = c.default_currency_id WHERE c.id = {customerId}
             """).FirstAsync(ct);
-        var today = DateOnly.FromDateTime(clock.UtcNow.UtcDateTime);
+        var today = calendar.Today;
 
         // Module clients §7 : le relevé lit le journal financier client (crédits, versements, annulations,
         // retours/avoirs, radiations, remboursements). Avant, il sommait toutes les ventes « crédit/mixte »
@@ -369,7 +369,7 @@ public sealed class SqlCreditPortfolioQueries(NexoraDbContext db, ITenantContext
 
     public async Task<IReadOnlyList<CreditReceivableDto>> ReceivablesAsync(Guid customerId, bool onlyOpen, CancellationToken ct = default)
     {
-        var today = DateOnly.FromDateTime(clock.UtcNow.UtcDateTime);
+        var today = calendar.Today;
         return await db.Database.SqlQuery<CreditReceivableDto>($"""
             SELECT r.id AS "Id", COALESCE(r.credit_number, '—') AS "CreditNumber", cur.code AS "Currency",
                    r.original_amount AS "OriginalAmount", r.paid_amount AS "PaidAmount", r.remaining_amount AS "RemainingAmount",
@@ -406,7 +406,7 @@ public sealed class SqlCreditPortfolioQueries(NexoraDbContext db, ITenantContext
 
     public async Task<IReadOnlyList<FollowUpDto>> FollowUpsAsync(CancellationToken ct = default)
     {
-        var today = DateOnly.FromDateTime(clock.UtcNow.UtcDateTime);
+        var today = calendar.Today;
         // Relance : seule la DERNIÈRE action du client compte — une relance prévue puis faite ne doit plus
         // apparaître (la liste « actions échues » gardait toutes les anciennes dates).
         return await db.Database.SqlQuery<FollowUpDto>($"""

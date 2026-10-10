@@ -47,7 +47,7 @@ public sealed record BlockCore(Guid CustomerId, string BlockType, bool IsActive)
 /// </summary>
 public sealed class CollectionsService(
     ICollectionsStore store, IFinancialEngine engine, IUnitOfWork uow,
-    ITenantContext tenant, IDateTimeProvider clock)
+    ITenantContext tenant, IDateTimeProvider clock, IBusinessCalendar calendar)
 {
     private Guid Company => tenant.ActiveCompanyId
         ?? throw TenantErrors.ActiveCompanyRequired();
@@ -55,7 +55,7 @@ public sealed class CollectionsService(
     // --- Promesse de paiement (§24) ---------------------------------
     private static readonly string[] Channels = ["phone", "email", "sms", "whatsapp", "visit", "internal"];
     private static readonly string[] OpenReceivable = ["OPEN", "PARTIALLY_PAID", "OVERDUE"];
-    private DateOnly Today => DateOnly.FromDateTime(clock.UtcNow.UtcDateTime);
+    private DateOnly Today => calendar.Today;
 
     public async Task<Result<Guid>> CreatePromiseAsync(CreatePromiseRequest r, CancellationToken ct = default)
     {

@@ -51,7 +51,7 @@ public sealed class OrderService(
     IUnitOfWork uow,
     ITenantContext tenant,
     IDateTimeProvider clock,
-    ILogger<OrderService> logger)
+    ILogger<OrderService> logger, IBusinessCalendar calendar)
 {
     private Guid Company => tenant.ActiveCompanyId
         ?? throw TenantErrors.ActiveCompanyRequired();
@@ -152,7 +152,7 @@ public sealed class OrderService(
             return Error.Validation("order.line_amount", "Prix et remises ne peuvent être négatifs.");
         if (r.Lines.GroupBy(l => l.ProductId).Any(g => g.Count() > 1))
             return Error.Validation("order.duplicate_line", "Un même article apparaît deux fois : regroupez les quantités.");
-        if (r.DueDate is { } due && due < DateOnly.FromDateTime(clock.UtcNow.UtcDateTime).AddDays(-1))
+        if (r.DueDate is { } due && due < calendar.Today.AddDays(-1))
             return Error.Validation("order.due_date", "L'échéance est déjà passée.");
         if (r.InventoryLocationId is { } loc)
         {
