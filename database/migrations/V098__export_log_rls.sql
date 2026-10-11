@@ -1,0 +1,12 @@
+-- =============================================================================
+-- NEXORA — V098 — RLS sur export_log (analyse exhaustive 2026-10, §5.2)
+--
+-- Le journal des impressions et exports porte company_id mais n'avait pas de RLS : chaque lecture filtrait bien par
+-- entreprise, mais une requête future sans filtre aurait montré l'historique d'exports des autres entreprises. La
+-- base protège désormais elle-même ces lignes, comme les 249 autres tables d'entreprise.
+--
+-- access_scope reste sans RLS, volontairement, comme user_role et app_user : ces tables servent à résoudre l'identité
+-- et les périmètres d'un utilisateur à la connexion, avant qu'un contexte d'entreprise existe.
+-- Idempotente.
+-- =============================================================================
+SELECT nexora.enable_company_rls('nexora.export_log');
