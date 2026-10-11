@@ -10,6 +10,9 @@
     <PackageVersion Include="Npgsql" Version="10.0.3" />
     <PackageVersion Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.12" />
     <PackageVersion Include="Microsoft.EntityFrameworkCore" Version="10.0.12" />
+    <!-- Explicite : sans lui, la compilation voit Relational 10.0.12 (via Design, privé) mais la publication embarque
+         la version tirée par Npgsql, plus ancienne → FileNotFoundException au démarrage de l'image (vu en E2E). -->
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.12" />
 
     <!-- Web / API -->
     <PackageVersion Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.12" />

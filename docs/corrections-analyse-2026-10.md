@@ -173,3 +173,20 @@ fréquentes (lignes de vente, lignes d'écriture, mouvements de stock par articl
 politiques `retention_policy`) ; les jetons de rafraîchissement disparaissent en cascade avec les sessions expirées
 (7 jours). Le journal d'audit reste immuable par conception : sa croissance se traitera par partition le jour où le
 volume le justifiera, pas par purge.
+
+## Vérification finale
+
+**Régression trouvée par l'installation E2E, corrigée.** Après la mise à jour EF Core 10.0.12, l'image de production ne
+démarrait plus (`FileNotFoundException: Microsoft.EntityFrameworkCore.Relational 10.0.12`) : la compilation voyait
+Relational 10.0.12 par le paquet `Design` (réservé à la conception, exclu de la publication) tandis que la publication
+embarquait la version tirée par Npgsql. Les tests locaux ne pouvaient pas le voir. Relational est désormais déclaré
+explicitement ; l'image démarre.
+
+| Suite | Résultat |
+|---|---|
+| Unitaires backend | 88 / 88 |
+| Intégration backend (PostgreSQL réel, RLS) | 496 / 496 |
+| API backend (HTTP réel) | 194 / 194 |
+| Interface (Vitest) | 275 / 275 ; typage et ESLint sans erreur |
+| E2E Playwright, installation neuve | **16 / 16** — dont « stock = compte 3110 » (ignoré depuis la phase 19) et le formulaire d'incident |
+| Dépendances | 0 vulnérabilité NuGet, 0 vulnérabilité npm |
