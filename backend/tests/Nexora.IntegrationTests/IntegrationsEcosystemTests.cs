@@ -168,7 +168,7 @@ public sealed class IntegrationsEcosystemTests(FinanceEngineFixture fx)
             """).FirstAsync();
         payments.Should().Be(0);
 
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var today = TestDates.Today;
         var report = await recon.ReconcileAsync(today.AddDays(-1), today.AddDays(1));
         report.Findings.Should().Contain(f => f.Kind == "amount_mismatch" && f.IntentId == intent.Id);
     }
@@ -205,14 +205,18 @@ public sealed class IntegrationsEcosystemTests(FinanceEngineFixture fx)
         var intent = (await gw.CreateIntentAsync(NewIntent(400m))).Value!;
         await gw.ProviderCallbackAsync(intent.Id, new ProviderCallbackRequest("confirmed", 400m, null));
 
-        var partial = await gw.RefundAsync(intent.Id, new RefundPaymentRequest(150m, "Retour partiel"));
-        partial.Value!.Status.Should().Be("partially_refunded");
-        partial.Value.RefundedAmount.Should().Be(150m);
-
-        var full = await gw.RefundAsync(intent.Id, new RefundPaymentRequest(250m, "Solde"));
+        // Le remboursement changeait seulement le statut : aucun argent ni écriture ne bougeait (phase 15).
+        (await gw.RefundAsync(intent.Id, new RefundPaymentRequest(150m, "Retour partiel"))).Error!.Code
+            .Should().Be("integrations.refund_partial");
+        (await gw.RefundAsync(intent.Id, new RefundPaymentRequest(400m, ""))).Error!.Code.Should().Be("integrations.refund_reason");
+        var full = await gw.RefundAsync(intent.Id, new RefundPaymentRequest(400m, "Commande annulée par le client"));
+        full.IsSuccess.Should().BeTrue(full.Error?.Message);
         full.Value!.Status.Should().Be("refunded");
+        var db = s.ServiceProvider.GetRequiredService<NexoraDbContext>();
+        (await db.Database.SqlQuery<string>($"SELECT status AS \"Value\" FROM nexora.payment WHERE id = {full.Value.PaymentId}").FirstAsync())
+            .Should().Be("void", "le versement simulé est réellement annulé (contre-passation)");
 
-        (await gw.RefundAsync(intent.Id, new RefundPaymentRequest(1m, "Trop"))).IsSuccess.Should().BeFalse();
+        (await gw.RefundAsync(intent.Id, new RefundPaymentRequest(400m, "Encore une fois"))).IsSuccess.Should().BeFalse();
     }
 
     // ---- §43 : import relevé avec doublon + rapprochement bancaire automatique ----
@@ -229,7 +233,8 @@ public sealed class IntegrationsEcosystemTests(FinanceEngineFixture fx)
 
         var valueDate = DateOnly.Parse(await TxnDateAsync(intent.Id));
         var import = await bank.ImportStatementAsync(new ImportStatementRequest(
-            SettlementAccount, "REL-" + Guid.NewGuid().ToString("N")[..6], valueDate, 0m, 321m,
+            // Phase 7 : relevé cohérent exigé (ouverture + lignes = clôture : 0 + 321 + 321 + 999).
+            SettlementAccount, "REL-" + Guid.NewGuid().ToString("N")[..6], valueDate, 0m, 1641m,
             [
                 new StatementLineInput(valueDate, 321m, "Encaissement MonCash", intent.ProviderReference),
                 new StatementLineInput(valueDate, 321m, "Encaissement MonCash", intent.ProviderReference), // doublon
@@ -285,7 +290,7 @@ public sealed class IntegrationsEcosystemTests(FinanceEngineFixture fx)
         var gw = s.ServiceProvider.GetRequiredService<IPaymentGateway>();
 
         var connId = (await registry.UpsertAsync(new UpsertConnectorRequest(
-            "off-" + Guid.NewGuid().ToString("N")[..6], "Connecteur test", "payment", "simpay", "test", null))).Value;
+            "off-" + Guid.NewGuid().ToString("N")[..6], "Connecteur test", "payment", "simulated", "test", null))).Value;
         (await registry.SetStatusAsync(connId, "active")).IsSuccess.Should().BeTrue();
         (await gw.CreateIntentAsync(NewIntent(10m, connector: connId))).IsSuccess.Should().BeTrue();
 
@@ -306,7 +311,7 @@ public sealed class IntegrationsEcosystemTests(FinanceEngineFixture fx)
 
         var code = "rot-" + Guid.NewGuid().ToString("N")[..6];
         var connId = (await registry.UpsertAsync(new UpsertConnectorRequest(
-            code, "Rotation test", "payment", "simpay", "test", null))).Value;
+            code, "Rotation test", "payment", "simulated", "test", null))).Value;
         await registry.SetStatusAsync(connId, "active");
         var s1 = (await registry.RotateSecretAsync(connId)).Value!.Secret;
 
@@ -334,15 +339,166 @@ public sealed class IntegrationsEcosystemTests(FinanceEngineFixture fx)
 
         var codeB = "flashpay-" + Guid.NewGuid().ToString("N")[..6];
         tc.SetScope([CompanyResto], [], CompanyResto);
-        await registry.UpsertAsync(new UpsertConnectorRequest(codeB, "FlashPay", "payment", "flashpay", "test", null));
+        (await registry.UpsertAsync(new UpsertConnectorRequest(codeB, "FlashPay", "payment", "flashpay", "test", null))).Error!.Code
+            .Should().Be("integrations.provider_unknown", "un fournisseur de paiement inventé n'est plus accepté");
+        (await registry.UpsertAsync(new UpsertConnectorRequest(codeB, "MonCash Resto", "payment", "moncash", "test", null))).IsSuccess.Should().BeTrue();
 
         var listB = await registry.ListAsync();
-        listB.Should().Contain(c => c.Code == codeB);
-        listB.Should().NotContain(c => c.Provider == "moncash-sim");
+        listB.Should().Contain(c => c.Code == codeB && c.Mode == "real");
+        listB.Should().NotContain(c => c.Code == "moncash-sim");
 
         tc.SetScope([Company], [], Company);
         var listA = await registry.ListAsync();
-        listA.Should().Contain(c => c.Provider == "moncash-sim");
+        listA.Should().Contain(c => c.Code == "moncash-sim" && c.Provider == "simulated" && c.Mode == "simulation");
         listA.Should().NotContain(c => c.Code == codeB);
+    }
+
+    // ======================= Finalisation phase 15 : fournisseurs réels, simulation affichée, tests honnêtes ===
+
+    /// <summary>Faux serveur MonCash conforme à la documentation Digicel (oauth/token, CreatePayment, RetrieveOrderPayment).</summary>
+    private sealed class FakeMonCash : HttpMessageHandler
+    {
+        public string Mode = "ok";                // ok | down | slow
+        public decimal? PaidAmount;               // null : aucun paiement pour la commande
+        public readonly List<(string Path, string? Auth, string Body)> Calls = [];
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            var body = request.Content is null ? "" : await request.Content.ReadAsStringAsync(ct);
+            var path = request.RequestUri!.AbsolutePath;
+            Calls.Add((path, request.Headers.Authorization?.ToString(), body));
+            if (Mode == "slow") await Task.Delay(Timeout.Infinite, ct);
+            if (Mode == "down") return new HttpResponseMessage(System.Net.HttpStatusCode.ServiceUnavailable);
+            if (path.EndsWith("/oauth/token"))
+            {
+                var expected = "Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes("good-id:good-secret"));
+                return request.Headers.Authorization?.ToString() == expected && body.Contains("grant_type=client_credentials")
+                    ? Json(200, """{"access_token":"tok-123","token_type":"bearer","expires_in":59,"scope":"read,write","jti":"j"}""")
+                    : Json(401, """{"error":"unauthorized"}""");
+            }
+            if (request.Headers.Authorization?.ToString() != "Bearer tok-123") return Json(401, "{}");
+            if (path.EndsWith("/v1/CreatePayment"))
+                return Json(202, """{"path":"/v1/CreatePayment","payment_token":{"expired":"x","created":"y","token":"pay-tok-9"},"timestamp":1,"status":202,"mode":"sandbox"}""");
+            if (path.EndsWith("/v1/RetrieveOrderPayment"))
+                return PaidAmount is { } amt
+                    ? Json(200, $$"""{"path":"/v1/RetrieveOrderPayment","payment":{"reference":"1559796839","transaction_id":"12874820","cost":{{amt.ToString(System.Globalization.CultureInfo.InvariantCulture)}},"message":"successful","payer":"50937007294"},"timestamp":1,"status":200}""")
+                    : Json(404, """{"error":"Not Found","message":"payment not found","status":404}""");
+            return Json(404, "{}");
+        }
+
+        private static HttpResponseMessage Json(int status, string json)
+            => new((System.Net.HttpStatusCode)status) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
+    }
+
+    private (ServiceProvider Sp, FakeMonCash Fake) MonCashProvider()
+    {
+        var fake = new FakeMonCash();
+        var sp = fx.CreateProviderWith(sv => sv.AddSingleton(new Nexora.Infrastructure.Integrations.PaymentProviderHandler(fake)),
+            new Dictionary<string, string?> { ["Payments:TimeoutSeconds"] = "1" });
+        return (sp, fake);
+    }
+
+    [Fact]
+    public async Task Connection_tests_tell_the_truth_and_never_answer_ok_by_default()
+    {
+        await using var s = Scope();
+        var registry = s.ServiceProvider.GetRequiredService<IIntegrationRegistry>();
+        var sim = (await registry.TestConnectionAsync(MonCashConnector)).Value!;
+        sim.Status.Should().Be("CONNECTED");
+        sim.Mode.Should().Be("simulation");
+        sim.Detail.Should().Contain("SIMULATION");
+
+        async Task<Guid> Make(string type, string provider, string env = "test")
+            => (await registry.UpsertAsync(new UpsertConnectorRequest($"t-{Guid.NewGuid():N}"[..10], "T", type, provider, env, null))).Value;
+        var moncash = await Make("payment", "moncash");
+        var card = await Make("payment", "card");
+        var bank = await Make("bank", "unibank");
+        foreach (var id in new[] { moncash, card, bank })
+        {
+            var r = (await registry.TestConnectionAsync(id)).Value!;
+            r.Ok.Should().BeFalse();
+            r.Status.Should().Be("NOT_CONFIGURED", "un adaptateur absent ou non configuré répondait « OK »");
+        }
+        (await registry.SetStatusAsync(moncash, "active")).Error!.Code.Should().Be("integrations.not_tested");
+        (await registry.UpsertAsync(new UpsertConnectorRequest("sim-prod", "Sim", "payment", "simulated", "production", null))).Error!.Code
+            .Should().Be("integrations.simulation_in_production");
+        (await registry.SetCredentialsAsync(card, new SetConnectorCredentialsRequest("abcd", "efgh"))).Error!.Code.Should().Be("integrations.credentials_unused");
+    }
+
+    [Fact]
+    public async Task Moncash_connection_test_reports_authentication_unavailability_and_timeout()
+    {
+        var (sp, fake) = MonCashProvider();
+        await using var _ = sp;
+        await using var s = sp.CreateAsyncScope();
+        var registry = s.ServiceProvider.GetRequiredService<IIntegrationRegistry>();
+        var id = (await registry.UpsertAsync(new UpsertConnectorRequest($"mc-{Guid.NewGuid():N}"[..10], "MonCash", "payment", "moncash", "test", null))).Value;
+
+        (await registry.SetCredentialsAsync(id, new SetConnectorCredentialsRequest("bad-id", "bad-secret"))).IsSuccess.Should().BeTrue();
+        (await registry.TestConnectionAsync(id)).Value!.Status.Should().Be("AUTHENTICATION_FAILED");
+        fake.Calls.Should().Contain(c => c.Path.EndsWith("/Api/oauth/token") && c.Auth!.StartsWith("Basic "));
+
+        fake.Mode = "down";
+        (await registry.SetCredentialsAsync(id, new SetConnectorCredentialsRequest("good-id", "good-secret"))).IsSuccess.Should().BeTrue();
+        (await registry.TestConnectionAsync(id)).Value!.Status.Should().Be("UNAVAILABLE");
+        fake.Mode = "slow";
+        (await registry.TestConnectionAsync(id)).Value!.Status.Should().Be("TIMEOUT");
+        fake.Mode = "ok";
+        var ok = (await registry.TestConnectionAsync(id)).Value!;
+        ok.Status.Should().Be("CONNECTED");
+        ok.Mode.Should().Be("real");
+        (await registry.SetStatusAsync(id, "active")).IsSuccess.Should().BeTrue();
+
+        var dto = (await registry.GetAsync(id)).Value!;
+        dto.CredentialsConfigured.Should().BeTrue();
+        dto.CredentialsHint.Should().Be("good…id");
+        JsonSerializer.Serialize(dto).Should().NotContain("good-secret", "le secret n'est jamais relu");
+        var db = s.ServiceProvider.GetRequiredService<NexoraDbContext>();
+        (await db.Database.SqlQuery<string>($"SELECT credentials_encrypted AS \"Value\" FROM nexora.integration_connector WHERE id = {id}").FirstAsync())
+            .Should().NotContain("good-secret", "chiffré au repos");
+    }
+
+    [Fact]
+    public async Task Real_moncash_payment_is_confirmed_only_by_the_provider()
+    {
+        var (sp, fake) = MonCashProvider();
+        await using var _ = sp;
+        await using var s = sp.CreateAsyncScope();
+        var registry = s.ServiceProvider.GetRequiredService<IIntegrationRegistry>();
+        var gw = s.ServiceProvider.GetRequiredService<IPaymentGateway>();
+        var id = (await registry.UpsertAsync(new UpsertConnectorRequest($"mc-{Guid.NewGuid():N}"[..10], "MonCash", "payment", "moncash", "test", null))).Value;
+        await registry.SetCredentialsAsync(id, new SetConnectorCredentialsRequest("good-id", "good-secret"));
+        (await registry.TestConnectionAsync(id)).Value!.Status.Should().Be("CONNECTED");
+        await registry.SetStatusAsync(id, "active");
+
+        (await gw.CreateIntentAsync(NewIntent(500m, connector: id) with { Currency = "USD" })).Error!.Code.Should().Be("integrations.currency_unsupported");
+        var intent = (await gw.CreateIntentAsync(NewIntent(500m, connector: id))).Value!;
+        intent.Mode.Should().Be("real");
+        intent.RedirectUrl.Should().Be("https://sandbox.moncashbutton.digicelgroup.com/Moncash-middleware/Payment/Redirect?token=pay-tok-9");
+        var create = fake.Calls.Single(c => c.Path.EndsWith("/v1/CreatePayment"));
+        create.Auth.Should().Be("Bearer tok-123");
+        create.Body.Should().Contain("\"amount\":500").And.Contain($"\"orderId\":\"{intent.ProviderOrderId}\"");
+
+        // Une « réponse fournisseur » saisie à la main n'existe qu'en simulation.
+        (await gw.ProviderCallbackAsync(intent.Id, new ProviderCallbackRequest("confirmed", 500m, null))).Error!.Code
+            .Should().Be("integrations.not_simulation");
+        var pending = (await gw.VerifyAsync(intent.Id)).Value!;
+        pending.Status.Should().Be("pending");
+        pending.PaymentId.Should().BeNull();
+
+        fake.PaidAmount = 500m;
+        var paid = (await gw.VerifyAsync(intent.Id)).Value!;
+        paid.Status.Should().Be("confirmed");
+        paid.PaymentId.Should().NotBeNull();
+        paid.ProviderReference.Should().Be("12874820");
+        (await gw.VerifyAsync(intent.Id)).Value!.PaymentId.Should().Be(paid.PaymentId, "vérifier deux fois ne crée pas deux paiements");
+
+        (await gw.RefundAsync(intent.Id, new RefundPaymentRequest(500m, "Client remboursé"))).Error!.Code
+            .Should().Be("integrations.refund_unsupported", "MonCash ne publie aucune route de remboursement");
+
+        // Montant payé différent : aucun paiement n'est passé.
+        var other = (await gw.CreateIntentAsync(NewIntent(300m, connector: id))).Value!;
+        fake.PaidAmount = 250m;
+        (await gw.VerifyAsync(other.Id)).Value!.Status.Should().Be("amount_mismatch");
     }
 }

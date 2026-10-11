@@ -22,10 +22,10 @@ namespace Nexora.Infrastructure.Intelligence;
 public sealed class SqlRecommendationService(
     NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow, IDateTimeProvider clock,
     ITreasuryQueries treasury, ICreditPortfolioQueries credit, IBudgetReports budgetReports,
-    ITaskService tasks, IInsightService insights) : IRecommendationService
+    ITaskService tasks, IInsightService insights, IBusinessCalendar calendar) : IRecommendationService
 {
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     /// <summary>Durée de vie par défaut d'une recommandation jamais traitée (Phase 54 §6, §21).</summary>
     private const int DefaultExpiryDays = 30;
@@ -211,7 +211,7 @@ public sealed class SqlRecommendationService(
     {
         await ExpireDueAsync(ct);
 
-        var today = DateOnly.FromDateTime(clock.UtcNow.Date);
+        var today = calendar.Today;
         var rules = await LoadEnabledRulesAsync(today, ct);
         var created = 0;
         if (rules.TryGetValue("stock_reorder", out var r1)) created += await GenerateStockReorder(r1, today, ct);

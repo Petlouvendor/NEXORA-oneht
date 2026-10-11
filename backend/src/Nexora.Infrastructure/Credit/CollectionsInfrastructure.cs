@@ -3,13 +3,14 @@ using Nexora.Application.Abstractions;
 using Nexora.Application.Credit;
 using Nexora.Contracts.Credit;
 using Nexora.Infrastructure.Persistence;
+using Nexora.Domain.Common;
 
 namespace Nexora.Infrastructure.Credit;
 
 public sealed class SqlCollectionsStore(NexoraDbContext db, ITenantContext tenant) : ICollectionsStore
 {
     private Guid Company => tenant.ActiveCompanyId
-        ?? throw new InvalidOperationException("Aucune entreprise active.");
+        ?? throw TenantErrors.ActiveCompanyRequired();
 
     public Task<string?> CustomerNameAsync(Guid customerId, CancellationToken ct = default)
         => db.Database.SqlQuery<string?>($"""
@@ -35,23 +36,59 @@ public sealed class SqlCollectionsStore(NexoraDbContext db, ITenantContext tenan
         return id;
     }
 
-    private sealed record PromiseRow(Guid CustomerId, decimal Amount, decimal SnapshotRemaining, Guid[] ReceivableIds, string Status);
+    private sealed record PromiseRow(Guid CustomerId, decimal Amount, decimal SnapshotRemaining, Guid[] ReceivableIds, string Status, DateOnly PromisedDate);
 
     public async Task<PromiseSettleData?> GetPromiseAsync(Guid promiseId, CancellationToken ct = default)
     {
         var r = await db.Database.SqlQuery<PromiseRow>($"""
             SELECT customer_id AS "CustomerId", amount AS "Amount", snapshot_remaining AS "SnapshotRemaining",
-                   receivable_ids AS "ReceivableIds", status AS "Status"
+                   receivable_ids AS "ReceivableIds", status AS "Status", promised_date AS "PromisedDate"
             FROM nexora.customer_promise WHERE id = {promiseId} AND company_id = {Company}
             """).FirstOrDefaultAsync(ct);
-        return r is null ? null : new PromiseSettleData(r.CustomerId, r.Amount, r.SnapshotRemaining, r.ReceivableIds, r.Status);
+        return r is null ? null : new PromiseSettleData(r.CustomerId, r.Amount, r.SnapshotRemaining, r.ReceivableIds, r.Status, r.PromisedDate);
     }
 
-    public async Task SettlePromiseAsync(Guid promiseId, string status, decimal keptAmount, CancellationToken ct = default)
+    public async Task SettlePromiseAsync(Guid promiseId, string status, decimal keptAmount, Guid? userId, CancellationToken ct = default)
         => await db.Database.ExecuteSqlAsync($"""
-            UPDATE nexora.customer_promise SET status = {status}, kept_amount = {keptAmount}, settled_at = now(), updated_at = now()
-            WHERE id = {promiseId} AND company_id = {Company}
+            UPDATE nexora.customer_promise SET status = {status}, kept_amount = {keptAmount}, settled_at = now(), settled_by = {userId},
+                   updated_at = now()
+            WHERE id = {promiseId} AND company_id = {Company} AND status = 'open'
             """, ct);
+
+    public async Task CancelPromiseAsync(Guid promiseId, string reason, Guid? userId, CancellationToken ct = default)
+        => await db.Database.ExecuteSqlAsync($"""
+            UPDATE nexora.customer_promise SET status = 'cancelled', cancel_reason = {reason}, settled_at = now(), settled_by = {userId},
+                   updated_at = now()
+            WHERE id = {promiseId} AND company_id = {Company} AND status = 'open'
+            """, ct);
+
+    public Task<bool> OpenPromiseCoversAsync(IReadOnlyList<Guid> receivableIds, CancellationToken ct = default)
+        => db.Database.SqlQuery<bool>($"""
+            SELECT EXISTS(SELECT 1 FROM nexora.customer_promise
+                          WHERE company_id = {Company} AND status = 'open' AND receivable_ids && {receivableIds.ToArray()}) AS "Value"
+            """).FirstAsync(ct);
+
+    public async Task<IReadOnlyList<Guid>> OpenPromiseIdsAsync(CancellationToken ct = default)
+        => await db.Database.SqlQuery<Guid>($"""
+            SELECT id AS "Value" FROM nexora.customer_promise WHERE company_id = {Company} AND status = 'open' ORDER BY promised_date
+            """).ToListAsync(ct);
+
+    public Task<bool> OpenDisputeOnReceivableAsync(Guid receivableId, CancellationToken ct = default)
+        => db.Database.SqlQuery<bool>($"""
+            SELECT EXISTS(SELECT 1 FROM nexora.customer_dispute
+                          WHERE company_id = {Company} AND receivable_id = {receivableId} AND status IN ('open', 'under_review')) AS "Value"
+            """).FirstAsync(ct);
+
+    public async Task RestoreReceivableAfterDisputeAsync(Guid receivableId, CancellationToken ct = default)
+    {
+        await db.Database.ExecuteSqlAsync($"""
+            UPDATE nexora.customer_receivable
+               SET status = CASE WHEN paid_amount >= original_amount THEN 'PAID'
+                                 WHEN paid_amount > 0 THEN 'PARTIALLY_PAID' ELSE 'OPEN' END,
+                   updated_at = now()
+            WHERE id = {receivableId} AND company_id = {Company} AND status = 'IN_DISPUTE'
+            """, ct);
+    }
 
     public async Task<Guid> OpenDisputeAsync(Guid customerId, Guid? receivableId, decimal amount, string reason, Guid? userId, CancellationToken ct = default)
     {
@@ -125,10 +162,11 @@ public sealed class SqlCollectionsStore(NexoraDbContext db, ITenantContext tenan
               AND block_type IN ('credit','sales','account')
             """).FirstAsync(ct);
 
+    /// <summary>Le déblocage ne réactive qu'un client bloqué : un client archivé ou inactif le reste.</summary>
     public async Task SetCustomerStatusAsync(Guid customerId, string status, CancellationToken ct = default)
         => await db.Database.ExecuteSqlAsync($"""
             UPDATE nexora.customer SET status = {status}, updated_at = now()
-            WHERE id = {customerId} AND company_id = {Company}
+            WHERE id = {customerId} AND company_id = {Company} AND ({status} <> 'active' OR status = 'blocked')
             """, ct);
 
     public async Task<Guid> CreateWriteOffAsync(Guid receivableId, Guid customerId, decimal amount, string reason,
@@ -152,16 +190,16 @@ public sealed class SqlCollectionsStore(NexoraDbContext db, ITenantContext tenan
 }
 
 /// <summary>Lectures crédit & recouvrement (Phase 27 §15, §29, §35).</summary>
-public sealed class SqlCreditPortfolioQueries(NexoraDbContext db, ITenantContext tenant, IDateTimeProvider clock) : ICreditPortfolioQueries
+public sealed class SqlCreditPortfolioQueries(NexoraDbContext db, ITenantContext tenant, IBusinessCalendar calendar) : ICreditPortfolioQueries
 {
     private Guid Company => tenant.ActiveCompanyId
-        ?? throw new InvalidOperationException("Aucune entreprise active.");
+        ?? throw TenantErrors.ActiveCompanyRequired();
 
     public async Task<IReadOnlyList<CollectionsRowDto>> CollectionsAsync(bool onlyOverdue, CancellationToken ct = default)
     {
-        var today = DateOnly.FromDateTime(clock.UtcNow.UtcDateTime);
+        var today = calendar.Today;
         return await db.Database.SqlQuery<CollectionsRowDto>($"""
-            SELECT c.id AS "CustomerId", c.name AS "CustomerName", cur.code AS "Currency",
+            SELECT c.id AS "CustomerId", c.name AS "CustomerName", COALESCE(rcur.code, cur.code) AS "Currency",
                    COALESCE(SUM(r.remaining_amount), 0) AS "TotalOutstanding",
                    COALESCE(SUM(r.remaining_amount) FILTER (WHERE r.due_date IS NULL OR r.due_date >= {today}), 0) AS "Current",
                    COALESCE(SUM(r.remaining_amount) FILTER (WHERE r.due_date BETWEEN {today.AddDays(-30)} AND {today.AddDays(-1)}), 0) AS "Bucket1To30",
@@ -180,8 +218,9 @@ public sealed class SqlCreditPortfolioQueries(NexoraDbContext db, ITenantContext
             JOIN nexora.currency cur ON cur.id = c.default_currency_id
             LEFT JOIN nexora.customer_receivable r ON r.customer_id = c.id
                  AND r.status IN ('OPEN','PARTIALLY_PAID','OVERDUE','IN_DISPUTE')
+            LEFT JOIN nexora.currency rcur ON rcur.id = r.currency_id
             WHERE c.company_id = {Company}
-            GROUP BY c.id, c.name, cur.code, c.status
+            GROUP BY c.id, c.name, COALESCE(rcur.code, cur.code), c.status
             HAVING (NOT {onlyOverdue} OR COALESCE(MAX(({today} - r.due_date)), -1) > 0)
                    AND COALESCE(SUM(r.remaining_amount), 0) > 0
             ORDER BY "OldestOverdueDays" DESC, "TotalOutstanding" DESC
@@ -190,7 +229,7 @@ public sealed class SqlCreditPortfolioQueries(NexoraDbContext db, ITenantContext
 
     public async Task<AgingSummaryDto> AgingSummaryAsync(CancellationToken ct = default)
     {
-        var today = DateOnly.FromDateTime(clock.UtcNow.UtcDateTime);
+        var today = calendar.Today;
         var currency = await db.Database.SqlQuery<string>($"""
             SELECT code AS "Value" FROM nexora.currency cur
             JOIN nexora.company co ON co.default_currency_id = cur.id WHERE co.id = {Company}
@@ -205,7 +244,16 @@ public sealed class SqlCreditPortfolioQueries(NexoraDbContext db, ITenantContext
                    COALESCE(SUM(remaining_amount) FILTER (WHERE due_date < {today.AddDays(-90)}), 0) AS "B4"
             FROM nexora.customer_receivable
             WHERE company_id = {Company} AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE','IN_DISPUTE')
+              AND currency_id = (SELECT default_currency_id FROM nexora.company WHERE id = {Company})
             """).FirstAsync(ct);
+        // Les créances en autre devise ne s'additionnent pas à la devise de l'entreprise : présentées à part.
+        var others = await db.Database.SqlQuery<CurrencyAmountDto>($"""
+            SELECT cur.code AS "Currency", SUM(r.remaining_amount) AS "Amount"
+            FROM nexora.customer_receivable r JOIN nexora.currency cur ON cur.id = r.currency_id
+            WHERE r.company_id = {Company} AND r.status IN ('OPEN','PARTIALLY_PAID','OVERDUE','IN_DISPUTE')
+              AND r.currency_id <> (SELECT default_currency_id FROM nexora.company WHERE id = {Company})
+            GROUP BY cur.code HAVING SUM(r.remaining_amount) > 0 ORDER BY cur.code
+            """).ToListAsync(ct);
 
         // DSO ≈ créances / (ventes des 90 derniers jours / 90) — si les ventes sont suffisantes (§30).
         var sales90 = await db.Database.SqlQuery<decimal>($"""
@@ -215,7 +263,7 @@ public sealed class SqlCreditPortfolioQueries(NexoraDbContext db, ITenantContext
         decimal? dso = sales90 > 0m ? Math.Round(a.Total / (sales90 / 90m), 1) : null;
 
         return new AgingSummaryDto(currency, a.Total, a.Current, a.B1, a.B2, a.B3, a.B4,
-            a.B1 + a.B2 + a.B3 + a.B4, dso);
+            a.B1 + a.B2 + a.B3 + a.B4, dso, others);
     }
 
     private sealed record AgingRow(decimal Total, decimal Current, decimal B1, decimal B2, decimal B3, decimal B4);
@@ -230,7 +278,7 @@ public sealed class SqlCreditPortfolioQueries(NexoraDbContext db, ITenantContext
         var currency = await db.Database.SqlQuery<string>($"""
             SELECT cur.code AS "Value" FROM nexora.customer c JOIN nexora.currency cur ON cur.id = c.default_currency_id WHERE c.id = {customerId}
             """).FirstAsync(ct);
-        var today = DateOnly.FromDateTime(clock.UtcNow.UtcDateTime);
+        var today = calendar.Today;
 
         // Module clients §7 : le relevé lit le journal financier client (crédits, versements, annulations,
         // retours/avoirs, radiations, remboursements). Avant, il sommait toutes les ventes « crédit/mixte »
@@ -270,23 +318,37 @@ public sealed class SqlCreditPortfolioQueries(NexoraDbContext db, ITenantContext
         var rows = await db.Database.SqlQuery<PromiseListRow>($"""
             SELECT p.id AS "Id", p.customer_id AS "CustomerId", c.name AS "CustomerName", p.amount AS "Amount",
                    p.kept_amount AS "KeptAmount", p.promised_date AS "PromisedDate", p.channel AS "Channel",
-                   p.status AS "Status", p.note AS "Note", p.receivable_ids AS "ReceivableIds", p.created_at AS "CreatedAt"
+                   p.status AS "Status", p.note AS "Note", p.receivable_ids AS "ReceivableIds", p.created_at AS "CreatedAt",
+                   COALESCE((SELECT cur.code FROM nexora.customer_receivable r JOIN nexora.currency cur ON cur.id = r.currency_id
+                             WHERE r.id = p.receivable_ids[1]), 'HTG') AS "Currency",
+                   p.snapshot_remaining AS "SnapshotRemaining", cu.full_name AS "CreatedByName", p.settled_at AS "SettledAt",
+                   su.full_name AS "SettledByName", p.cancel_reason AS "CancelReason"
             FROM nexora.customer_promise p JOIN nexora.customer c ON c.id = p.customer_id
+            LEFT JOIN nexora.app_user cu ON cu.id = p.created_by
+            LEFT JOIN nexora.app_user su ON su.id = p.settled_by
             WHERE p.company_id = {Company}
               AND ({customerId}::uuid IS NULL OR p.customer_id = {customerId})
               AND ({status}::text IS NULL OR p.status = {status})
             ORDER BY p.promised_date
             """).ToListAsync(ct);
         return rows.Select(r => new PromiseDto(r.Id, r.CustomerId, r.CustomerName, r.Amount, r.KeptAmount,
-            r.PromisedDate, r.Channel, r.Status, r.Note, r.ReceivableIds, r.CreatedAt)).ToList();
+            r.PromisedDate, r.Channel, r.Status, r.Note, r.ReceivableIds, r.CreatedAt, r.Currency, r.SnapshotRemaining,
+            r.CreatedByName, r.SettledAt, r.SettledByName, r.CancelReason)).ToList();
     }
 
     public async Task<IReadOnlyList<DisputeDto>> DisputesAsync(Guid? customerId, string? status, CancellationToken ct = default)
         => await db.Database.SqlQuery<DisputeDto>($"""
             SELECT d.id AS "Id", d.customer_id AS "CustomerId", c.name AS "CustomerName", d.receivable_id AS "ReceivableId",
                    d.disputed_amount AS "DisputedAmount", d.reason AS "Reason", d.status AS "Status",
-                   d.resolution AS "Resolution", d.created_at AS "CreatedAt", d.resolved_at AS "ResolvedAt"
+                   d.resolution AS "Resolution", d.created_at AS "CreatedAt", d.resolved_at AS "ResolvedAt",
+                   r.credit_number AS "CreditNumber", COALESCE(rcur.code, ccur.code) AS "Currency",
+                   cu.full_name AS "CreatedByName", ru.full_name AS "ResolvedByName"
             FROM nexora.customer_dispute d JOIN nexora.customer c ON c.id = d.customer_id
+            JOIN nexora.currency ccur ON ccur.id = c.default_currency_id
+            LEFT JOIN nexora.customer_receivable r ON r.id = d.receivable_id
+            LEFT JOIN nexora.currency rcur ON rcur.id = r.currency_id
+            LEFT JOIN nexora.app_user cu ON cu.id = d.created_by
+            LEFT JOIN nexora.app_user ru ON ru.id = d.resolved_by
             WHERE d.company_id = {Company}
               AND ({customerId}::uuid IS NULL OR d.customer_id = {customerId})
               AND ({status}::text IS NULL OR d.status = {status})
@@ -305,7 +367,82 @@ public sealed class SqlCreditPortfolioQueries(NexoraDbContext db, ITenantContext
             ORDER BY b.blocked_at DESC
             """).ToListAsync(ct);
 
+    public async Task<IReadOnlyList<CreditReceivableDto>> ReceivablesAsync(Guid customerId, bool onlyOpen, CancellationToken ct = default)
+    {
+        var today = calendar.Today;
+        return await db.Database.SqlQuery<CreditReceivableDto>($"""
+            SELECT r.id AS "Id", COALESCE(r.credit_number, '—') AS "CreditNumber", cur.code AS "Currency",
+                   r.original_amount AS "OriginalAmount", r.paid_amount AS "PaidAmount", r.remaining_amount AS "RemainingAmount",
+                   r.issue_date AS "IssueDate", r.due_date AS "DueDate",
+                   CASE WHEN r.due_date IS NULL OR r.remaining_amount <= 0 THEN 0 ELSE GREATEST(0, {today} - r.due_date) END AS "DaysOverdue",
+                   r.status AS "Status",
+                   (SELECT p.id FROM nexora.customer_promise p
+                     WHERE p.company_id = r.company_id AND p.status = 'open' AND r.id = ANY(p.receivable_ids) LIMIT 1) AS "OpenPromiseId",
+                   (SELECT d.id FROM nexora.customer_dispute d
+                     WHERE d.receivable_id = r.id AND d.status IN ('open','under_review') LIMIT 1) AS "OpenDisputeId"
+            FROM nexora.customer_receivable r JOIN nexora.currency cur ON cur.id = r.currency_id
+            WHERE r.company_id = {Company} AND r.customer_id = {customerId}
+              AND (NOT {onlyOpen} OR r.status IN ('OPEN','PARTIALLY_PAID','OVERDUE','IN_DISPUTE'))
+            ORDER BY r.due_date NULLS LAST, r.issue_date, r.credit_number
+            """).ToListAsync(ct);
+    }
+
+    public async Task<IReadOnlyList<WriteOffDto>> WriteOffsAsync(Guid? customerId, CancellationToken ct = default)
+        => await db.Database.SqlQuery<WriteOffDto>($"""
+            SELECT w.id AS "Id", w.customer_id AS "CustomerId", c.name AS "CustomerName", w.receivable_id AS "ReceivableId",
+                   r.credit_number AS "CreditNumber", cur.code AS "Currency", w.amount AS "Amount", w.reason AS "Reason",
+                   w.journal_entry_id AS "JournalEntryId", e.entry_number AS "JournalEntryNumber",
+                   u.full_name AS "CreatedByName", w.written_off_at AS "WrittenOffAt"
+            FROM nexora.receivable_write_off w
+            JOIN nexora.customer c ON c.id = w.customer_id
+            JOIN nexora.customer_receivable r ON r.id = w.receivable_id
+            JOIN nexora.currency cur ON cur.id = r.currency_id
+            LEFT JOIN nexora.journal_entry e ON e.id = w.journal_entry_id
+            LEFT JOIN nexora.app_user u ON u.id = w.created_by
+            WHERE w.company_id = {Company} AND ({customerId}::uuid IS NULL OR w.customer_id = {customerId})
+            ORDER BY w.written_off_at DESC
+            LIMIT 500
+            """).ToListAsync(ct);
+
+    public async Task<IReadOnlyList<FollowUpDto>> FollowUpsAsync(CancellationToken ct = default)
+    {
+        var today = calendar.Today;
+        // Relance : seule la DERNIÈRE action du client compte — une relance prévue puis faite ne doit plus
+        // apparaître (la liste « actions échues » gardait toutes les anciennes dates).
+        return await db.Database.SqlQuery<FollowUpDto>($"""
+            WITH last_action AS (
+                SELECT DISTINCT ON (a.customer_id) a.customer_id, a.id, a.next_action_date, a.note
+                FROM nexora.collection_action a
+                WHERE a.company_id = {Company}
+                ORDER BY a.customer_id, a.created_at DESC),
+            promise_ccy AS (
+                SELECT p.id, COALESCE((SELECT cur.code FROM nexora.customer_receivable r JOIN nexora.currency cur ON cur.id = r.currency_id
+                                       WHERE r.id = p.receivable_ids[1]), 'HTG') AS code
+                FROM nexora.customer_promise p WHERE p.company_id = {Company})
+            SELECT 'action'::text AS "Kind", c.id AS "CustomerId", c.name AS "CustomerName", la.next_action_date AS "DueDate",
+                   la.note AS "Detail", NULL::numeric AS "Amount", NULL::text AS "Currency", la.id AS "ReferenceId"
+            FROM last_action la JOIN nexora.customer c ON c.id = la.customer_id
+            WHERE la.next_action_date IS NOT NULL AND la.next_action_date <= {today}
+            UNION ALL
+            SELECT 'promise_due'::text, c.id, c.name, p.promised_date,
+                   'Promesse de paiement à échéance'::text, (p.amount)::numeric, pc.code, p.id
+            FROM nexora.customer_promise p JOIN nexora.customer c ON c.id = p.customer_id JOIN promise_ccy pc ON pc.id = p.id
+            WHERE p.company_id = {Company} AND p.status = 'open' AND p.promised_date <= {today}
+            UNION ALL
+            SELECT 'promise_broken'::text, c.id, c.name, p.promised_date,
+                   (CASE p.status WHEN 'broken' THEN 'Promesse non tenue' ELSE 'Promesse partiellement tenue' END)::text,
+                   (p.amount - p.kept_amount)::numeric, pc.code, p.id
+            FROM nexora.customer_promise p JOIN nexora.customer c ON c.id = p.customer_id JOIN promise_ccy pc ON pc.id = p.id
+            WHERE p.company_id = {Company} AND p.status IN ('broken', 'partially_kept')
+              AND p.settled_at >= now() - interval '30 days'
+              AND NOT EXISTS (SELECT 1 FROM nexora.collection_action a
+                              WHERE a.company_id = p.company_id AND a.customer_id = p.customer_id AND a.created_at > p.settled_at)
+            ORDER BY 4, 3
+            """).ToListAsync(ct);
+    }
+
     private sealed record PromiseListRow(
         Guid Id, Guid CustomerId, string CustomerName, decimal Amount, decimal KeptAmount,
-        DateOnly PromisedDate, string Channel, string Status, string? Note, Guid[] ReceivableIds, DateTimeOffset CreatedAt);
+        DateOnly PromisedDate, string Channel, string Status, string? Note, Guid[] ReceivableIds, DateTimeOffset CreatedAt,
+        string Currency, decimal SnapshotRemaining, string? CreatedByName, DateTimeOffset? SettledAt, string? SettledByName, string? CancelReason);
 }

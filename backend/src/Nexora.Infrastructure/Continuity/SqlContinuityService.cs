@@ -23,7 +23,7 @@ public sealed class SqlContinuityService(
     ISessionCacheInvalidator sessionCache)
     : IContinuityService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
 
     private static readonly string[] Kinds =

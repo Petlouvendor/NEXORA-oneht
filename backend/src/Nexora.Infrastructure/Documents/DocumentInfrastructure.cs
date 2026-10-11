@@ -26,7 +26,7 @@ public sealed class EfQuoteStore(
     private async Task<bool> SeesAllAsync(CancellationToken ct)
         => (await permissions.CurrentPermissionsAsync(tenant, ct)).Contains(Nexora.Application.Security.Permissions.Documents.ViewAll);
 
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     public Task<Guid> ResolveCurrencyIdAsync(string code, CancellationToken ct = default)
         => db.Database.SqlQuery<Guid>($"""SELECT id AS "Value" FROM nexora.currency WHERE code = {code}""").FirstAsync(ct);
@@ -38,6 +38,19 @@ public sealed class EfQuoteStore(
         => numbers.NextAsync(documentType, null, ct);
 
     public async Task AddAsync(Quote quote, CancellationToken ct = default) => await db.Quotes.AddAsync(quote, ct);
+
+    public async Task<Guid?> CurrencyIdOrNullAsync(string code, CancellationToken ct = default)
+        => await db.Database.SqlQuery<Guid?>($"""SELECT id AS "Value" FROM nexora.currency WHERE code = {code}""").FirstOrDefaultAsync(ct);
+
+    public Task ReplaceLinesAsync(Quote quote, IReadOnlyList<QuoteLine> lines, CancellationToken ct = default)
+    {
+        db.Set<QuoteLine>().RemoveRange(quote.Lines);
+        quote.Lines.Clear();
+        // Clé fixée côté application : ajout explicite (sinon EF croirait à une mise à jour).
+        db.Set<QuoteLine>().AddRange(lines);
+        foreach (var l in lines) if (!quote.Lines.Contains(l)) quote.Lines.Add(l);
+        return Task.CompletedTask;
+    }
 
     public Task<Quote?> GetAsync(Guid id, CancellationToken ct = default)
         => db.Quotes.Include(q => q.Lines).FirstOrDefaultAsync(q => q.Id == id && q.CompanyId == Company, ct);
@@ -121,9 +134,11 @@ public sealed class EfQuoteStore(
 
 public sealed class SqlDocumentService(
     NexoraDbContext db, IUnitOfWork uow, ITenantContext tenant,
-    IDocumentNumberGenerator numbers, IDateTimeProvider clock, IPermissionService permissions) : IDocumentService
+    IDocumentNumberGenerator numbers, IDateTimeProvider clock, IPermissionService permissions, IBusinessCalendar calendar) : IDocumentService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
+
+    private static readonly JsonSerializerOptions SnapshotJson = new(JsonSerializerDefaults.Web);
 
     private static readonly Dictionary<string, string[]> AllowedSources = new()
     {
@@ -139,7 +154,7 @@ public sealed class SqlDocumentService(
     private sealed record SourceData(
         string? PartyType, Guid? PartyId, string? PartyName, string Currency, Guid CurrencyId,
         decimal TotalNet, decimal TotalTax, decimal Total, DateOnly IssueDate, DateOnly? ValidUntil,
-        Guid? EstablishmentId, object Lines, string SourceNumber);
+        Guid? EstablishmentId, object Lines, string SourceNumber, string? Blocked = null);
 
     public async Task<Result<IssuedDocumentDto>> IssueAsync(IssueDocumentRequest r, CancellationToken ct = default)
     {
@@ -150,6 +165,7 @@ public sealed class SqlDocumentService(
 
         var src = await LoadSourceAsync(r.SourceType, r.SourceId, ct);
         if (src is null) return Error.NotFound("document.source_not_found", "Source du document introuvable.");
+        if (src.Blocked is { } blocked) return Error.Conflict("document.source_state", blocked);
 
         var existing = await db.Database.SqlQuery<Guid>($"""
             SELECT id AS "Value" FROM nexora.issued_document
@@ -185,7 +201,7 @@ public sealed class SqlDocumentService(
             totals = new { net = src.TotalNet, tax = src.TotalTax, total = src.Total },
             lines = src.Lines,
         };
-        var json = JsonSerializer.Serialize(snapshot);
+        var json = JsonSerializer.Serialize(snapshot, SnapshotJson);
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(json)));
 
         await db.Database.ExecuteSqlAsync($"""
@@ -314,7 +330,7 @@ public sealed class SqlDocumentService(
 
     private sealed record SaleRow(Guid? CustomerId, string? CustomerName, string Currency, Guid CurrencyId,
         decimal Subtotal, decimal DiscountTotal, decimal TaxTotal, decimal Total, DateOnly SoldOn,
-        Guid? EstablishmentId, string DocumentNumber);
+        Guid? EstablishmentId, string DocumentNumber, string Status);
     private sealed record LineRow(string Description, decimal Quantity, decimal UnitPrice, decimal Discount, decimal TaxAmount, decimal LineTotal);
 
     private async Task<SourceData?> LoadSaleAsync(Guid id, CancellationToken ct)
@@ -322,7 +338,8 @@ public sealed class SqlDocumentService(
         var s = await db.Database.SqlQuery<SaleRow>($"""
             SELECT s.customer_id AS "CustomerId", c.name AS "CustomerName", cur.code AS "Currency", s.currency_id AS "CurrencyId",
                    s.subtotal AS "Subtotal", s.discount_total AS "DiscountTotal", s.tax_total AS "TaxTotal", s.total AS "Total",
-                   s.sold_at::date AS "SoldOn", s.establishment_id AS "EstablishmentId", s.document_number AS "DocumentNumber"
+                   s.sold_at::date AS "SoldOn", s.establishment_id AS "EstablishmentId", s.document_number AS "DocumentNumber",
+                   s.status AS "Status"
             FROM nexora.sale s JOIN nexora.currency cur ON cur.id = s.currency_id
             LEFT JOIN nexora.customer c ON c.id = s.customer_id
             WHERE s.id = {id} AND s.company_id = {Company}
@@ -334,8 +351,15 @@ public sealed class SqlDocumentService(
             FROM nexora.sale_line l JOIN nexora.product p ON p.id = l.product_id
             WHERE l.sale_id = {id} ORDER BY p.name
             """).ToListAsync(ct);
+        // Une vente annulée, en attente ou non encaissée ne se facture pas.
+        var blocked = s.Status switch
+        {
+            "void" => $"La vente {s.DocumentNumber} est annulée : elle ne se facture pas.",
+            "draft" or "parked" => $"La vente {s.DocumentNumber} n'est pas finalisée.",
+            _ => null,
+        };
         return new SourceData("customer", s.CustomerId, s.CustomerName, s.Currency, s.CurrencyId,
-            s.Subtotal - s.DiscountTotal, s.TaxTotal, s.Total, s.SoldOn, null, s.EstablishmentId, lines, s.DocumentNumber);
+            s.Subtotal - s.DiscountTotal, s.TaxTotal, s.Total, s.SoldOn, null, s.EstablishmentId, lines, s.DocumentNumber, blocked);
     }
 
     private sealed record ReturnRow(Guid? CustomerId, string? CustomerName, string Currency, Guid CurrencyId,
@@ -408,7 +432,7 @@ public sealed class SqlDocumentService(
             FROM nexora.sales_order_line l WHERE l.sales_order_id = {id} ORDER BY l.description
             """).ToListAsync(ct);
         return new SourceData("customer", o.CustomerId, o.CustomerName, o.Currency, o.CurrencyId,
-            o.Subtotal - o.DiscountTotal, o.TaxTotal, o.Total, DateOnly.FromDateTime(clock.UtcNow.UtcDateTime),
+            o.Subtotal - o.DiscountTotal, o.TaxTotal, o.Total, calendar.Today,
             null, o.EstablishmentId, lines, o.DocumentNumber);
     }
 
@@ -429,7 +453,7 @@ public sealed class SqlDocumentService(
             FROM nexora.quote_line l WHERE l.quote_id = {id} ORDER BY l.line_number
             """).ToListAsync(ct);
         return new SourceData("customer", q.CustomerId, q.CustomerName, q.Currency, q.CurrencyId,
-            q.Subtotal - q.DiscountTotal, q.TaxTotal, q.Total, DateOnly.FromDateTime(clock.UtcNow.UtcDateTime),
+            q.Subtotal - q.DiscountTotal, q.TaxTotal, q.Total, calendar.Today,
             null, q.EstablishmentId, lines, q.DocumentNumber);
     }
 
@@ -500,7 +524,7 @@ public sealed class SqlDocumentService(
 
 public sealed class SqlDocumentQueries(NexoraDbContext db, ITenantContext tenant, IPermissionService permissions) : IDocumentQueries
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     /// <summary>
     /// Guide §7.2 : la liste des factures / reçus de l'entreprise, avec leurs montants, révèle le
@@ -546,6 +570,8 @@ public sealed class SqlDocumentQueries(NexoraDbContext db, ITenantContext tenant
               AND ({r.PartyId}::uuid IS NULL OR d.party_id = {r.PartyId})
               AND ({r.From}::date IS NULL OR d.issue_date >= {r.From})
               AND ({r.To}::date IS NULL OR d.issue_date <= {r.To})
+              AND ({r.SourceType}::text IS NULL OR d.reference_type = {r.SourceType})
+              AND ({r.SourceId}::uuid IS NULL OR d.reference_id = {r.SourceId})
             ORDER BY d.issue_date DESC, d.created_at DESC
             LIMIT {limit}
             """).ToListAsync(ct);

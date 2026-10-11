@@ -16,10 +16,11 @@ namespace Nexora.Infrastructure.Ged;
 /// cycle de vie et les verrous. La détection de doublon (§39) compare des empreintes SHA-256,
 /// jamais bloquante — une décision humaine.
 /// </summary>
-public sealed class SqlGedService(NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow) : IGedService
+public sealed class SqlGedService(NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow, IBusinessCalendar calendar,
+    IPasswordHasher hasher) : IGedService
 {
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private static readonly string[] DocumentTypes =
     [
@@ -306,6 +307,16 @@ public sealed class SqlGedService(NexoraDbContext db, ITenantContext tenant, IUn
 
     public async Task<Result<GedDocumentDto>> UnlockAsync(Guid id, CancellationToken ct = default)
     {
+        // Un document signé, ou en cours de signature, ne se déverrouille pas : sinon une nouvelle version
+        // remplacerait le contenu signé (le verrou de signature tombe seul au refus, à l'annulation, à l'expiration).
+        var state = await db.Database.SqlQuery<string?>($"""
+            SELECT CASE WHEN d.status = 'signed' THEN 'signed'
+                        WHEN EXISTS(SELECT 1 FROM nexora.document_signature_request r WHERE r.document_id = d.id AND r.status = 'pending')
+                             THEN 'signing' END AS "Value"
+            FROM nexora.document d WHERE d.id = {id} AND d.company_id = {Company}
+            """).FirstOrDefaultAsync(ct);
+        if (state == "signed") return Error.Conflict("document.signed", "Un document signé ne peut pas être déverrouillé.");
+        if (state == "signing") return Error.Conflict("document.signing", "Document en cours de signature : annulez la demande pour le libérer.");
         var rows = await db.Database.ExecuteSqlAsync($"""
             UPDATE nexora.document SET locked = false, locked_reason = NULL, updated_at = now()
             WHERE id = {id} AND company_id = {Company}
@@ -319,6 +330,11 @@ public sealed class SqlGedService(NexoraDbContext db, ITenantContext tenant, IUn
 
     public async Task<Result<GedDocumentDto>> ArchiveAsync(Guid id, CancellationToken ct = default)
     {
+        if (await db.Database.SqlQuery<bool>($"""
+                SELECT EXISTS(SELECT 1 FROM nexora.document_signature_request
+                              WHERE document_id = {id} AND company_id = {Company} AND status = 'pending') AS "Value"
+                """).FirstAsync(ct))
+            return Error.Conflict("document.signing", "Document en cours de signature : attendez l'issue ou annulez la demande.");
         var rows = await db.Database.ExecuteSqlAsync($"""
             UPDATE nexora.document SET status = 'archived', updated_at = now()
             WHERE id = {id} AND company_id = {Company} AND status <> 'archived'
@@ -331,7 +347,10 @@ public sealed class SqlGedService(NexoraDbContext db, ITenantContext tenant, IUn
     public async Task<Result<GedDocumentDto>> RestoreAsync(Guid id, CancellationToken ct = default)
     {
         var rows = await db.Database.ExecuteSqlAsync($"""
-            UPDATE nexora.document SET status = 'approved', updated_at = now()
+            UPDATE nexora.document d
+               SET status = CASE WHEN EXISTS(SELECT 1 FROM nexora.document_signature_request r
+                                             WHERE r.document_id = d.id AND r.status = 'completed') THEN 'signed' ELSE 'approved' END,
+                   updated_at = now()
             WHERE id = {id} AND company_id = {Company} AND status = 'archived'
             """, ct);
         if (rows == 0) return Error.NotFound("document.not_found", "Document introuvable ou non archivé.");
@@ -347,7 +366,7 @@ public sealed class SqlGedService(NexoraDbContext db, ITenantContext tenant, IUn
         var row = await GetRowAsync(id, ct);
         if (row is null) return Error.NotFound("document.not_found", "Document introuvable.");
         if (row.LegalHold) return Error.Forbidden("document.legal_hold", "Document sous legal hold — suppression impossible (§29).");
-        if (row.RetentionUntil is { } until && until > DateOnly.FromDateTime(DateTime.UtcNow))
+        if (row.RetentionUntil is { } until && until > calendar.Today)
             return Error.Forbidden("document.retention", $"Document sous rétention jusqu'au {until:yyyy-MM-dd} (§28).");
 
         await db.Database.ExecuteSqlAsync($"""
@@ -367,7 +386,7 @@ public sealed class SqlGedService(NexoraDbContext db, ITenantContext tenant, IUn
             """).FirstOrDefaultAsync(ct);
         if (row is null) return Error.NotFound("document.not_found", "Aucune demande de suppression en attente.");
         if (row.LegalHold) return Error.Forbidden("document.legal_hold", "Document sous legal hold (§29).");
-        if (row.RetentionUntil is { } until && until > DateOnly.FromDateTime(DateTime.UtcNow))
+        if (row.RetentionUntil is { } until && until > calendar.Today)
             return Error.Forbidden("document.retention", "Document encore sous rétention (§28).");
         if (row.RequestedBy is { } requester && requester == tenant.UserId)
             return Error.Forbidden("document.four_eyes", "Le demandeur ne peut pas confirmer sa propre suppression (§30).");
@@ -428,7 +447,7 @@ public sealed class SqlGedService(NexoraDbContext db, ITenantContext tenant, IUn
 
         var shareId = Guid.NewGuid();
         var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(24)).ToLowerInvariant();
-        var passwordHash = string.IsNullOrWhiteSpace(request.Password) ? null : HashPassword(request.Password);
+        var passwordHash = string.IsNullOrWhiteSpace(request.Password) ? null : hasher.Hash(request.Password);   // BCrypt, salé
         await db.Database.ExecuteSqlAsync($"""
             INSERT INTO nexora.document_share (id, company_id, document_id, token, allow_download, password_hash, expires_at, created_by)
             VALUES ({shareId}, {Company}, {id}, {token}, {request.AllowDownload}, {passwordHash}, {request.ExpiresAt}, {tenant.UserId})
@@ -459,8 +478,13 @@ public sealed class SqlGedService(NexoraDbContext db, ITenantContext tenant, IUn
         if (share.RevokedAt is not null) return Error.Forbidden("document_share.revoked", "Lien révoqué.");
         if (share.ExpiresAt <= DateTimeOffset.UtcNow) return Error.Forbidden("document_share.expired", "Lien expiré (§31).");
         if (!share.AllowDownload) return Error.Forbidden("document_share.no_download", "Ce lien est en lecture seule.");
-        if (share.PasswordHash is { } hash && hash != HashPassword(password ?? ""))
-            return Error.Forbidden("document_share.password", "Mot de passe incorrect.");
+        if (share.PasswordHash is { } hash)
+        {
+            if (string.IsNullOrEmpty(password))
+                return Error.Forbidden("document_share.password_required", "Ce lien est protégé par un mot de passe.");
+            if (!PasswordMatches(hash, password))
+                return Error.Forbidden("document_share.password", "Mot de passe incorrect.");
+        }
 
         var content = await db.Database.SqlQuery<SharedContentRow>($"""
             SELECT d.name AS "Name", v.content AS "Content", v.content_type AS "ContentType"
@@ -474,7 +498,16 @@ public sealed class SqlGedService(NexoraDbContext db, ITenantContext tenant, IUn
     private sealed record ShareRow(Guid DocumentId, bool AllowDownload, string? PasswordHash, DateTimeOffset ExpiresAt, DateTimeOffset? RevokedAt);
     private sealed record SharedContentRow(string Name, byte[] Content, string ContentType);
 
-    private static string HashPassword(string password) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(password))).ToLowerInvariant();
+    /// <summary>
+    /// Analyse 2026-10 §6.4 : les nouveaux partages sont hachés en BCrypt (salé, lent). Les partages créés avant
+    /// gardent leur empreinte SHA-256, comparée en temps constant.
+    /// </summary>
+    private bool PasswordMatches(string hash, string password)
+    {
+        if (hash.StartsWith("$2", StringComparison.Ordinal)) return hasher.Verify(password, hash);
+        var legacy = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(password))).ToLowerInvariant();
+        return CryptographicOperations.FixedTimeEquals(Encoding.ASCII.GetBytes(hash), Encoding.ASCII.GetBytes(legacy));
+    }
 
     private static GedDocumentDto ToDto(Row r) => new(
         r.Id, r.EstablishmentId, r.Name, r.DocumentType, r.Category, JsonSerializer.Deserialize<List<string>>(r.Tags) ?? [],

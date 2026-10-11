@@ -56,6 +56,8 @@ public sealed class InventoryCountLine : AuditableEntity
     public decimal? CountedQuantity { get; set; }
     public decimal Variance { get; set; }           // généré : counted - system
     public decimal UnitCost { get; set; }
+    /// <summary>Justification de l'écart (V080).</summary>
+    public string? Note { get; set; }
 }
 
 // ---- Ajustements / pertes / casse (§16) --------------------------------
@@ -66,6 +68,8 @@ public static class AdjustmentType
     public const string Loss = "loss";
     public const string Breakage = "breakage";
     public const string Expiry = "expiry";
+    /// <summary>Vol constaté (V080) — sortie de stock traitée comme une perte, distinguée dans les rapports.</summary>
+    public const string Theft = "theft";
     public const string Correction = "correction";
     public const string Found = "found";
     public const string Opening = "opening";
@@ -96,4 +100,6 @@ public sealed class StockAdjustmentLine : AuditableEntity
     public Guid? LotId { get; set; }
     public decimal QuantityDelta { get; set; }       // signé
     public decimal UnitCost { get; set; }
+    /// <summary>Justification de la ligne (V080).</summary>
+    public string? Note { get; set; }
 }

@@ -1,0 +1,89 @@
+import { useCallback, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { Button, Field, Modal, Select, TextInput } from "@/shared/ui";
+import { TopLayer } from "@/shared/TopLayer";
+
+export interface PromptOptions {
+  title: string;
+  label: string;
+  /** Texte obligatoire (au moins `minLength` caractères, 3 par défaut). */
+  required?: boolean;
+  minLength?: number;
+  defaultValue?: string;
+  hint?: string;
+  confirmLabel?: string;
+  danger?: boolean;
+  /** Liste de choix (remplace la saisie libre). */
+  choices?: Array<{ value: string; label: string }>;
+  multiline?: boolean;
+  /** Enregistrement fait dans la fenêtre : ouverte jusqu'à la réponse, refus affiché sans perdre la saisie. */
+  onSubmit?: (value: string) => Promise<unknown>;
+}
+
+interface Pending extends PromptOptions { resolve: (value: string | null) => void }
+
+/**
+ * Remplace `window.prompt` (interdit par le plan maître) : une fenêtre de l'application, avec validation,
+ * qui rend la valeur saisie ou `null` si l'utilisateur annule. Usage : `const { ask, dialog } = usePrompt();`
+ * puis `const note = await ask({ title, label, required: true }); if (note === null) return;` et `{dialog}` dans le rendu.
+ */
+export function usePrompt(): { ask: (o: PromptOptions) => Promise<string | null>; dialog: ReactNode } {
+  const [pending, setPending] = useState<Pending | null>(null);
+  const [value, setValue] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const pendingRef = useRef<Pending | null>(null);
+  pendingRef.current = pending;
+
+  const ask = useCallback((o: PromptOptions) => new Promise<string | null>((resolve) => {
+    pendingRef.current?.resolve(null);
+    setValue(o.defaultValue ?? o.choices?.[0]?.value ?? "");
+    setError(null);
+    setBusy(false);
+    setPending({ ...o, resolve });
+  }), []);
+
+  const close = (v: string | null) => { pending?.resolve(v); setPending(null); };
+  const cancel = () => { if (!busy) close(null); };
+
+  async function submit(e?: FormEvent) {
+    e?.preventDefault();
+    if (!pending || busy) return;
+    const v = value.trim();
+    const min = pending.minLength ?? 3;
+    if (pending.required && v.length < min) { setError(min > 1 ? `${min} caractères au moins.` : "Obligatoire."); return; }
+    if (!pending.onSubmit) { close(v); return; }
+    setBusy(true);
+    setError(null);
+    try {
+      await pending.onSubmit(v);
+      close(v);
+    } catch (err) {
+      setError(err instanceof Error && err.message ? err.message : "Enregistrement impossible. Réessayez.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const dialog = pending ? (
+    <TopLayer>
+    <Modal title={pending.title} onClose={cancel}
+      footer={<><Button variant="ghost" onClick={cancel} disabled={busy}>Annuler</Button>
+        <Button variant={pending.danger ? "danger" : "primary"} onClick={() => void submit()} loading={busy}>{pending.confirmLabel ?? "Valider"}</Button></>}>
+      <form noValidate onSubmit={(e) => void submit(e)} style={{ display: "grid", gap: 10 }} aria-busy={busy}>
+        <Field label={pending.label} required={pending.required} error={error} hint={pending.hint}>
+          {pending.choices
+            ? <Select value={value} onChange={(e) => setValue(e.target.value)}>
+                {pending.choices.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+              </Select>
+            : pending.multiline
+              ? <textarea className="nx-textarea" rows={3} autoFocus value={value} onChange={(e) => setValue(e.target.value)} />
+              : <TextInput autoFocus value={value} onChange={(e) => setValue(e.target.value)} />}
+        </Field>
+        <button type="submit" hidden />
+      </form>
+    </Modal>
+    </TopLayer>
+  ) : null;
+
+  return { ask, dialog };
+}

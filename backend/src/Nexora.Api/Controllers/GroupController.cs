@@ -38,6 +38,16 @@ public sealed class GroupController(
     public async Task<IActionResult> SetMapping(Guid groupId, [FromBody] SetMappingRequest r, CancellationToken ct)
         => FromResult(await ledger.SetMappingAsync(groupId, r, ct));
 
+    [HttpGet("accounts/mappings")]
+    [RequirePermission(Permissions.Group.Mappings)]
+    public async Task<IActionResult> Mappings(Guid groupId, [FromQuery] Guid companyId, CancellationToken ct)
+        => FromResult(await ledger.ListMappingsAsync(groupId, companyId, ct));
+
+    [HttpGet("options")]
+    [RequirePermission(Permissions.Group.View)]
+    public async Task<IActionResult> Options(Guid groupId, CancellationToken ct)
+        => Ok(await ledger.OptionsAsync(groupId, ct));
+
     [HttpGet("accounts/mapping-coverage")]
     [RequirePermission(Permissions.Group.Mappings)]
     public async Task<IActionResult> MappingCoverage(Guid groupId, CancellationToken ct)
@@ -112,7 +122,8 @@ public sealed class GroupController(
         => FromResult(await provisioning.ProvisionAsync(r with { GroupId = groupId }, ct));
 
     [HttpPost("companies/{companyId:guid}/archive")]
+    [RequireStepUp(StepUpPurposes.Deletion)]
     [RequirePermission(Permissions.Group.Companies)]
     public async Task<IActionResult> ArchiveCompany(Guid groupId, Guid companyId, [FromBody] ArchiveCompanyRequest r, CancellationToken ct)
-        => FromResult(await provisioning.ArchiveAsync(companyId, r, ct));
+        => FromResult(await provisioning.ArchiveAsync(groupId, companyId, r, ct));
 }

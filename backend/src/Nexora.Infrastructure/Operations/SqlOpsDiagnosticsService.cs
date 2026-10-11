@@ -3,6 +3,7 @@ using Nexora.Application.Abstractions;
 using Nexora.Application.Operations;
 using Nexora.Contracts.Operations;
 using Nexora.Infrastructure.Persistence;
+using Nexora.Domain.Common;
 
 namespace Nexora.Infrastructure.Operations;
 
@@ -14,7 +15,7 @@ namespace Nexora.Infrastructure.Operations;
 /// </summary>
 public sealed class SqlOpsDiagnosticsService(NexoraDbContext db, ITenantContext tenant, IDateTimeProvider clock) : IOpsDiagnosticsService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record QueueRow(int Dead, int Pending);
     private sealed record SyncRow(int ActiveDevices, DateTimeOffset? LastSync);

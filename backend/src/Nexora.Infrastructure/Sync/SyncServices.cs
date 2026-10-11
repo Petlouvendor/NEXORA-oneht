@@ -23,12 +23,16 @@ public sealed class SqlSyncService(
     SalesService sales, IDeliveryService delivery, IFieldInterventionService interventions,
     Nexora.Application.Customers.ICustomerAccountService customerAccounts, IPermissionService permissions) : ISyncService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
     private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
 
     private sealed record DeviceRow(Guid Id, string Status);
     private sealed record OpRow(Guid Id, string Status, Guid? ResultEntityId);
-    private sealed record PolicyRow(bool AllowOfflineSales, bool AllowOfflineCredit, decimal OfflineCreditLimit, bool AllowOfflineCustomerPayment);
+    private sealed record PolicyRow(bool AllowOfflineSales, bool AllowOfflineCredit, decimal OfflineCreditLimit, bool AllowOfflineCustomerPayment,
+        bool AllowOfflineDiscount = true, int MaxOfflineMinutes = 0, string[]? AllowedPaymentMethods = null);
+    private sealed record TenderTypeRow(Guid? AccountId, Guid? MethodId, string Type);
+    private sealed record StoredOpRow(Guid Id, Guid DeviceId, Guid OperationUuid, string EntityType, string OperationType, string Payload,
+        DateTimeOffset? ClientCreatedAt, short Priority);
     private sealed record CountRow(string Status, int Count);
     private sealed record GuidRow(Guid? Value);
     private sealed record InstantRow(DateTimeOffset? Value);
@@ -45,12 +49,13 @@ public sealed class SqlSyncService(
             """).FirstOrDefaultAsync(ct);
         if (device is null) return Error.NotFound("sync.device", "Appareil inconnu.");
         if (device.Status == "revoked") return Error.Forbidden("sync.device_revoked", "Appareil révoqué : synchronisation refusée (§31).");
+        if (device.Status == "suspended") return Error.Forbidden("sync.device_suspended", "Appareil suspendu : synchronisation refusée.");
 
-        var policy = await db.Database.SqlQuery<PolicyRow>($"""
-            SELECT allow_offline_sales AS "AllowOfflineSales", allow_offline_credit AS "AllowOfflineCredit",
-                   offline_credit_limit AS "OfflineCreditLimit", allow_offline_customer_payment AS "AllowOfflineCustomerPayment"
-            FROM nexora.offline_policy WHERE company_id = {Company}
-            """).FirstOrDefaultAsync(ct) ?? new PolicyRow(true, false, 0m, true);
+        var policy = await LoadPolicyAsync(ct);
+        // Dernier contact de l'appareil AVANT ce lot : repère de la durée passée hors ligne.
+        var lastSeen = (await db.Database.SqlQuery<InstantRow>($"""
+            SELECT last_seen_at AS "Value" FROM nexora.sync_device WHERE id = {request.DeviceId}
+            """).ToListAsync(ct)).FirstOrDefault()?.Value;
 
         var batchId = Guid.NewGuid();
         await db.Database.ExecuteSqlAsync($"""
@@ -63,7 +68,7 @@ public sealed class SqlSyncService(
 
         foreach (var op in request.Operations.OrderBy(o => o.Priority).ThenBy(o => o.ClientSequence ?? 0))
         {
-            var r = await ProcessAsync(batchId, request.DeviceId, op, policy, ct);
+            var r = await ProcessAsync(batchId, request.DeviceId, op, policy, lastSeen, ct);
             results.Add(r);
             if (r.Status == "SYNCED") confirmed++;
             else if (r.Status == "CONFLICT") conflicts++;
@@ -83,8 +88,17 @@ public sealed class SqlSyncService(
         return Result.Success(new PushBatchResult(batchId, confirmed, conflicts, failed, results));
     }
 
+    private async Task<PolicyRow> LoadPolicyAsync(CancellationToken ct)
+        => await db.Database.SqlQuery<PolicyRow>($"""
+            SELECT allow_offline_sales AS "AllowOfflineSales", allow_offline_credit AS "AllowOfflineCredit",
+                   offline_credit_limit AS "OfflineCreditLimit", allow_offline_customer_payment AS "AllowOfflineCustomerPayment",
+                   allow_offline_discount AS "AllowOfflineDiscount", max_offline_minutes AS "MaxOfflineMinutes",
+                   ARRAY(SELECT jsonb_array_elements_text(allowed_payment_methods)) AS "AllowedPaymentMethods"
+            FROM nexora.offline_policy WHERE company_id = {Company}
+            """).FirstOrDefaultAsync(ct) ?? new PolicyRow(true, false, 0m, true);
+
     private async Task<SyncOperationResult> ProcessAsync(
-        Guid batchId, Guid deviceId, SyncOperationInput op, PolicyRow policy, CancellationToken ct)
+        Guid batchId, Guid deviceId, SyncOperationInput op, PolicyRow policy, DateTimeOffset? lastSeen, CancellationToken ct)
     {
         // Idempotence : opération déjà connue (§13).
         var existing = await db.Database.SqlQuery<OpRow>($"""
@@ -124,9 +138,23 @@ public sealed class SqlSyncService(
                 """, ct);
         }
 
+        // Finalisation phase 12 : le lot n'exige plus le droit de vendre (un livreur n'en a pas) — chaque opération est
+        // contrôlée selon son type. Avant, un caissier pouvait conclure une livraison hors ligne sans droit terrain.
+        var required = op.EntityType switch
+        {
+            "sale" => Nexora.Application.Security.Permissions.Pos.Sell,
+            "delivery_stop" or "field_intervention" => Nexora.Application.Security.Permissions.FieldOps.Manage,
+            _ => null,
+        };
+        if (required is not null && !(await permissions.CurrentPermissionsAsync(tenant, ct)).Contains(required))
+        {
+            await FailAsync(opId, "sync.forbidden", $"Permission requise pour cette opération : {required}.", ct);
+            return new SyncOperationResult(op.OperationUuid, "FAILED", null, null, $"Permission requise : {required}.");
+        }
+
         // Dispatch — Phase 10 : la vente est l'opération offline critique (§9).
         if (op is { EntityType: "sale", OperationType: "create" })
-            return await ProcessSaleAsync(opId, op, policy, ct);
+            return await ProcessSaleAsync(opId, op, policy, lastSeen, bypassPolicy: false, ct);
         // Phase 44 §25-29 : livraison et intervention terrain rejouent le même moteur.
         if (op is { EntityType: "delivery_stop", OperationType: "update" })
             return await ProcessDeliveryStopAsync(opId, op, ct);
@@ -280,9 +308,12 @@ public sealed class SqlSyncService(
         return new SyncOperationResult(op.OperationUuid, "FAILED", null, null, err.Message);
     }
 
-    private async Task<SyncOperationResult> ProcessSaleAsync(Guid opId, SyncOperationInput op, PolicyRow policy, CancellationToken ct)
+    /// <param name="bypassPolicy">Rejeu décidé par un responsable (« le poste a raison ») : la politique hors ligne
+    /// n'est pas réappliquée — seuls les contrôles métier de la vente (stock, prix, crédit client) le sont.</param>
+    private async Task<SyncOperationResult> ProcessSaleAsync(
+        Guid opId, SyncOperationInput op, PolicyRow policy, DateTimeOffset? lastSeen, bool bypassPolicy, CancellationToken ct)
     {
-        if (!policy.AllowOfflineSales)
+        if (!bypassPolicy && !policy.AllowOfflineSales)
             return await ConflictAsync(opId, op, "validation", "Les ventes hors ligne sont interdites par la politique (§10).",
                 "Activer allow_offline_sales ou saisir la vente en ligne.", ct);
 
@@ -300,11 +331,15 @@ public sealed class SqlSyncService(
 
         cmd = cmd with { OperationUuid = op.OperationUuid };
 
+        if (!bypassPolicy && await PolicyRefusalAsync(cmd, op, policy, lastSeen, ct) is { } refusal)
+            return await ConflictAsync(opId, op, "validation", refusal,
+                "Vérifier la vente puis l'accepter (« le poste a raison ») pour l'enregistrer, ou l'annuler.", ct);
+
         // Contrôle de crédit offline (§17) : le crédit projeté est bloqué si la politique l'interdit.
         var paid = cmd.Tenders.Sum(t => t.Amount);
         var estimatedTotal = EstimateTotal(cmd);
         var offlineCredit = Math.Max(0m, estimatedTotal - paid);
-        if (offlineCredit > 0m)
+        if (!bypassPolicy && offlineCredit > 0m)
         {
             if (!policy.AllowOfflineCredit)
                 return await ConflictAsync(opId, op, "credit",
@@ -350,6 +385,39 @@ public sealed class SqlSyncService(
 
         await FailAsync(opId, err.Code, err.Message, ct);
         return new SyncOperationResult(op.OperationUuid, "FAILED", null, null, err.Message);
+    }
+
+    /// <summary>
+    /// Politique hors ligne (phase 6) — ce que la vente hors ligne n'avait pas le droit de faire : remise interdite,
+    /// moyen de paiement non autorisé, vente faite après la durée maximale sans contact avec le serveur.
+    /// </summary>
+    private async Task<string?> PolicyRefusalAsync(CheckoutCommand cmd, SyncOperationInput op, PolicyRow policy, DateTimeOffset? lastSeen, CancellationToken ct)
+    {
+        if (!policy.AllowOfflineDiscount && cmd.Lines.Any(l => l.LineDiscount > 0m))
+            return "Remise accordée hors ligne alors que la politique l'interdit.";
+        if (policy.AllowedPaymentMethods is { Length: > 0 } allowed && cmd.Tenders.Any(t => t.Amount > 0m))
+        {
+            var accounts = cmd.Tenders.Select(t => t.FinancialAccountId).Distinct().ToArray();
+            var methods = cmd.Tenders.Where(t => t.PaymentMethodId is not null).Select(t => t.PaymentMethodId!.Value).Distinct().ToArray();
+            var types = await db.Database.SqlQuery<TenderTypeRow>($"""
+                SELECT fa.id AS "AccountId", NULL::uuid AS "MethodId", CASE fa.account_type WHEN 'cash' THEN 'cash' ELSE 'other' END AS "Type"
+                FROM nexora.financial_account fa WHERE fa.company_id = {Company} AND fa.id = ANY({accounts})
+                UNION ALL
+                SELECT NULL::uuid, pm.id, pm.type FROM nexora.payment_method pm WHERE pm.company_id = {Company} AND pm.id = ANY({methods})
+                """).ToListAsync(ct);
+            foreach (var t in cmd.Tenders.Where(t => t.Amount > 0m))
+            {
+                var type = t.PaymentMethodId is { } mid
+                    ? types.FirstOrDefault(x => x.MethodId == mid)?.Type
+                    : types.FirstOrDefault(x => x.AccountId == t.FinancialAccountId)?.Type;
+                if (type is null || !allowed.Contains(type, StringComparer.OrdinalIgnoreCase))
+                    return $"Moyen de paiement « {type ?? "inconnu"} » non autorisé hors ligne (autorisés : {string.Join(", ", allowed)}).";
+            }
+        }
+        if (policy.MaxOfflineMinutes > 0 && lastSeen is { } seen && op.ClientCreatedAt is { } created
+            && (created - seen).TotalMinutes > policy.MaxOfflineMinutes)
+            return $"Vente faite {(int)(created - seen).TotalMinutes} min après le dernier contact avec le serveur (maximum {policy.MaxOfflineMinutes} min).";
+        return null;
     }
 
     private static decimal EstimateTotal(CheckoutCommand cmd)
@@ -437,6 +505,47 @@ public sealed class SqlSyncService(
             WHERE id = {conflictId} AND company_id = {Company} AND resolution = 'pending'
             """).ToListAsync(ct)).FirstOrDefault()?.Value;
         if (conflict is null) return Error.NotFound("sync.conflict", "Conflit introuvable ou déjà résolu.");
+
+        // « Le poste a raison » sur une vente : le serveur la rejoue tout de suite (le poste ne renvoie jamais une
+        // opération en conflit, et la même politique la remettrait en conflit). La politique hors ligne n'est pas
+        // réappliquée ; si la vente reste impossible (stock, crédit client…), le conflit reste ouvert.
+        if (resolution == "client_wins")
+        {
+            var stored = (await db.Database.SqlQuery<StoredOpRow>($"""
+                SELECT id AS "Id", device_id AS "DeviceId", operation_uuid AS "OperationUuid", entity_type AS "EntityType",
+                       operation_type AS "OperationType", payload::text AS "Payload", client_created_at AS "ClientCreatedAt",
+                       priority AS "Priority"
+                FROM nexora.sync_operation WHERE id = {conflict.Value}
+                """).ToListAsync(ct)).FirstOrDefault();
+            if (stored is { EntityType: "sale", OperationType: "create" })
+            {
+                using var payload = JsonDocument.Parse(stored.Payload);
+                var op = new SyncOperationInput(stored.OperationUuid, stored.EntityType, stored.OperationType, payload.RootElement.Clone(),
+                    stored.Priority, null, stored.ClientCreatedAt);
+                var replay = await ProcessSaleAsync(stored.Id, op, await LoadPolicyAsync(ct), null, bypassPolicy: true, ct);
+                if (replay.Status != "SYNCED")
+                {
+                    // Le rejeu a pu ouvrir un nouveau conflit (stock, crédit) : l'ancien est clos, le nouveau reste à traiter.
+                    await db.Database.ExecuteSqlAsync($"""
+                        UPDATE nexora.sync_conflict SET resolution = 'manual', resolution_note = {"Rejeu refusé : " + replay.Message},
+                            resolved_by = {tenant.UserId}, resolved_at = now(), updated_at = now()
+                        WHERE id = {conflictId} AND resolution = 'pending'
+                        """, ct);
+                    await uow.SaveChangesAsync(ct);
+                    return Error.Conflict("sync.replay_refused", $"La vente n'a pas pu être enregistrée : {replay.Message}");
+                }
+                await db.Database.ExecuteSqlAsync($"""
+                    UPDATE nexora.sync_conflict SET resolution = 'client_wins', resolution_note = {request.Note},
+                        resolved_by = {tenant.UserId}, resolved_at = now(), updated_at = now()
+                    WHERE id = {conflictId}
+                    """, ct);
+                await db.Database.ExecuteSqlAsync($"""
+                    UPDATE nexora.sync_operation SET conflict_resolution = 'client_wins', updated_at = now() WHERE id = {stored.Id}
+                    """, ct);
+                await uow.SaveChangesAsync(ct);
+                return Result.Success();
+            }
+        }
 
         await uow.ExecuteInTransactionAsync(async token =>
         {

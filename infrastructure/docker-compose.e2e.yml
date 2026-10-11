@@ -1,0 +1,24 @@
+# NEXORA ONE — surcouche E2E (finalisation phase 19) : installation NEUVE, servie en HTTP sur localhost.
+# localhost est un contexte sécurisé pour le navigateur : service worker et caisse hors ligne fonctionnent sans
+# certificat. Jamais pour un vrai déploiement.
+#
+#   docker compose -p nexora-e2e -f infrastructure/docker-compose.prod.yml -f infrastructure/docker-compose.e2e.yml \
+#     --env-file infrastructure/production.env up -d
+services:
+  web:
+    environment:
+      NEXORA_DOMAIN: http://localhost
+    ports: !override
+      - "${NEXORA_E2E_PORT:-8090}:80"
+  api:
+    environment:
+      PublicUrl: http://localhost
+      Cors__Origins__0: http://localhost
+      # Toute la suite se connecte depuis une seule machine : limite de connexion élargie, en E2E seulement.
+      Security__LoginRateLimitPerMinute: "120"
+  backup:
+    volumes: !override
+      - e2ebackups:/backups
+
+volumes:
+  e2ebackups:

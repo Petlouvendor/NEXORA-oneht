@@ -16,7 +16,7 @@ namespace Nexora.Infrastructure.Reporting;
 /// <summary>Réconciliation KPI (§46) : reporting == source métier / comptable.</summary>
 public sealed class SqlKpiReconciliation(NexoraDbContext db, ITenantContext tenant) : IKpiReconciliation
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
     private const decimal Tolerance = 0.01m;
 
     private Task<decimal> Val(FormattableString sql, CancellationToken ct)
@@ -97,7 +97,7 @@ public sealed class SqlKpiReconciliation(NexoraDbContext db, ITenantContext tena
 
         // 3. Créances : sous-livre clients vs compte 4111 (§46)
         var opAr = await Val($"""
-            SELECT COALESCE(SUM(original_amount - paid_amount), 0) AS "Value" FROM nexora.customer_receivable
+            SELECT COALESCE(SUM(remaining_amount), 0) AS "Value" FROM nexora.customer_receivable
             WHERE company_id = {Company} AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE','IN_DISPUTE')
             """, ct);
         var glAr = await GlByKey("accounts_receivable", to, debitNormal: true, ct);
@@ -107,7 +107,7 @@ public sealed class SqlKpiReconciliation(NexoraDbContext db, ITenantContext tena
 
         // 4. Dettes : sous-livre fournisseurs vs compte 4011 (§46)
         var opAp = await Val($"""
-            SELECT COALESCE(SUM(original_amount - paid_amount), 0) AS "Value" FROM nexora.supplier_payable
+            SELECT COALESCE(SUM(remaining_amount), 0) AS "Value" FROM nexora.supplier_payable
             WHERE company_id = {Company} AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE')
             """, ct);
         var glAp = await GlByKey("accounts_payable", to, debitNormal: false, ct);
@@ -144,7 +144,7 @@ public sealed class SqlKpiReconciliation(NexoraDbContext db, ITenantContext tena
 /// <summary>Contrôle qualité des données (§45).</summary>
 public sealed class SqlDataQualityService(NexoraDbContext db, ITenantContext tenant) : IDataQualityService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private static readonly string[] RequiredMappings =
     [
@@ -282,7 +282,7 @@ public sealed class SqlAnalyticsSnapshotService(
     NexoraDbContext db, ITenantContext tenant,
     IKpiReconciliation reconciliation, IDataQualityService quality) : IAnalyticsSnapshotService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     // Sérialisation alignée sur la convention HTTP (camelCase) → le snapshot se relit à l'identique.
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);

@@ -12,7 +12,7 @@ namespace Nexora.Infrastructure.Administration;
 public sealed class SqlConfigVersionService(NexoraDbContext db, IUnitOfWork uow, ITenantContext tenant, IDateTimeProvider clock)
     : IConfigVersionService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
     private static readonly string[] Domains = ["numbering", "accounting_defaults", "taxes", "approvals", "pos", "stock", "sector_profile"];
 
     private sealed record Row(Guid Id, string Domain, int VersionNumber, string Status, DateTimeOffset? EffectiveFrom, DateTimeOffset? EffectiveTo, string Snapshot, string Diff, string? Note, DateTimeOffset CreatedAt);
@@ -188,7 +188,7 @@ public sealed class SqlConfigVersionService(NexoraDbContext db, IUnitOfWork uow,
 /// <summary>Centre de tâches administratives : lacunes de configuration (Phase 14 §44).</summary>
 public sealed class SqlAdminTaskService(NexoraDbContext db, ITenantContext tenant, ISettingsService settings) : IAdminTaskService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private static readonly string[] RequiredMappings =
         ["sales_revenue", "sales_tax_output", "accounts_receivable", "accounts_payable", "purchases", "inventory", "cogs", "cash"];

@@ -15,7 +15,7 @@ namespace Nexora.Infrastructure.Administration;
 public sealed class SqlWorkflowService(
     NexoraDbContext db, IUnitOfWork uow, ITenantContext tenant, IApprovalWorkflowService approvals) : IWorkflowService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
     private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
     private static readonly string[] Ops = ["eq", "neq", "gt", "gte", "lt", "lte", "in", "contains"];
 
@@ -31,18 +31,65 @@ public sealed class SqlWorkflowService(
         return rows.Select(Map).ToList();
     }
 
+    /// <summary>Types d'opération soumis à approbation. <c>Automatic</c> : une opération réelle consulte la règle d'elle-même.</summary>
+    private static readonly WorkflowTriggerDto[] Triggers =
+    [
+        new("credit_sale", "Vente à crédit au-delà de la limite", true, "Dérogation de crédit demandée à la caisse ou en vente."),
+        new("salary_advance", "Avance sur salaire", true, "Demande d'avance d'un salarié (module RH)."),
+        new("employee_loan", "Prêt au salarié", true, "Demande de prêt d'un salarié (module RH)."),
+        new("expense", "Dépense", false, "Demandes d'approbation de dépense déposées."),
+        new("discount", "Remise", false, "Demandes d'approbation de remise déposées."),
+        new("refund", "Remboursement", false, "Demandes d'approbation de remboursement déposées."),
+        new("purchase", "Achat", false, "Demandes d'approbation d'achat déposées."),
+        new("stock_adjustment", "Ajustement de stock", false, "Demandes d'approbation d'ajustement déposées."),
+        new("price_change", "Changement de prix", false, "Demandes d'approbation de prix déposées."),
+        new("void", "Annulation de vente", false, "Demandes d'approbation d'annulation déposées."),
+        new("period_close", "Réouverture de période", false, "Demandes d'approbation de réouverture déposées."),
+    ];
+
+    public async Task<WorkflowCatalogDto> CatalogAsync(CancellationToken ct = default)
+    {
+        var roles = await db.Database.SqlQuery<WorkflowApproverRoleDto>($"""
+            SELECT name AS "Name", description AS "Description" FROM nexora.role
+            WHERE status = 'active' AND (company_id = {Company} OR (system_role AND name NOT LIKE 'platform\_%'))
+            ORDER BY system_role, name
+            """).ToListAsync(ct);
+        return new WorkflowCatalogDto(Triggers, roles);
+    }
+
     public async Task<Result<Guid>> UpsertAsync(UpsertWorkflowRequest request, CancellationToken ct = default)
     {
         var code = request.Code?.Trim().ToLowerInvariant() ?? "";
         if (code.Length is < 2 or > 50) return Error.Validation("workflow.code", "Code invalide (2 à 50 caractères).");
         if (string.IsNullOrWhiteSpace(request.Name)) return Error.Validation("workflow.name", "Nom requis.");
         if (string.IsNullOrWhiteSpace(request.TriggerEvent)) return Error.Validation("workflow.trigger", "Déclencheur requis.");
+        if (MapType(request.TriggerEvent) == "other")
+            return Error.Validation("workflow.trigger", $"Déclencheur « {request.TriggerEvent} » inconnu.");
 
         var def = request.Definition;
         if (def.Conditions.Any(c => !Ops.Contains(c.Op.Trim().ToLowerInvariant())))
             return Error.Validation("workflow.condition_op", $"Opérateur invalide. Attendu : {string.Join(", ", Ops)}.");
         if (def.Logic is not ("all" or "any"))
             return Error.Validation("workflow.logic", "Logique invalide (all/any).");
+        // Finalisation phase 11 : seule l'approbation a un effet réel. Les opérations réelles ne connaissent que le
+        // montant : la condition est donc un seuil de montant (au plus un). Actions et notifications « automatiques »
+        // ne sont exécutées nulle part — elles sont refusées plutôt que simulées.
+        if (def.Approval is not { } approval)
+            return Error.Validation("workflow.approval", "Un workflow exige une approbation (niveaux et rôle approbateur).");
+        if (approval.Levels is < 1 or > 5) return Error.Validation("workflow.levels", "De 1 à 5 niveaux d'approbation.");
+        if (!string.IsNullOrWhiteSpace(approval.ApproverRoleCode) && !await db.Database.SqlQuery<bool>($"""
+                SELECT EXISTS(SELECT 1 FROM nexora.role WHERE name = {approval.ApproverRoleCode.Trim()} AND status = 'active'
+                              AND (company_id = {Company} OR (system_role AND name NOT LIKE 'platform\_%'))) AS "Value"
+                """).FirstAsync(ct))
+            return Error.Validation("workflow.approver_role", $"Rôle approbateur « {approval.ApproverRoleCode} » introuvable ou inactif.");
+        if ((def.Conditions?.Count ?? 0) > 1
+            || (def.Conditions ?? []).Any(c => c.Field != "amount" || c.Op.Trim().ToLowerInvariant() is not ("gte" or "gt") || !TryDecimal(c.Value, out var v) || v < 0))
+            return Error.Validation("workflow.condition",
+                "Condition attendue : un seuil de montant (« montant ≥ » ou « montant > » une valeur positive), ou aucune condition.");
+        if ((def.Actions?.Count ?? 0) > 0 || (def.Notifications?.Count ?? 0) > 0)
+            return Error.Validation("workflow.actions",
+                "Les actions et notifications automatiques ne sont pas exécutées par NEXORA : seule l'approbation s'applique.");
+        def = def with { Logic = "all", Actions = [], Notifications = [] };
         var defJson = JsonSerializer.Serialize(def);
 
         var existing = await db.Database.SqlQuery<Guid>($"""
@@ -51,6 +98,8 @@ public sealed class SqlWorkflowService(
 
         if (existing != Guid.Empty)
         {
+            if ((await LoadAsync(existing, ct))?.Status == "active")
+                return Error.Conflict("workflow.active", "Workflow actif : désactivez-le avant de le modifier (il faudra le retester).");
             await db.Database.ExecuteSqlAsync($"""
                 UPDATE nexora.workflow SET name = {request.Name.Trim()}, trigger_event = {request.TriggerEvent.Trim()},
                     definition = {defJson}::jsonb, is_tested = false, updated_by = {tenant.UserId}, updated_at = now()
@@ -96,6 +145,17 @@ public sealed class SqlWorkflowService(
         if (wf is null) return Error.NotFound("workflow.workflow", "Workflow introuvable.");
         if (!wf.IsTested) return Error.Validation("workflow.untested", "Testez le workflow avant de l'activer (§16).");
         var def = ParseDefinition(wf.Definition);
+        if (def.Approval is null) return Error.Validation("workflow.approval", "Un workflow exige une approbation.");
+        var minAmount = MinAmount(def);
+        var conflict = await db.Database.SqlQuery<string?>($"""
+            SELECT COALESCE(configuration->>'workflow', 'règle existante') AS "Value" FROM nexora.approval_policy
+            WHERE company_id = {Company} AND request_type = {MapType(wf.TriggerEvent)} AND status = 'active' AND min_amount = {minAmount}
+              AND COALESCE(configuration->>'workflow', '') <> {wf.Code}
+            LIMIT 1
+            """).FirstOrDefaultAsync(ct);
+        if (conflict is not null)
+            return Error.Conflict("workflow.conflict",
+                $"Une autre règle active (« {conflict} ») couvre déjà ce type d'opération à partir du même montant : désactivez-la d'abord.");
 
         await uow.ExecuteInTransactionAsync(async token =>
         {
@@ -118,14 +178,14 @@ public sealed class SqlWorkflowService(
 
                 if (policyId is { } pid)
                     await db.Database.ExecuteSqlAsync($"""
-                        UPDATE nexora.approval_policy SET required_levels = {(short)Math.Clamp(appr.Levels, 1, 10)},
+                        UPDATE nexora.approval_policy SET required_levels = {(short)Math.Clamp(appr.Levels, 1, 10)}, min_amount = {minAmount},
                             approver_role_id = {roleId}, status = 'active', updated_at = now() WHERE id = {pid}
                         """, token);
                 else
                     await db.Database.ExecuteSqlAsync($"""
                         INSERT INTO nexora.approval_policy
                             (company_id, request_type, min_amount, required_levels, approver_role_id, configuration, status)
-                        VALUES ({Company}, {requestType}, 0, {(short)Math.Clamp(appr.Levels, 1, 10)}, {roleId},
+                        VALUES ({Company}, {requestType}, {minAmount}, {(short)Math.Clamp(appr.Levels, 1, 10)}, {roleId},
                                 {$"{{\"workflow\":\"{wf.Code}\"}}"}::jsonb, 'active')
                         """, token);
             }
@@ -140,10 +200,21 @@ public sealed class SqlWorkflowService(
         if (s is not ("draft" or "active" or "inactive")) return Error.Validation("workflow.status", "Statut invalide.");
         if (s == "active")
             return await ActivateAsync(workflowId, ct);
-        var n = await db.Database.ExecuteSqlAsync($"""
-            UPDATE nexora.workflow SET status = {s}, updated_at = now() WHERE id = {workflowId} AND company_id = {Company}
-            """, ct);
-        return n == 0 ? Error.NotFound("workflow.workflow", "Workflow introuvable.") : Result.Success();
+        var wf = await LoadAsync(workflowId, ct);
+        if (wf is null) return Error.NotFound("workflow.workflow", "Workflow introuvable.");
+        await uow.ExecuteInTransactionAsync(async token =>
+        {
+            await db.Database.ExecuteSqlAsync($"""
+                UPDATE nexora.workflow SET status = {s}, updated_at = now() WHERE id = {workflowId}
+                """, token);
+            // Sans cela, l'approbation restait exigée par les opérations réelles après la désactivation.
+            await db.Database.ExecuteSqlAsync($"""
+                UPDATE nexora.approval_policy SET status = 'inactive', updated_at = now()
+                WHERE company_id = {Company} AND configuration->>'workflow' = {wf.Code}
+                """, token);
+            return 0;
+        }, ct);
+        return Result.Success();
     }
 
     public async Task<Result<WorkflowEvaluationResult>> EvaluateAsync(WorkflowTriggerRequest request, CancellationToken ct = default)
@@ -241,6 +312,14 @@ public sealed class SqlWorkflowService(
     private static decimal? TryNumber(JsonElement ctx, string field)
         => ctx.ValueKind == JsonValueKind.Object && ctx.TryGetProperty(field, out var v) && TryDecimal(v, out var d) ? d : null;
 
+    /// <summary>Montant à partir duquel la règle s'applique (politique d'approbation : <c>min_amount ≤ montant</c>).</summary>
+    private static decimal MinAmount(WorkflowDefinitionDto def)
+    {
+        var c = (def.Conditions ?? []).FirstOrDefault(x => x.Field == "amount");
+        if (c is null || !TryDecimal(c.Value, out var v)) return 0m;
+        return c.Op.Trim().ToLowerInvariant() == "gt" ? v + 0.01m : v;
+    }
+
     private static IReadOnlyList<string> PlannedApprovals(WorkflowDefinitionDto def)
         => def.Approval is { } a
             ? [$"{a.Levels} niveau(x) d'approbation" + (string.IsNullOrWhiteSpace(a.ApproverRoleCode) ? "" : $" par « {a.ApproverRoleCode} »")]
@@ -256,6 +335,8 @@ public sealed class SqlWorkflowService(
         "period_reopen" or "period_reopened" => "period_close",
         "supplier_invoice" or "supplier_debt" or "purchase" => "purchase",
         "credit_over_limit" or "credit_sale" => "credit_sale",
+        "salary_advance" => "salary_advance",
+        "employee_loan" or "loan" => "employee_loan",
         "void" or "sale_void" => "void",
         _ => "other",
     };
@@ -288,9 +369,10 @@ public sealed class SqlAutomationService(
     Nexora.Application.Notifications.INotificationService notifications)
     : IAutomationService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
     private static readonly string[] Kinds =
         ["dunning", "low_stock_alert", "expiry_alert", "scheduled_report", "supplier_reminder", "reconcile_assist", "archive", "scheduled_export"];
+    private static readonly string[] Executable = ["dunning", "low_stock_alert", "expiry_alert"];
 
     private sealed record AutoRow(Guid Id, string Code, string Name, string Kind, string Schedule, string Parameters, string Status, DateTimeOffset? LastRunAt, DateTimeOffset? NextRunAt, Guid? CreatedBy);
     private sealed record RunRow(Guid Id, Guid AutomationId, string Mode, string Status, int ItemsProcessed, string Result, string? Error, DateTimeOffset StartedAt, DateTimeOffset? FinishedAt);
@@ -315,6 +397,12 @@ public sealed class SqlAutomationService(
         if (code.Length is < 2 or > 50) return Error.Validation("automation.code", "Code invalide.");
         var kind = request.Kind?.Trim().ToLowerInvariant() ?? "";
         if (!Kinds.Contains(kind)) return Error.Validation("automation.kind", $"Type inconnu. Attendu : {string.Join(", ", Kinds)}.");
+        // Finalisation phase 11 : seuls ces types ont un exécuteur réel ; les autres « s'exécutaient » sans aucun effet.
+        if (!Executable.Contains(kind))
+            return Error.Validation("automation.kind", $"Le type « {kind} » n'est pas encore exécuté par NEXORA : il ne peut pas être créé.");
+        var frequency = request.Schedule.ValueKind == JsonValueKind.Object && request.Schedule.TryGetProperty("frequency", out var f) ? f.GetString() : null;
+        if (frequency is not ("hourly" or "daily" or "weekly" or "monthly"))
+            return Error.Validation("automation.schedule", "Fréquence requise : hourly, daily, weekly ou monthly.");
         if (string.IsNullOrWhiteSpace(request.Name)) return Error.Validation("automation.name", "Nom requis.");
 
         var schedule = request.Schedule.ValueKind == JsonValueKind.Object ? request.Schedule.GetRawText() : "{}";

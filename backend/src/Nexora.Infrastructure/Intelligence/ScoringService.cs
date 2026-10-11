@@ -5,6 +5,7 @@ using Nexora.Application.Credit;
 using Nexora.Application.Intelligence;
 using Nexora.Contracts.Intelligence;
 using Nexora.Infrastructure.Persistence;
+using Nexora.Domain.Common;
 
 namespace Nexora.Infrastructure.Intelligence;
 
@@ -18,7 +19,7 @@ namespace Nexora.Infrastructure.Intelligence;
 public sealed class SqlScoringService(NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow, ICreditPortfolioQueries credit) : IScoringService
 {
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record Row(Guid EntityId, string? EntityLabel, string EntityType, string ScoreKey,
         decimal Value, string Level, string Explanation, DateTimeOffset ComputedAt);

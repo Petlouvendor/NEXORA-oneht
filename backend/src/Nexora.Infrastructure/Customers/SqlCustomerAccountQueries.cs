@@ -15,12 +15,12 @@ namespace Nexora.Infrastructure.Customers;
 /// est recalculé depuis les crédits, leurs règlements actifs et le journal financier client.
 /// </summary>
 public sealed class SqlCustomerAccountQueries(
-    NexoraDbContext db, ITenantContext tenant, IPermissionService permissions, ISettingsService settings, IDateTimeProvider clock,
-    Nexora.Application.Sales.ICreditControl creditControl)
+    NexoraDbContext db, ITenantContext tenant, IPermissionService permissions, ISettingsService settings,
+    Nexora.Application.Sales.ICreditControl creditControl, IBusinessCalendar calendar)
     : ICustomerAccountQueries
 {
     private Guid Company => CustomerAccountRules.Company(tenant);
-    private DateOnly Today => DateOnly.FromDateTime(clock.UtcNow.UtcDateTime);
+    private DateOnly Today => calendar.Today;
 
     internal static readonly IReadOnlyDictionary<string, string> EntryLabels = new Dictionary<string, string>
     {
@@ -373,7 +373,7 @@ public sealed class SqlCustomerAccountQueries(
         var shown = new List<CustomerLedgerEntryDto>();
         foreach (var r in rows)
         {
-            var day = DateOnly.FromDateTime(r.OccurredAt.UtcDateTime);
+            var day = calendar.DateOf(r.OccurredAt);
             if (from is { } f && day < f) { opening = r.Balance; continue; }
             if (to is { } t && day > t) continue;
             shown.Add(new CustomerLedgerEntryDto(r.Id, r.OccurredAt, r.EntryType, EntryLabels.GetValueOrDefault(r.EntryType, r.EntryType),

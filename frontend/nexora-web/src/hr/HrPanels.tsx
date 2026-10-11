@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { useAuth } from "@/auth/AuthContext";
 import { useToast } from "@/shared/Toast";
 import { Badge, Button, Card, DataTable, EmptyState, Money, SectionLabel, Select, Spinner, Tabs, type Column } from "@/shared/ui";
-import { dateShort, dateTime } from "@/shared/format";
+import { dateShort, dateTime, todayIso } from "@/shared/format";
 import {
   ADVANCE_KINDS, ADVANCE_STATUS, ATTENDANCE_STATUS, EXPENSE_CATEGORIES, LEAVE_TYPES, OVERTIME_TYPES, RECOVERY_METHODS, REQUEST_STATUS,
   cancelAdvance, cancelVariable, decideAdjustment, decideAttendance, decideLeave, decideOvertime, decideVariable, listAdjustments,
@@ -100,7 +100,7 @@ export function TimePanel() {
   const load = useCallback(() => {
     listLeaves().then(setLeaves).catch(() => setLeaves([]));
     listOvertime().then(setOvertime).catch(() => setOvertime([]));
-    const from = new Date(Date.now() - 45 * 86400_000).toISOString().slice(0, 10);
+    const from = todayIso(new Date(Date.now() - 45 * 86400_000));
     listAttendance({ from }).then(setAttendance).catch(() => setAttendance([]));
   }, []);
   useEffect(load, [load]);

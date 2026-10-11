@@ -1,0 +1,8 @@
+# Fichiers exécutés dans des conteneurs Linux : toujours LF, même extraits sur un poste Windows (core.autocrlf),
+# sinon bash échoue sur « $'\r' » (finalisation phase 18). Les migrations SQL ne sont pas concernées : leurs
+# empreintes enregistrées dépendent des octets du fichier.
+*.sh            text eol=lf
+Dockerfile      text eol=lf
+Caddyfile       text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf

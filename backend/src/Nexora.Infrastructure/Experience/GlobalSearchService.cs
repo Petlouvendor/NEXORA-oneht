@@ -4,6 +4,7 @@ using Nexora.Application.Experience;
 using Nexora.Application.Security;
 using Nexora.Contracts.Experience;
 using Nexora.Infrastructure.Persistence;
+using Nexora.Domain.Common;
 
 namespace Nexora.Infrastructure.Experience;
 
@@ -17,7 +18,7 @@ namespace Nexora.Infrastructure.Experience;
 public sealed class GlobalSearchService(
     NexoraDbContext db, ITenantContext tenant, IPermissionService permissions) : IGlobalSearchService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record Row(Guid Id, string Title, string? Subtitle, string? Key);
 

@@ -3,6 +3,7 @@ using Nexora.Application.Abstractions;
 using Nexora.Application.Reporting;
 using Nexora.Contracts.Reporting;
 using Nexora.Infrastructure.Persistence;
+using Nexora.Domain.Common;
 
 namespace Nexora.Infrastructure.Reporting;
 
@@ -16,7 +17,7 @@ public sealed class SqlAlertCenter(
         ["overdue_receivable", "overdue_payable", "cash_variance", "low_cash"];
 
     private Guid Company => tenant.ActiveCompanyId
-        ?? throw new InvalidOperationException("Sélectionner une entreprise active.");
+        ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record Row(int Count, decimal Amount);
 

@@ -16,6 +16,8 @@ public interface IIntegrationRegistry
     Task<Result> SetStatusAsync(Guid id, string status, CancellationToken ct = default);
     Task<Result<ConnectorTestResult>> TestConnectionAsync(Guid id, CancellationToken ct = default);
     Task<Result<RotateSecretResult>> RotateSecretAsync(Guid id, CancellationToken ct = default);
+    Task<Result> SetCredentialsAsync(Guid id, SetConnectorCredentialsRequest request, CancellationToken ct = default);
+    IReadOnlyList<PaymentProviderInfo> Providers();
 }
 
 /// <summary>
@@ -31,6 +33,10 @@ public interface IPaymentGateway
     Task<IReadOnlyList<PaymentIntentDto>> ListIntentsAsync(string? status, CancellationToken ct = default);
     Task<Result<PaymentIntentDto>> ProviderCallbackAsync(Guid intentId, ProviderCallbackRequest request, CancellationToken ct = default);
     Task<Result<PaymentIntentDto>> RefundAsync(Guid intentId, RefundPaymentRequest request, CancellationToken ct = default);
+    /// <summary>Interroge le fournisseur réel et confirme le paiement s'il est payé au bon montant.</summary>
+    Task<Result<PaymentIntentDto>> VerifyAsync(Guid intentId, CancellationToken ct = default);
+    /// <summary>Événement fournisseur reçu (webhook) : simulation → rappel ; réel → vérification auprès du fournisseur.</summary>
+    Task<Result<PaymentIntentDto>> ConfirmFromProviderEventAsync(Guid intentId, decimal? providerAmount, string? providerReference, CancellationToken ct = default);
     /// <summary>Passe en 'expired' les intentions échues non confirmées (§10, §14). Renvoie le nombre traité.</summary>
     Task<int> ExpireStaleAsync(CancellationToken ct = default);
 }
@@ -60,6 +66,10 @@ public interface IBankReconciliationService
     Task<Result<int>> AutoMatchAsync(Guid statementId, CancellationToken ct = default);
     Task<Result> MatchLineAsync(Guid lineId, MatchLineRequest request, CancellationToken ct = default);
     Task<Result> ValidateAsync(Guid statementId, CancellationToken ct = default);
+    /// <summary>Phase 7 : mouvements du compte rapprochables avec la ligne (même montant, non rapprochés).</summary>
+    Task<Result<IReadOnlyList<StatementCandidateDto>>> CandidatesAsync(Guid lineId, CancellationToken ct = default);
+    /// <summary>Phase 7 : défait un rapprochement (relevé non validé).</summary>
+    Task<Result> UnmatchLineAsync(Guid lineId, CancellationToken ct = default);
 }
 
 /// <summary>

@@ -44,3 +44,28 @@ describe("accountingApi (Phase 29 §11-18)", () => {
     expect(JSON.parse(calls[1].init.body as string)).toEqual({ force: true, note: "direction" });
   });
 });
+
+describe("accountingApi (finalisation phase 8)", () => {
+  beforeEach(() => configureApiClient({ token: () => "t", company: () => "c", onUnauthorized: () => {} }));
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("searchEntries n'envoie que les filtres renseignés ; reopenPeriod et le statut de compte exigent un motif", async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      return jsonResponse(200, []);
+    }));
+    const { searchEntries, reopenPeriod, setChartAccountStatus, getGeneralLedger } = await import("@/accounting/accountingApi");
+
+    await searchEntries({ status: "posted", journal: "", q: "loyer", limit: 50 });
+    await reopenPeriod("p1", "erreur de date");
+    await setChartAccountStatus("a1", "inactive", "doublon");
+    await getGeneralLedger("6800", "2026-01-01", "2026-10-02");
+
+    expect(calls[0].url).toContain("/accounting-entries?status=posted&q=loyer&limit=50");
+    expect(calls[0].url).not.toContain("journal=");
+    expect(JSON.parse(calls[1].init.body as string)).toEqual({ reason: "erreur de date", reversalDate: null });
+    expect(JSON.parse(calls[2].init.body as string)).toEqual({ status: "inactive", reason: "doublon" });
+    expect(calls[3].url).toContain("/general-ledger?account=6800&from=2026-01-01&to=2026-10-02");
+  });
+});

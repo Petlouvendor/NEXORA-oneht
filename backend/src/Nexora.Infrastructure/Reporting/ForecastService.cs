@@ -17,14 +17,14 @@ namespace Nexora.Infrastructure.Reporting;
 /// dupliquer une troisième implémentation parallèle du même calcul.
 /// </summary>
 public sealed class SqlForecastService(
-    NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow, IDateTimeProvider clock,
-    ITreasuryQueries treasury, IStockReports stock) : IForecastService
+    NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow,
+    ITreasuryQueries treasury, IStockReports stock, IBusinessCalendar calendar) : IForecastService
 {
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
     private static readonly string[] Metrics = ["revenue", "cash", "stock", "receivables", "expenses"];
     private static readonly string[] Scenarios = ["base", "optimistic", "prudent", "custom"];
 
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record Row(Guid Id, string Metric, string Method, string Scenario, decimal AdjustmentPct,
         int HorizonDays, string ConfidenceLevel, string Assumptions, string Points, DateTimeOffset GeneratedAt);
@@ -91,7 +91,7 @@ public sealed class SqlForecastService(
         {
             var valuation = await stock.ValuationAsync(new Contracts.Reporting.ReportFilter(), ct);
             var flat = valuation.TotalValue * (1 + adjustmentPct / 100m);
-            var today = DateOnly.FromDateTime(clock.UtcNow.Date);
+            var today = calendar.Today;
             var pts = Enumerable.Range(1, horizonDays).Select(d => new ForecastPointDto(today.AddDays(d), flat)).ToList();
             return ("manual", "low",
                 "Projection à plat de la valeur de stock actuelle, ajustée du scénario — aucune tendance historique de valorisation disponible.",
@@ -116,7 +116,7 @@ public sealed class SqlForecastService(
         var adjusted = dailyAverage * (1 + adjustmentPct / 100m);
         var confidence = daysWithData >= 45 ? "high" : daysWithData >= 14 ? "medium" : "low";
 
-        var todayDate = DateOnly.FromDateTime(clock.UtcNow.Date);
+        var todayDate = calendar.Today;
         var points = Enumerable.Range(1, horizonDays).Select(d => new ForecastPointDto(todayDate.AddDays(d), Math.Round(adjusted, 2))).ToList();
         var assumptions = $"Moyenne mobile sur {daysWithData} jour(s) d'historique (60 derniers jours), projetée à plat sur {horizonDays} jour(s), ajustement de scénario {adjustmentPct:+0.##;-0.##;0}%.";
         return ("moving_average", confidence, assumptions, points);
@@ -125,7 +125,7 @@ public sealed class SqlForecastService(
     private async Task<(string, string, string, List<ForecastPointDto>)> FromTreasuryForecast(CancellationToken ct)
     {
         var cf = await treasury.MaturityForecastAsync(ct);
-        var today = DateOnly.FromDateTime(clock.UtcNow.Date);
+        var today = calendar.Today;
         var points = cf.Buckets.Select(b => new ForecastPointDto(today.AddDays(b.DayTo), b.ProjectedBalance)).ToList();
         return ("manual", "medium",
             "Reprend la prévision de trésorerie par échéance (Phase 28) : encaissements/décaissements attendus depuis les créances, dettes et flux en attente déjà enregistrés — pas de nouvelle hypothèse statistique.",

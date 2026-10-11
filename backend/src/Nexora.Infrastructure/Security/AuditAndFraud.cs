@@ -103,7 +103,7 @@ public sealed class SqlAuditQueryService(NexoraDbContext db, ITenantContext tena
 /// </summary>
 public sealed class SqlFraudDetectionService(NexoraDbContext db, ITenantContext tenant, IDateTimeProvider clock) : IFraudDetectionService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record RuleRow(string Code, string Name, string Category, string SubjectType, int WindowMinutes, decimal Threshold, string SeverityBase);
     private sealed record Hit(Guid? SubjectId, string? SubjectLabel, Guid? ActorUserId, decimal Value);

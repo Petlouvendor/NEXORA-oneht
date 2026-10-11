@@ -1,3 +1,4 @@
+using Nexora.Application.Abstractions;
 using Nexora.Application.Finance.Abstractions;
 using Nexora.Domain.Common;
 
@@ -11,10 +12,17 @@ public sealed class PostingContext(
     IAccountResolver accounts,
     IExchangeRateProvider fx,
     string functionalCurrency,
-    int functionalDecimals)
+    int functionalDecimals,
+    TimeZoneInfo? zone = null)
 {
     public string FunctionalCurrency { get; } = functionalCurrency;
     public int FunctionalDecimals { get; } = functionalDecimals;
+
+    /// <summary>Fuseau de l'entreprise : la date comptable d'un événement est son jour civil local, pas le jour UTC.</summary>
+    public TimeZoneInfo Zone { get; } = zone ?? TimeZoneInfo.Utc;
+
+    /// <summary>Date comptable d'un instant (jour civil dans le fuseau de l'entreprise).</summary>
+    public DateOnly DateOf(DateTimeOffset instant) => BusinessDate.Of(instant, Zone);
 
     public Task<Guid> Account(string mappingKey, CancellationToken ct = default) => accounts.ResolveAsync(mappingKey, ct);
 

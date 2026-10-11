@@ -107,6 +107,7 @@ public sealed class RecetteEndpointsTests(WebApplicationFactory<Program> factory
         (await c.PostAsJsonAsync("/api/v1/suppliers", new { name = " " })).StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
         (await c.PutAsJsonAsync($"/api/v1/catalog/products/{Guid.NewGuid()}", new { name = "Inconnu" }))
             .StatusCode.Should().Be(HttpStatusCode.NotFound);
+        await StepUpTestHelper.AddStepUpAsync(c, "Nexora!2026", "permission_change");
         (await c.PostAsJsonAsync("/api/v1/users", new
         {
             email = $"faible-{Guid.NewGuid():N}@test.demo", fullName = "Faible", password = "court",

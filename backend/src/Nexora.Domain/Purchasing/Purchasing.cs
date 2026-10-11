@@ -89,6 +89,11 @@ public sealed class PurchaseOrderLine : AuditableEntity
     public Guid? TaxId { get; set; }
     public decimal Discount { get; set; }
     public decimal LineTotal { get; set; }
+    /// <summary>Taxe de la ligne, calculée par le serveur (V081).</summary>
+    public decimal TaxAmount { get; set; }
+    /// <summary>Unité et quantité saisies (ex. 10 cartons) ; QuantityOrdered = équivalent en unité de base (V081).</summary>
+    public Guid? PurchaseUnitId { get; set; }
+    public decimal? PurchaseQuantity { get; set; }
 }
 
 // ---- Réception (§24) ------------------------------------------------
@@ -117,6 +122,11 @@ public sealed class GoodsReceiptLine : AuditableEntity
     public decimal QuantityReceived { get; set; }
     public decimal UnitCost { get; set; }
     public Guid? LotId { get; set; }
+    public Guid? PurchaseUnitId { get; set; }
+    public decimal? PurchaseQuantity { get; set; }
+    /// <summary>Refusé au contrôle (unité de base) — jamais entré en stock (V081).</summary>
+    public decimal QuantityRejected { get; set; }
+    public string? RejectionReason { get; set; }
 }
 
 // ---- Retour fournisseur (§28) ----------------------------------
@@ -127,6 +137,8 @@ public sealed class SupplierReturn : AuditableEntity
     public Guid SupplierId { get; set; }
     public Guid? GoodsReceiptId { get; set; }
     public Guid? SupplierInvoiceId { get; set; }
+    /// <summary>Dette sur laquelle le retour est imputé (avoir) — V082.</summary>
+    public Guid? PayableId { get; set; }
     public Guid? WarehouseLocationId { get; set; }
     public string DocumentNumber { get; set; } = string.Empty;
     public string Status { get; set; } = "draft";   // draft|posted|cancelled

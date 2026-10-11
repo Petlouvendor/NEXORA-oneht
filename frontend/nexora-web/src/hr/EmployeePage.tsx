@@ -5,7 +5,7 @@ import { useToast } from "@/shared/Toast";
 import { Badge, Button, Card, DataTable, EmptyState, KpiCard, Money, SectionLabel, Spinner, Tabs, type Column } from "@/shared/ui";
 import { ActionMenu } from "@/shared/ExportMenu";
 import { Icon } from "@/shared/icons";
-import { dateShort, dateTime, money } from "@/shared/format";
+import { dateShort, dateTime, money, todayIso } from "@/shared/format";
 import {
   CONTRACT_TYPES, DOCUMENT_TYPES, EMPLOYEE_STATUS, FREQUENCIES, PAY_BASES, PAYMENT_METHODS, downloadEmployeeDocument, downloadPayslip,
   employeeHistory, employeePayslips, endContract, endPayElement, getEmployee, getSensitive, listContracts, listDocuments, listPayElements,
@@ -110,7 +110,7 @@ export function EmployeePage() {
       {dialog === "element" && <PayElementDialog employeeId={id} onClose={() => setDialog(null)} onDone={() => done("Élément ajouté")} />}
       {dialog === "document" && <DocumentDialog employeeId={id} onClose={() => setDialog(null)} onDone={() => done("Document déposé")} />}
       {dialog === "terminate" && (
-        <PromptDialog title="Sortie de l'employé" label="Date de sortie" type="date" initial={new Date().toISOString().slice(0, 10)}
+        <PromptDialog title="Sortie de l'employé" label="Date de sortie" type="date" initial={todayIso()}
                       submitLabel="Continuer" onClose={() => setDialog(null)}
                       onSubmit={async (date) => { setDialog(`terminate:${date}`); }} />
       )}
@@ -220,7 +220,7 @@ function ContractsPanel({ employee, version, onAction, onChanged }: {
         <PromptDialog title={`Terminer ${ending.contractNumber}`} label="Motif de fin" type="textarea" minLength={3} submitLabel="Terminer le contrat"
                       onClose={() => setEnding(null)}
                       onSubmit={async (reason) => {
-                        await endContract(ending.id, new Date().toISOString().slice(0, 10), reason);
+                        await endContract(ending.id, todayIso(), reason);
                         setEnding(null); toast.success("Contrat terminé — conservé dans l'historique"); onChanged();
                       }} />
       )}
@@ -244,7 +244,7 @@ function ElementsPanel({ employee, version, onAdd }: { employee: Employee; versi
         { key: "dates", header: "Validité", render: (e) => `${dateShort(e.startDate)} → ${e.endDate ? dateShort(e.endDate) : "…"}` },
         { key: "st", header: "Statut", render: (e) => <Badge tone={e.status === "active" ? "success" : undefined}>{e.status === "active" ? "Actif" : "Terminé"}</Badge> },
         { key: "act", header: "", render: (e) => e.status === "active" && hasPermission("payroll.manage_compensation")
-            ? <Button size="sm" variant="ghost" onClick={() => endPayElement(e.id, new Date().toISOString().slice(0, 10)).then(load)}>Terminer</Button> : null },
+            ? <Button size="sm" variant="ghost" onClick={() => endPayElement(e.id, todayIso()).then(load)}>Terminer</Button> : null },
       ]} /> : <Spinner />}
     </Card>
   );

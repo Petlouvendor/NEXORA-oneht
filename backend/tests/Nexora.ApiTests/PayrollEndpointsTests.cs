@@ -108,6 +108,8 @@ public sealed class PayrollEndpointsTests(WebApplicationFactory<Program> factory
     {
         var direction = await Login("direction@abc-group.demo");
         var body = new { financialAccountId = Unknown, paymentMethod = "cash", operationUuid = Guid.NewGuid() };
+        await StepUpTestHelper.ShouldRequireStepUpAsync(await direction.PostAsJsonAsync($"/api/v1/payroll/{Unknown}/pay", body), "payment");
+        await StepUpTestHelper.AddStepUpAsync(direction, "Nexora!2026", "payment");
         (await direction.PostAsJsonAsync($"/api/v1/payroll/{Unknown}/pay", body)).StatusCode.Should().Be(HttpStatusCode.BadRequest);
         (await direction.PostAsJsonAsync($"/api/v1/salary-advances/{Unknown}/pay", body)).StatusCode.Should().Be(HttpStatusCode.BadRequest);
         direction.DefaultRequestHeaders.Add("Idempotency-Key", Guid.NewGuid().ToString());

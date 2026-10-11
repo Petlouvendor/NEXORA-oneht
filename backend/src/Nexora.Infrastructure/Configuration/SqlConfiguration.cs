@@ -113,10 +113,10 @@ internal static class ConfigApplier
         foreach (var num in numbering ?? [])
         {
             if (dryRun) continue;
-            var year = DateTime.UtcNow.Year;
+            // Année locale de l'entreprise (session au fuseau de l'entreprise), comme next_document_number.
             await db.Database.ExecuteSqlAsync($"""
                 INSERT INTO nexora.document_sequence (company_id, document_type, year, prefix, include_year)
-                VALUES ({company}, {num.DocumentType}, {year}, {num.Prefix}, true)
+                VALUES ({company}, {num.DocumentType}, extract(year FROM current_date)::int, {num.Prefix}, true)
                 ON CONFLICT ON CONSTRAINT document_sequence_uk DO UPDATE SET prefix = {num.Prefix}, updated_at = now()
                 """, ct);
         }
@@ -131,7 +131,7 @@ public sealed class SqlSectorProfileService(
     NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow,
     IConfigVersionService configVersions, IConfigGuardrails guardrails) : ISectorProfileService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record ProfileRow(Guid Id, string Key, string Name, string SectorType, int Version, string Status,
         bool IsSystem, string? Description, Guid? CompanyId, string Definition);
@@ -263,7 +263,7 @@ public sealed class SqlSectorProfileService(
 public sealed class SqlConfigTransferService(
     NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow, IConfigGuardrails guardrails) : IConfigTransferService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
 
     private sealed record ModRow(string Key, bool Enabled);
@@ -385,7 +385,7 @@ public sealed class SqlConfigTransferService(
 
 public sealed class SqlConfigGuardrails(NexoraDbContext db, ITenantContext tenant) : IConfigGuardrails
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private static readonly string[] CoreMappings =
         ["sales_revenue", "sales_tax_output", "accounts_receivable", "accounts_payable", "cogs", "inventory", "cash", "bank"];

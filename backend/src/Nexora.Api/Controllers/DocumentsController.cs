@@ -1,8 +1,11 @@
+using Microsoft.AspNetCore.RateLimiting;
 using Asp.Versioning;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Nexora.Api.Security;
 using Nexora.Application.Documents;
+using Nexora.Application.Printing;
+using Nexora.Contracts.Printing;
 using Nexora.Application.Security;
 using Nexora.Contracts.Documents;
 
@@ -14,7 +17,7 @@ namespace Nexora.Api.Controllers;
 /// </summary>
 [ApiVersion("1.0")]
 [Route("api/v{version:apiVersion}/documents")]
-public sealed class DocumentsController(IDocumentService documents, IDocumentQueries queries) : ApiControllerBase
+public sealed class DocumentsController(IDocumentService documents, IDocumentQueries queries, IReceiptService receipts) : ApiControllerBase
 {
     // --- Recherche & détail (§34) -------------------------------------
 
@@ -61,13 +64,14 @@ public sealed class DocumentsController(IDocumentService documents, IDocumentQue
 
     // --- Rendu / envoi / annulation (§25, §31, §36) ------------------
 
+    /// <summary>Vrai PDF (A4 ou ticket 80 mm) reconstruit depuis le contenu figé du document (phase 4 :
+    /// remplaçait une page HTML présentée comme « PDF »).</summary>
     [HttpGet("{id:guid}/pdf")]
     [RequirePermission(Permissions.Documents.View)]
     public async Task<IActionResult> Pdf(Guid id, [FromQuery] string? format, CancellationToken ct)
     {
-        var r = await documents.RenderAsync(id, format, ct);
-        if (!r.IsSuccess) return FromResult(r);
-        return Content(r.Value!.Content, r.Value.ContentType);
+        var r = await receipts.PrintAsync(PrintableKinds.IssuedDocument, id, format ?? PrintFormats.Pdf, ct);
+        return r.IsSuccess ? Download(r.Value!.Content, r.Value.ContentType, r.Value.FileName) : FromResult(r);
     }
 
     [HttpPost("{id:guid}/send")]
@@ -76,12 +80,14 @@ public sealed class DocumentsController(IDocumentService documents, IDocumentQue
         => FromResult(await documents.SendAsync(id, r, ct));
 
     [HttpPost("{id:guid}/cancel")]
+    [RequireStepUp(StepUpPurposes.Cancellation)]
     [RequirePermission(Permissions.Documents.Cancel)]
     public async Task<IActionResult> Cancel(Guid id, [FromBody] CancelDocumentRequest r, CancellationToken ct)
         => FromResult(await documents.CancelAsync(id, r, ct));
 
     // --- Vérification publique (§27-28) -----------------------------
 
+    [EnableRateLimiting("public")]
     [HttpGet("verify/{code}")]
     [AllowAnonymous]
     public async Task<IActionResult> Verify(string code, CancellationToken ct)

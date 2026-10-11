@@ -22,7 +22,7 @@ public sealed class SyncController(
     // --- Push d'un lot d'opérations offline (§14) -------------------
 
     [HttpPost("batch")]
-    [RequirePermission(Permissions.Pos.Sell)]
+    [RequirePermission(Permissions.Sync.View)]   // chaque opération du lot est contrôlée selon son type (phase 12)
     public async Task<IActionResult> PushBatch([FromBody] PushBatchRequest request, CancellationToken ct)
         => FromResult(await sync.PushBatchAsync(request, ct));
 

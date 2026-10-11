@@ -11,6 +11,8 @@ namespace Nexora.Application.Finance.Ledger;
 public interface IManualJournalService
 {
     Task<IReadOnlyList<JournalEntryDto>> ListAsync(string? status, DateOnly? from, DateOnly? to, CancellationToken ct = default);
+    Task<IReadOnlyList<JournalEntryDto>> SearchAsync(string? status, DateOnly? from, DateOnly? to, string? journal, string? q, int limit,
+        CancellationToken ct = default);
     Task<Result<JournalEntryDto>> GetAsync(Guid id, CancellationToken ct = default);
 
     /// <summary>Crée un brouillon (numéro provisoire, pas d'exigence d'équilibre — §11).</summary>

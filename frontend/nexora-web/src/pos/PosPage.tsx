@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
-  checkout, getCurrentSession, getDiscountRequest, getMyLimits, requestDiscount, STATUS_LABEL,
+  checkout, getCurrentSession, getDiscountRequest, getMyLimits, previewCart, requestDiscount, STATUS_LABEL, type CartPreview,
   type CheckoutCommand, type CheckoutResult, type CurrentSession, type DiscountRequest, type PosLimits, type PosProduct,
 } from "@/pos/posApi";
 import { ProductSearch } from "@/pos/ProductSearch";
@@ -14,6 +14,7 @@ import { CreditOverrideRequestDialog, CreditOverridesPanel, useCreditOverride } 
 import type { CustomerLookup } from "@/customers/customersApi";
 import { ApiError } from "@/core/apiClient";
 import { pushBatch } from "@/sync/syncApi";
+import { kindsFor, toSyncOperations } from "@/shared/syncOperations";
 import { useOnline } from "@/shared/useOnline";
 import { useOutbox } from "@/shared/useOutbox";
 import { autoFlushOnReconnect, enqueue, flushOutbox, outboxProtection, pruneSynced, type BatchSender } from "@/shared/offlineQueue";
@@ -22,6 +23,17 @@ import { Badge, Button, Card, ConfirmDialog, Field, IconButton, Modal, StatePill
 import { Icon } from "@/shared/icons";
 import { money, relative } from "@/shared/format";
 import { printDocument } from "@/shared/printApi";
+import { TenderPanel } from "@/pos/TenderPanel";
+import { lineAmounts, unitPriceExcludingTax } from "@/pos/cartMath";
+import {
+  getTenderOptions, newTenderLine, summarizeTenders, toTenderInputs, type TenderLine, type TenderMethodOption,
+} from "@/pos/tenders";
+import { useAuth } from "@/auth/AuthContext";
+import { dateTime } from "@/shared/format";
+import {
+  ensureDevice, forgetDevice, getOfflineProfile, lastServerContact, loadProfile, markServerContact, offlineRefusal, saveProfile,
+  storedDeviceId, type StoredProfile,
+} from "@/pos/offlineStore";
 
 /**
  * Écran POS (guide fonctionnel développeur §7-§13, §21, §24). Un outil de vente rapide et contrôlé :
@@ -34,14 +46,9 @@ interface CartLine {
   productId: string;
   name: string;
   quantity: number;
-  unitPrice: number;      // indicatif : prix de vente en vigueur, recalculé par le serveur
-  discount: number;       // montant de remise saisi (≥ 0)
-}
-
-const SYNC_DEVICE_KEY = "nexora.pos.syncDeviceId";
-
-function loadSyncDevice(): string {
-  try { return localStorage.getItem(SYNC_DEVICE_KEY) ?? ""; } catch { return ""; }
+  unitPrice: number;      // indicatif : prix de vente HORS TAXE en vigueur, recalculé par le serveur
+  discount: number;       // montant de remise saisi (≥ 0), sur le hors taxe comme au serveur
+  taxRate: number;        // taux de la taxe par défaut de l'article (0 sans taxe)
 }
 
 export function PosPage() {
@@ -51,13 +58,30 @@ export function PosPage() {
   const [limits, setLimits] = useState<PosLimits | null>(null);
   const [session, setSession] = useState<CurrentSession | null>(null);
   const [sessionLoaded, setSessionLoaded] = useState(false);
+  const { user, activeCompanyId } = useAuth();
+  // Phase 6 : profil hors ligne (catalogue, politique, session, moyens) conservé chiffré sur ce poste.
+  const [profile, setProfile] = useState<StoredProfile | null>(null);
 
   const reloadSession = useCallback(() => {
     getCurrentSession()
-      .then((s) => setSession(s ?? null))
-      .catch(() => setSession(null))
+      .then((s) => { setSession(s ?? null); markServerContact(); })
+      .catch(async (e) => {
+        // Hors ligne : la dernière session connue de CE caissier permet de continuer à vendre (file d'attente).
+        if (e instanceof ApiError && e.isOffline && user && activeCompanyId) {
+          const cached = await loadProfile(user.id, activeCompanyId);
+          setProfile(cached);
+          setSession(cached?.session ?? null);
+        } else setSession(null);
+      })
       .finally(() => setSessionLoaded(true));
-  }, []);
+  }, [user, activeCompanyId]);
+
+  useEffect(() => {
+    if (!user || !activeCompanyId) return;
+    let alive = true;
+    loadProfile(user.id, activeCompanyId).then((p) => { if (alive) setProfile((cur) => cur ?? p); }).catch(() => {});
+    return () => { alive = false; };
+  }, [user, activeCompanyId]);
 
   useEffect(() => {
     getMyLimits().then(setLimits).catch(() => setLimits(null));
@@ -75,7 +99,7 @@ export function PosPage() {
     <div style={{ display: "grid", gap: 12 }}>
       <Tabs tabs={tabs} active={tab} onChange={setTab} />
       {tab === "sale" && sessionLoaded && (
-        <SaleScreen limits={limits} session={session} onSessionChanged={reloadSession} />
+        <SaleScreen limits={limits} session={session} onSessionChanged={reloadSession} profile={profile} onProfile={setProfile} />
       )}
       {tab === "returns" && <ReturnsPanel session={session} />}
       {tab === "approvals" && limits && approver && (
@@ -88,9 +112,11 @@ export function PosPage() {
   );
 }
 
-function SaleScreen({ limits, session, onSessionChanged }: {
+function SaleScreen({ limits, session, onSessionChanged, profile, onProfile }: {
   limits: PosLimits | null; session: CurrentSession | null; onSessionChanged: () => void;
+  profile: StoredProfile | null; onProfile: (p: StoredProfile) => void;
 }) {
+  const { user, activeCompanyId } = useAuth();
   const online = useOnline();
   const toast = useToast();
   const { entries: queue, pending: pendingCount } = useOutbox();
@@ -98,7 +124,9 @@ function SaleScreen({ limits, session, onSessionChanged }: {
   // UUID d'opération du panier : clé d'idempotence de l'encaissement et lien des remises validées.
   const [cartId, setCartId] = useState(() => crypto.randomUUID());
   const [approvals, setApprovals] = useState<Record<string, DiscountRequest>>({});
-  const [tendered, setTendered] = useState<number>(0);
+  // Phase 5 : encaissement en plusieurs moyens (espèces, carte, mobile money…).
+  const [tenderMethods, setTenderMethods] = useState<TenderMethodOption[]>([]);
+  const [tenderLines, setTenderLines] = useState<TenderLine[]>(() => [newTenderLine(null)]);
   const [busy, setBusy] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [receipt, setReceipt] = useState<CheckoutResult | null>(null);
@@ -106,7 +134,8 @@ function SaleScreen({ limits, session, onSessionChanged }: {
   const [confirming, setConfirming] = useState(false);
   const [asking, setAsking] = useState<CartLine | null>(null);
   const [onSite, setOnSite] = useState<DiscountRequest | null>(null);
-  const [syncDevice, setSyncDevice] = useState(loadSyncDevice);
+  const [syncDevice, setSyncDevice] = useState(storedDeviceId);
+  const [deviceRevoked, setDeviceRevoked] = useState(false);
   // Module clients §17, §34 : client de la vente ; à crédit, le reste non encaissé passe sur son compte.
   const [customer, setCustomer] = useState<CustomerLookup | null>(null);
   const [creditMode, setCreditMode] = useState(false);
@@ -120,14 +149,62 @@ function SaleScreen({ limits, session, onSessionChanged }: {
   const currency = session?.currency ?? "HTG";
   const canSell = session?.status === "open" && Boolean(session.inventoryLocationId && session.financialAccountId);
 
+  // Moyens d'encaissement de la devise de la caisse. Hors ligne : ceux du profil, limités à ceux que la
+  // politique autorise hors ligne ; à défaut, espèces seules.
+  useEffect(() => {
+    if (session?.status !== "open") return;
+    let alive = true;
+    const apply = (m: TenderMethodOption[]) => {
+      if (!alive) return;
+      setTenderMethods(m);
+      const cash = m.find((x) => x.type === "cash") ?? null;
+      setTenderLines((ls) => (ls.length === 1 && !ls[0].amount && ls[0].methodId === null ? [newTenderLine(cash)] : ls));
+    };
+    getTenderOptions(currency)
+      .then(apply)
+      .catch(() => {
+        if (!profile) return;
+        const allowed = profile.profile.policy.allowedPaymentMethods.map((x) => x.toLowerCase());
+        apply(profile.tenderMethods.filter((m) => allowed.length === 0 || allowed.includes(m.type.toLowerCase())));
+      });
+    return () => { alive = false; };
+  }, [currency, session?.status, online, profile]);
+
+  // Phase 6 : en ligne, l'appareil s'enregistre seul et le profil hors ligne est rafraîchi (toutes les 10 min).
+  useEffect(() => {
+    if (!online || session?.status !== "open" || !user || !activeCompanyId) return;
+    let alive = true;
+    const refresh = async () => {
+      try {
+        const device = await ensureDevice(`Caisse ${session.registerName}`);
+        if (alive) { setSyncDevice(device.id); setDeviceRevoked(false); }
+      } catch (e) {
+        if (e instanceof ApiError && (e.problem.title === "sync.device_revoked" || e.problem.title === "sync.device_suspended")) {
+          forgetDevice();
+          if (alive) { setSyncDevice(""); setDeviceRevoked(true); }
+        }
+      }
+      try {
+        const [p, methods] = await Promise.all([getOfflineProfile(session.inventoryLocationId), getTenderOptions(currency)]);
+        const stored: StoredProfile = {
+          userId: user.id, companyId: activeCompanyId, savedAt: new Date().toISOString(), profile: p, session, tenderMethods: methods,
+        };
+        await saveProfile(stored);
+        markServerContact();
+        if (alive) onProfile(stored);
+      } catch { /* profil non rafraîchi : le précédent reste utilisable */ }
+    };
+    void refresh();
+    const t = setInterval(() => void refresh(), 10 * 60_000);
+    return () => { alive = false; clearInterval(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [online, session?.sessionId, session?.status, user?.id, activeCompanyId, currency]);
+
   // Envoi d'un lot de synchronisation (Phase 10 §14) — jamais de confirmation simulée (§21).
   const sender = useCallback<BatchSender>(async (batch) => {
     if (!syncDevice) throw new Error("Appareil de synchronisation non configuré.");
-    const res = await pushBatch(syncDevice, batch.map((e) => ({
-      // Module clients §24 : un versement client hors ligne se rejoue par le même moteur que la vente.
-      operationUuid: e.id, entityType: e.kind === "customer.payment" ? "customer_payment" : "sale", operationType: "create", payload: e.payload,
-      priority: 5, clientCreatedAt: e.createdAt,
-    })));
+    // Phase 12 : traduction commune à la caisse et au terrain (vente, versement client) — jamais un faux type.
+    const res = await pushBatch(syncDevice, await toSyncOperations(batch));
     return res.operations.map((o) => ({
       id: o.operationUuid,
       status: o.status === "SYNCED" ? "synced" : o.status === "CONFLICT" ? "conflict" : "failed",
@@ -135,7 +212,7 @@ function SaleScreen({ limits, session, onSessionChanged }: {
     }));
   }, [syncDevice]);
 
-  useEffect(() => autoFlushOnReconnect(sender), [sender]);
+  useEffect(() => autoFlushOnReconnect(sender, kindsFor("pos")), [sender]);
 
   // Suivi des demandes de remise en attente (§12) : le panier se débloque dès la décision du Manager.
   useEffect(() => {
@@ -156,7 +233,7 @@ function SaleScreen({ limits, session, onSessionChanged }: {
   async function syncNow() {
     setSyncing(true);
     try {
-      const r = await flushOutbox(sender);
+      const r = await flushOutbox(sender, kindsFor("pos"));
       if (r.synced) toast.success(`${r.synced} vente(s) synchronisée(s).`);
       if (r.conflict) toast.push(`${r.conflict} conflit(s) à traiter dans le centre de synchronisation.`, "warning");
       if (r.failed) toast.error(`${r.failed} opération(s) en échec.`);
@@ -178,17 +255,52 @@ function SaleScreen({ limits, session, onSessionChanged }: {
   };
   const blocked = cart.some((l) => needsApproval(l) && !approvedFor(l));
 
-  const total = useMemo(() => cart.reduce((sum, l) => sum + lineGross(l) - l.discount, 0), [cart]);
+  // Montant dû : calculé par le serveur dès qu'il répond (prix, promotions, taxes — exactement l'encaissement) ;
+  // sinon estimation locale TTC sans promotion (hors ligne), signalée comme telle.
+  const estimate = useMemo(() => cart.reduce((acc, l) => {
+    const a = lineAmounts(l.quantity, l.unitPrice, l.discount, l.taxRate);
+    return { total: Math.round((acc.total + a.total) * 100) / 100, tax: Math.round((acc.tax + a.tax) * 100) / 100 };
+  }, { total: 0, tax: 0 }), [cart]);
+  const cartKey = JSON.stringify([customer?.id ?? null, cart.map((l) => [l.productId, l.quantity, l.discount])]);
+  const [preview, setPreview] = useState<{ key: string; data: CartPreview | null } | null>(null);
+  useEffect(() => {
+    if (!online || !session?.inventoryLocationId || cart.length === 0) return;
+    const ctrl = new AbortController();
+    const t = setTimeout(() => {
+      previewCart({
+        inventoryLocationId: session.inventoryLocationId!, customerId: customer?.id ?? null, currency,
+        lines: cart.map((l) => ({ productId: l.productId, quantity: l.quantity, lineDiscount: l.discount })),
+      }, ctrl.signal).then((data) => setPreview({ key: cartKey, data }))
+        .catch(() => { if (!ctrl.signal.aborted) setPreview({ key: cartKey, data: null }); });   // échec : estimation locale
+    }, 250);
+    return () => { clearTimeout(t); ctrl.abort(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cartKey, online, session?.inventoryLocationId, currency]);
+  const serverCart = preview && preview.key === cartKey ? preview.data : null;
+  const previewPending = online && cart.length > 0 && Boolean(session?.inventoryLocationId) && preview?.key !== cartKey;
+  const totals = serverCart ? { total: serverCart.total, tax: serverCart.taxTotal } : estimate;
+  const promotions = serverCart ? Math.round(serverCart.lines.reduce((a, l) => a + l.promotionDiscount, 0) * 100) / 100 : 0;
+  const total = totals.total;
+  const lineTotalOf = (l: CartLine) => serverCart?.lines.find((x) => x.productId === l.productId)?.lineTotal
+    ?? lineAmounts(l.quantity, l.unitPrice, l.discount, l.taxRate).total;
   const canCredit = Boolean(limits?.canSellCredit && customer?.creditEnabled);
   const onCredit = creditMode && canCredit;
   const availableStore = customer?.availableStoreCredit ?? 0;
   const useStore = Math.round(Math.max(0, Math.min(storeCredit, availableStore, total)) * 100) / 100;
   const due = Math.max(0, Math.round((total - useStore) * 100) / 100);
-  // À crédit, le montant reçu peut être nul (vente entièrement à crédit) ; sinon, défaut = reste à payer.
-  const paid = onCredit ? tendered : tendered || due;
-  const change = Math.max(0, paid - due);
+  // Rien saisi et vente au comptant : paiement exact en espèces (geste le plus fréquent). À crédit, rien
+  // saisi = vente entièrement à crédit.
+  const entered = summarizeTenders(tenderLines, tenderMethods, due);
+  const effectiveLines = entered.paid === 0 && !onCredit && due > 0
+    ? tenderLines.map((l, i) => (i === tenderLines.findIndex((x) => x.methodId === null || tenderMethods.find((m) => m.id === x.methodId)?.type === "cash")
+      ? { ...l, amount: String(due) } : l))
+    : tenderLines;
+  const tenderSummary = summarizeTenders(effectiveLines, tenderMethods, due);
+  const paid = tenderSummary.paid;
+  const change = tenderSummary.change;
   const creditPart = onCredit ? Math.max(0, Math.round((due - paid) * 100) / 100) : 0;
   const insufficient = !onCredit && paid + 0.001 < due;
+  const tenderInvalid = tenderSummary.nonCashOver || tenderSummary.missingReference.length > 0 || tenderSummary.missingAccount.length > 0;
   const overAvailable = onCredit && customer?.availableCredit != null && creditPart > customer.availableCredit + 0.001;
 
   function add(p: PosProduct) {
@@ -201,7 +313,7 @@ function SaleScreen({ limits, session, onSessionChanged }: {
     setCart((c) => {
       const i = c.findIndex((l) => l.productId === p.productId);
       if (i >= 0) return c.map((l, idx) => (idx === i ? { ...l, quantity: l.quantity + 1 } : l));
-      return [...c, { productId: p.productId, name: p.name, quantity: 1, unitPrice: p.salePrice ?? 0, discount: 0 }];
+      return [...c, { productId: p.productId, name: p.name, quantity: 1, unitPrice: unitPriceExcludingTax(p), discount: 0, taxRate: p.taxRate ?? 0 }];
     });
   }
   const updateLine = (i: number, patch: Partial<CartLine>) =>
@@ -210,7 +322,7 @@ function SaleScreen({ limits, session, onSessionChanged }: {
 
   function resetCart() {
     setCart([]);
-    setTendered(0);
+    setTenderLines([newTenderLine(tenderMethods.find((m) => m.type === "cash") ?? null)]);
     setCustomer(null);
     setCreditMode(false);
     setStoreCredit(0);
@@ -233,13 +345,14 @@ function SaleScreen({ limits, session, onSessionChanged }: {
       customerId: customer?.id ?? null,
       currency,
       lines: cart.map((l) => ({ productId: l.productId, quantity: l.quantity, lineDiscount: l.discount })),
-      // Vente à crédit : seul le montant réellement reçu est un encaissement ; le serveur calcule le reste dû.
-      tenders: paid > 0 ? [{ financialAccountId: session.financialAccountId ?? "", paymentMethodId: null, amount: paid }] : [],
+      // Un encaissement par moyen ; à crédit, seul le montant réellement reçu est encaissé (le serveur calcule le reste dû).
+      tenders: toTenderInputs(effectiveLines, tenderMethods, session.financialAccountId ?? ""),
       amountTendered: paid,
       storeCreditAmount: useStore,
     };
     try {
       const result = await checkout(cmd);
+      markServerContact();
       setReceipt(result);
       toast.success(`Vente ${result.documentNumber} enregistrée.`);
       resetCart();
@@ -247,6 +360,18 @@ function SaleScreen({ limits, session, onSessionChanged }: {
     } catch (err) {
       // Serveur injoignable → la vente est mise en file, jamais déclarée confirmée (§21).
       if (err instanceof ApiError && (err.isOffline || !online)) {
+        // Phase 6 : la politique hors ligne connue est appliquée AVANT de mettre la vente en file (le serveur la
+        // réapplique à la synchronisation) — sinon la vente partirait en conflit après coup.
+        const policy = profile?.profile.policy;
+        const refusal = policy ? offlineRefusal(policy, {
+          hasDiscount: cart.some((l) => l.discount > 0),
+          creditAmount: creditPart,
+          tenderTypes: cmd.tenders.map((t) => tenderMethods.find((m) => m.id === t.paymentMethodId)?.type ?? "cash"),
+        }, lastServerContact()) : null;
+        if (refusal) {
+          setError(`Hors ligne — vente non enregistrée : ${refusal}`);
+          return;
+        }
         enqueue({ id: cmd.operationUuid, kind: "sale.checkout", payload: cmd });
         setReceipt(null);
         resetCart();
@@ -267,8 +392,17 @@ function SaleScreen({ limits, session, onSessionChanged }: {
       {/* ---- Recherche + panier ---- */}
       <div style={{ display: "grid", gap: 12 }}>
         <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
-          <ProductSearch locationId={session?.inventoryLocationId ?? null} onPick={add} disabled={!canSell} inputRef={searchRef} />
+          <ProductSearch locationId={session?.inventoryLocationId ?? null} onPick={add} disabled={!canSell} inputRef={searchRef}
+                         offline={!online} offlineCatalog={profile?.profile.catalog ?? null} />
           {!online && <Badge tone="warning" style={{ whiteSpace: "nowrap" }}><Icon.Offline size={13} /> Hors ligne</Badge>}
+          {!online && (profile
+            ? <Badge tone="info" style={{ whiteSpace: "nowrap" }}>
+                <span title={profile.profile.truncated ? `Catalogue limité aux ${profile.profile.maxItems} premiers articles` : undefined}>
+                  Catalogue du {dateTime(profile.savedAt)}{profile.profile.truncated ? " (partiel)" : ""}
+                </span>
+              </Badge>
+            : <Badge tone="error" style={{ whiteSpace: "nowrap" }}>Aucun catalogue hors ligne sur ce poste</Badge>)}
+          {deviceRevoked && <Badge tone="error" style={{ whiteSpace: "nowrap" }}>Appareil révoqué : pas de vente hors ligne</Badge>}
           {pendingCount > 0 && <Badge tone="info" style={{ whiteSpace: "nowrap" }}><Icon.Sync size={13} /> {pendingCount} non synchronisée(s)</Badge>}
           {outboxProtection() === "plaintext" && (
             <Badge tone="warning" style={{ whiteSpace: "nowrap" }}>
@@ -284,7 +418,7 @@ function SaleScreen({ limits, session, onSessionChanged }: {
                 <th>Article</th><th className="nx-num" style={{ width: 78 }}>Qté</th>
                 <th className="nx-num" style={{ width: 100 }}>Prix</th>
                 <th className="nx-num" style={{ width: 150 }}>Remise{limit !== null && limits?.canDiscount ? ` (≤ ${limit} %)` : ""}</th>
-                <th className="nx-num" style={{ width: 110 }}>Total</th><th style={{ width: 44 }} />
+                <th className="nx-num" style={{ width: 110 }}>Total TTC</th><th style={{ width: 44 }} />
               </tr>
             </thead>
             <tbody>
@@ -297,7 +431,9 @@ function SaleScreen({ limits, session, onSessionChanged }: {
                     <td><TextInput type="number" min={1} value={l.quantity} style={{ textAlign: "right" }} aria-label={`Quantité — ${l.name}`}
                                    onChange={(e) => updateLine(i, { quantity: Math.max(1, Number(e.target.value) || 1) })} /></td>
                     {/* §12 : le prix vient du serveur ; le caissier ne le saisit pas. */}
-                    <td className="nx-num">{money(l.unitPrice, currency)}</td>
+                    <td className="nx-num">{money(l.unitPrice, currency)}
+                      {l.taxRate > 0 && <div style={{ fontSize: "var(--nx-fs-xs)", color: "var(--nx-text-2)" }}>HT · TVA {l.taxRate} %</div>}
+                    </td>
                     <td>
                       {limits?.canDiscount ? (
                         <div style={{ display: "grid", gap: 4 }}>
@@ -316,7 +452,12 @@ function SaleScreen({ limits, session, onSessionChanged }: {
                         </div>
                       ) : <span className="nx-num">—</span>}
                     </td>
-                    <td className="nx-num">{money(lineGross(l) - l.discount, currency)}</td>
+                    <td className="nx-num">{money(lineTotalOf(l), currency)}
+                      {serverCart?.lines.find((x) => x.productId === l.productId && x.promotionDiscount > 0) && (
+                        <div style={{ fontSize: "var(--nx-fs-xs)", color: "var(--nx-brand)" }}>
+                          {serverCart.lines.find((x) => x.productId === l.productId)!.promotionLabel ?? "Promotion"}
+                        </div>)}
+                    </td>
                     <td><IconButton label="Retirer la ligne" onClick={() => removeLine(i)}><Icon.X size={14} /></IconButton></td>
                   </tr>
                 );
@@ -348,6 +489,12 @@ function SaleScreen({ limits, session, onSessionChanged }: {
             Montant dû
           </div>
           <div className="nx-numeric" style={{ fontSize: 40, fontWeight: 800, lineHeight: 1.15 }}>{money(total, currency)}</div>
+          {totals.tax > 0 && <div style={{ color: "var(--nx-text-2)", fontSize: "var(--nx-fs-sm)" }}>dont taxes {money(totals.tax, currency)}</div>}
+          {promotions > 0 && <div style={{ color: "var(--nx-brand)", fontSize: "var(--nx-fs-sm)" }}>promotions déduites {money(promotions, currency)}</div>}
+          {cart.length > 0 && !serverCart && (
+            <div style={{ color: "var(--nx-warning)", fontSize: "var(--nx-fs-xs)" }}>
+              {previewPending ? "Calcul du montant exact…" : "Estimation (serveur injoignable) : les promotions éventuelles seront appliquées à l'enregistrement."}
+            </div>)}
         </Card>
 
         <Card className="nx-field" style={{ gap: 12 }}>
@@ -362,11 +509,26 @@ function SaleScreen({ limits, session, onSessionChanged }: {
               <span>Reste à payer</span><b className="nx-numeric">{money(due, currency)}</b>
             </div>
           )}
-          <Field label="Montant reçu">
-            <TextInput type="number" min={0} className="nx-input nx-numeric" value={tendered}
-                       style={{ fontSize: "var(--nx-fs-lg)", textAlign: "right" }}
-                       onChange={(e) => setTendered(Math.max(0, Number(e.target.value) || 0))} />
-          </Field>
+          <TenderPanel lines={tenderLines} onChange={setTenderLines} methods={tenderMethods} due={due} currency={currency}
+                       summary={entered} disabled={busy} />
+          <div style={{ display: "flex", justifyContent: "space-between" }}>
+            <span>Total encaissé</span><b className="nx-numeric">{money(paid, currency)}</b>
+          </div>
+          {tenderSummary.remaining > 0 && !onCredit && (
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <span>Reste à encaisser</span><b className="nx-numeric" style={{ color: "var(--nx-warning)" }}>{money(tenderSummary.remaining, currency)}</b>
+            </div>
+          )}
+          {tenderSummary.nonCashOver && (
+            <div style={{ color: "var(--nx-warning)", fontSize: "var(--nx-fs-sm)" }}>
+              <Icon.Alert size={14} /> Carte, mobile money ou virement dépassent le reste dû : la monnaie ne se rend qu'en espèces.
+            </div>
+          )}
+          {tenderSummary.missingReference.length > 0 && (
+            <div style={{ color: "var(--nx-warning)", fontSize: "var(--nx-fs-sm)" }}>
+              <Icon.Alert size={14} /> Saisissez la référence du paiement (n° d'autorisation ou de transaction).
+            </div>
+          )}
           <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700 }}>
             <span>Rendu monnaie</span>
             <span className="nx-numeric" style={{ color: "var(--nx-brand)" }}>{money(change, currency)}</span>
@@ -423,18 +585,18 @@ function SaleScreen({ limits, session, onSessionChanged }: {
                 <StatePill status={e.status} />
               </div>
             ))}
+            {queue.filter((e) => e.status !== "synced" && e.lastError).slice(0, 3).map((e) => (
+              <div key={`err-${e.id}`} className="nx-err" style={{ fontSize: "var(--nx-fs-xs)" }}>{e.id.slice(0, 8)} : {e.lastError}</div>
+            ))}
             {!syncDevice && (
-              <Field label="Identifiant de l'appareil de synchronisation">
-                <TextInput value={syncDevice} onChange={(e) => {
-                  setSyncDevice(e.target.value);
-                  try { localStorage.setItem(SYNC_DEVICE_KEY, e.target.value); } catch { /* stockage indisponible */ }
-                }} />
-              </Field>
+              <div style={{ color: "var(--nx-warning)", fontSize: "var(--nx-fs-sm)" }}>
+                <Icon.Alert size={14} /> Poste non enregistré pour la synchronisation : il le sera automatiquement au retour du réseau.
+              </div>
             )}
           </Card>
         )}
 
-        <Button block loading={busy} disabled={busy || cart.length === 0 || !canSell || blocked || insufficient}
+        <Button block loading={busy} disabled={busy || cart.length === 0 || !canSell || blocked || insufficient || tenderInvalid || previewPending}
                 style={{ fontSize: "var(--nx-fs-lg)", minHeight: 56 }} onClick={() => setConfirming(true)}>
           <Icon.Wallet size={18} /> Encaisser {money(total, currency)}
         </Button>
@@ -449,7 +611,13 @@ function SaleScreen({ limits, session, onSessionChanged }: {
           impact={
             <div style={{ display: "grid", gap: 4 }}>
               <div style={{ display: "flex", justifyContent: "space-between" }}><span>Total</span><b className="nx-numeric">{money(total, currency)}</b></div>
-              <div style={{ display: "flex", justifyContent: "space-between" }}><span>Reçu</span><span className="nx-numeric">{money(paid, currency)}</span></div>
+              {toTenderInputs(effectiveLines, tenderMethods, session?.financialAccountId ?? "").map((t, i) => (
+                <div key={i} style={{ display: "flex", justifyContent: "space-between" }}>
+                  <span>{tenderMethods.find((m) => m.id === t.paymentMethodId)?.name ?? "Espèces"}{t.reference ? ` · ${t.reference}` : ""}</span>
+                  <span className="nx-numeric">{money(t.amount, currency)}</span>
+                </div>
+              ))}
+              <div style={{ display: "flex", justifyContent: "space-between" }}><span>Total reçu</span><span className="nx-numeric">{money(paid, currency)}</span></div>
               <div style={{ display: "flex", justifyContent: "space-between" }}><span>Rendu</span><span className="nx-numeric">{money(change, currency)}</span></div>
               {customer && <div style={{ display: "flex", justifyContent: "space-between" }}><span>Client</span><span>{customer.displayName}</span></div>}
               {useStore > 0 && <div style={{ display: "flex", justifyContent: "space-between" }}><span>Payé par avoir</span><span className="nx-numeric">{money(useStore, currency)}</span></div>}

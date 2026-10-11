@@ -1,12 +1,17 @@
-# Contexte de build Docker = racine du dépôt (l'API embarque database/migrations — §20).
+# Contexte de build Docker = racine du dépôt (l'API embarque database/migrations — §20 ;
+# l'interface embarque infrastructure/caddy/Caddyfile — finalisation phase 18).
 **/bin/
 **/obj/
 **/node_modules/
 **/TestResults/
-frontend/
+frontend/nexora-web/dist/
+backend/tests/
+infrastructure/secrets/
 build/
 docs/
 .git/
 .github/
 .vscode/
 .claude/
+.kiro/
+.kilo/

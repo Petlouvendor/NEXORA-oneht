@@ -14,7 +14,7 @@ namespace Nexora.Infrastructure.Intelligence;
 /// </summary>
 public sealed class SqlTaskService(NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow) : ITaskService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record Row(Guid Id, string Title, string Description, string? ReferenceType, Guid? ReferenceId,
         Guid? AssignedTo, string Priority, string Status, DateTimeOffset? DueAt, DateTimeOffset CreatedAt);

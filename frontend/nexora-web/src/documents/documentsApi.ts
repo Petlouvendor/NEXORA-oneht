@@ -1,4 +1,5 @@
 import { apiFetch } from "@/core/apiClient";
+import { printDocument } from "@/shared/printApi";
 
 // Facturation & documents commerciaux (Phase 30 §3-5, §19, §27-28, §34, §36, §48).
 
@@ -124,16 +125,39 @@ export const sendQuote = (id: string) => apiFetch<void>(`/quotes/${id}/send`, { 
 export const acceptQuote = (id: string) => apiFetch<void>(`/quotes/${id}/accept`, { method: "POST" });
 export const rejectQuote = (id: string, reason: string) =>
   apiFetch<void>(`/quotes/${id}/reject`, { method: "POST", body: JSON.stringify({ reason }) });
-export const convertQuote = (id: string, onCredit = false, orderType = "delivery") =>
-  apiFetch<string>(`/quotes/${id}/convert`, { method: "POST", body: JSON.stringify({ onCredit, orderType, dueDate: null }) });
+export type QuoteInput = {
+  customerId: string | null;
+  currency: string;
+  inventoryLocationId: string | null;
+  validUntil: string | null;
+  terms: string | null;
+  notes: string | null;
+  lines: QuoteLineInput[];
+};
+/** Modification d'un devis encore en brouillon (phase 4). */
+export const updateQuote = (id: string, input: QuoteInput) =>
+  apiFetch<void>(`/quotes/${id}`, { method: "PUT", body: JSON.stringify(input) });
+export const cancelQuote = (id: string, reason: string) =>
+  apiFetch<void>(`/quotes/${id}/cancel`, { method: "POST", body: JSON.stringify({ reason }) });
+/** Conversion en commande : l'emplacement de stock rend la commande directement réservable. */
+export const convertQuote = (id: string, opts: { onCredit?: boolean; orderType?: string; dueDate?: string | null; inventoryLocationId?: string | null } = {}) =>
+  apiFetch<string>(`/quotes/${id}/convert`, {
+    method: "POST",
+    body: JSON.stringify({
+      onCredit: opts.onCredit ?? false, orderType: opts.orderType ?? "delivery", dueDate: opts.dueDate ?? null,
+      inventoryLocationId: opts.inventoryLocationId ?? null,
+    }),
+  });
 
 // --- Documents émis ---
 
-export const searchDocuments = (params: { type?: string; status?: string; number?: string } = {}) => {
+export const searchDocuments = (params: { type?: string; status?: string; number?: string; sourceType?: string; sourceId?: string } = {}) => {
   const qs = new URLSearchParams();
   if (params.type) qs.set("type", params.type);
   if (params.status) qs.set("status", params.status);
   if (params.number) qs.set("number", params.number);
+  if (params.sourceType) qs.set("sourceType", params.sourceType);
+  if (params.sourceId) qs.set("sourceId", params.sourceId);
   const s = qs.toString();
   return apiFetch<IssuedDocument[]>(`/documents${s ? `?${s}` : ""}`);
 };
@@ -161,8 +185,15 @@ export const sendDocument = (id: string, channel: string, recipient: string | nu
     body: JSON.stringify({ channel, recipient, subject, message: null }),
   });
 
-export const documentPdfUrl = (id: string, format = "a4") =>
-  `/api/v1/documents/${id}/pdf?format=${format}`;
+/** Vrai PDF du document émis (reconstruit depuis son contenu figé), ouvert pour impression. Authentifié :
+ * un simple lien ne transmettait pas le jeton de session. */
+export const openDocumentPdf = (id: string, format: "pdf" | "ticket" = "pdf") =>
+  printDocument("document", id, format);
+
+export const DOCUMENT_TYPE_LABEL: Record<string, string> = {
+  invoice: "Facture", deposit_invoice: "Facture d'acompte", final_invoice: "Facture de solde", proforma: "Proforma",
+  credit_note: "Avoir", receipt: "Reçu", delivery_note: "Bon de livraison",
+};
 
 export const verifyDocument = (code: string) =>
   apiFetch<DocumentVerification>(`/documents/verify/${encodeURIComponent(code)}`);

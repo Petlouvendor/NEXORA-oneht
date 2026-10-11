@@ -1,20 +1,23 @@
 using Microsoft.EntityFrameworkCore;
 using Nexora.Application.Abstractions;
+using Nexora.Application.Catalog;
 using Nexora.Application.Sales;
 using Nexora.Domain.Finance;
 using Nexora.Domain.Sales;
 using Nexora.Infrastructure.Persistence;
+using Nexora.Domain.Common;
 
 namespace Nexora.Infrastructure.Sales;
 
 internal static class SalesHelpers
 {
     public static Guid Company(ITenantContext t) => t.ActiveCompanyId
-        ?? throw new InvalidOperationException("Aucune entreprise active.");
+        ?? throw TenantErrors.ActiveCompanyRequired();
 
     public static async Task<string> NextNumber(NexoraDbContext db, ITenantContext t, string type, CancellationToken ct)
     {
-        var year = DateTime.UtcNow.Year;
+        // Année locale de l'entreprise : next_document_number prend current_date (session au fuseau de l'entreprise).
+        int? year = null;
         var rows = await db.Database
             .SqlQuery<string>($"""SELECT nexora.next_document_number({Company(t)}, {type}, {(Guid?)null}, {year}) AS "Value" """)
             .ToListAsync(ct);
@@ -29,7 +32,6 @@ public sealed class SqlSalesPricing(NexoraDbContext db, ITenantContext tenant) :
 
     private sealed record PriceRow(decimal Amount);
     private sealed record ResolvedPrice(decimal Amount, bool TaxIncluded);
-    private sealed record PromoRow(Guid Id, string PromoType, decimal Value, string Name);
 
     public async Task<IReadOnlyList<PricedLine>> PriceCartAsync(
         Guid inventoryLocationId, Guid? customerId, string currency, DateTimeOffset at,
@@ -46,7 +48,10 @@ public sealed class SqlSalesPricing(NexoraDbContext db, ITenantContext tenant) :
         {
             var coupon = await db.Database.SqlQuery<CouponRow>($"""
                 SELECT id AS "Id", discount_type AS "DiscountType", discount_value AS "DiscountValue"
-                FROM nexora.coupon WHERE company_id = {Company} AND code = {couponCode} AND status = 'active'
+                FROM nexora.coupon WHERE company_id = {Company} AND upper(code) = upper({couponCode.Trim()}) AND status = 'active'
+                  AND (valid_from IS NULL OR valid_from <= {at})
+                  AND (valid_to IS NULL OR valid_to >= {at})
+                  AND (usage_limit IS NULL OR used_count < usage_limit)
                 """).FirstOrDefaultAsync(ct);
             if (coupon is not null)
             {
@@ -68,6 +73,7 @@ public sealed class SqlSalesPricing(NexoraDbContext db, ITenantContext tenant) :
                     WHERE product_id = {line.ProductId} AND price_type = 'sale' AND currency_id = {currencyId}
                       AND quantity_min <= {line.Quantity} AND valid_from <= {at}
                       AND (valid_to IS NULL OR valid_to > {at})
+                      AND price_list_id IS NULL
                       AND (customer_group_id IS NULL OR customer_group_id = {customerGroupId})
                     ORDER BY (customer_group_id IS NOT NULL) DESC, quantity_min DESC, valid_from DESC
                     LIMIT 1
@@ -94,30 +100,12 @@ public sealed class SqlSalesPricing(NexoraDbContext db, ITenantContext tenant) :
             string? promoLabel = null;
             Guid? promoId = null;
 
-            var promo = await db.Database.SqlQuery<PromoRow>($"""
-                SELECT pr.id AS "Id", pr.promo_type AS "PromoType", pr.value AS "Value", pr.name AS "Name"
-                FROM nexora.promotion pr
-                JOIN nexora.promotion_target pt ON pt.promotion_id = pr.id
-                WHERE pr.company_id = {Company} AND pr.status = 'active'
-                  AND (pr.starts_at IS NULL OR pr.starts_at <= {at})
-                  AND (pr.ends_at IS NULL OR pr.ends_at >= {at})
-                  AND (pt.target_type = 'all'
-                       OR (pt.target_type = 'product'  AND pt.product_id  = {line.ProductId})
-                       OR (pt.target_type = 'category' AND pt.category_id = {product.CategoryId})
-                       OR (pt.target_type = 'brand'    AND pt.brand_id    = {product.BrandId}))
-                ORDER BY pr.priority DESC LIMIT 1
-                """).FirstOrDefaultAsync(ct);
-
+            var promo = await Nexora.Infrastructure.Catalog.PromotionResolver.FindAsync(
+                db, Company, line.ProductId, product.CategoryId, product.BrandId, at, ct);
             if (promo is not null)
             {
-                promoId = promo.Id;
-                promoLabel = promo.Name;
-                promoDiscount = promo.PromoType switch
-                {
-                    "percentage" => Math.Round(gross * promo.Value / 100m, 2),
-                    "amount" => Math.Min(gross, Math.Round(promo.Value * line.Quantity, 2)),
-                    _ => 0m,
-                };
+                promoDiscount = PromotionCalculator.Discount(promo, unitPrice, line.Quantity, gross);
+                if (promoDiscount > 0m) { promoId = promo.Id; promoLabel = promo.Name; }
             }
 
             if (couponPercent > 0m) promoDiscount += Math.Round(gross * couponPercent / 100m, 2);
@@ -265,9 +253,17 @@ public sealed class EfSalesStore(NexoraDbContext db, ITenantContext tenant) : IS
         => db.Sales.AsNoTracking().Include(s => s.Lines).FirstOrDefaultAsync(s => s.Id == saleId, ct);
 
     public async Task AddSaleAsync(Sale sale, CancellationToken ct = default) => await db.Sales.AddAsync(sale, ct);
+    public async Task AddSaleLinesAsync(IReadOnlyList<SaleLine> lines, CancellationToken ct = default) => await db.SaleLines.AddRangeAsync(lines, ct);
     public async Task AddPaymentAsync(Payment payment, CancellationToken ct = default) => await db.Payments.AddAsync(payment, ct);
     public async Task AddSalePaymentAsync(SalePayment link, CancellationToken ct = default) => await db.SalePayments.AddAsync(link, ct);
     public async Task AddSalePromotionAsync(SalePromotion promo, CancellationToken ct = default) => await db.SalePromotions.AddAsync(promo, ct);
+
+    public async Task<bool> ConsumeCouponAsync(Guid couponId, CancellationToken ct = default)
+        => await db.Database.ExecuteSqlAsync($"""
+            UPDATE nexora.coupon SET used_count = used_count + 1, updated_at = now()
+             WHERE id = {couponId} AND company_id = {tenant.ActiveCompanyId}
+               AND (usage_limit IS NULL OR used_count < usage_limit)
+            """, ct) == 1;
 
     public async Task<Guid?> DefaultTaxIdAsync(Guid productId, CancellationToken ct = default)
         => await db.Products.AsNoTracking().Where(p => p.Id == productId).Select(p => p.DefaultTaxId).FirstOrDefaultAsync(ct);
@@ -295,6 +291,27 @@ public sealed class EfSalesStore(NexoraDbContext db, ITenantContext tenant) : IS
                   join cr in db.CashRegisters.AsNoTracking() on cs.CashRegisterId equals cr.Id
                   where cs.Id == sessionId
                   select cr.FinancialAccountId).FirstOrDefaultAsync(ct);
+
+    public async Task<IReadOnlyList<TenderAccountInfo>> TenderAccountsAsync(IReadOnlyCollection<Guid> ids, CancellationToken ct = default)
+    {
+        var list = ids.ToArray();
+        return await db.Database.SqlQuery<TenderAccountInfo>($"""
+            SELECT fa.id AS "Id", fa.name AS "Name", fa.account_type AS "AccountType", cur.code AS "Currency", fa.status AS "Status"
+            FROM nexora.financial_account fa JOIN nexora.currency cur ON cur.id = fa.currency_id
+            WHERE fa.company_id = {Company} AND fa.id = ANY({list})
+            """).ToListAsync(ct);
+    }
+
+    public async Task<IReadOnlyList<TenderMethodInfo>> TenderMethodsAsync(IReadOnlyCollection<Guid> ids, CancellationToken ct = default)
+    {
+        var list = ids.ToArray();
+        return await db.Database.SqlQuery<TenderMethodInfo>($"""
+            SELECT pm.id AS "Id", pm.name AS "Name", pm.type AS "Type", cur.code AS "Currency",
+                   pm.requires_reference AS "RequiresReference", pm.status AS "Status"
+            FROM nexora.payment_method pm LEFT JOIN nexora.currency cur ON cur.id = pm.currency_id
+            WHERE pm.company_id = {Company} AND pm.id = ANY({list})
+            """).ToListAsync(ct);
+    }
 }
 
 public sealed class EfSalesReturnStore(NexoraDbContext db, ITenantContext tenant) : ISalesReturnStore

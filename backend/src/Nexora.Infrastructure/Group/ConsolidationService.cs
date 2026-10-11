@@ -31,13 +31,24 @@ public sealed class SqlConsolidationService(NexoraDbContext db, IUnitOfWork uow,
     public async Task<Result<ConsolidationRunDto>> CreateRunAsync(Guid groupId, CreateConsolidationRunRequest request, CancellationToken ct = default)
     {
         GroupGuard.Require(tenant, groupId);
-        if (request.CompanyIds.Count == 0) return Error.Validation("consolidation.no_company", "Aucune entreprise sélectionnée.");
+        if (string.IsNullOrWhiteSpace(request.PeriodLabel) || request.PeriodLabel.Trim().Length > 60)
+            return Error.Validation("consolidation.label", "Libellé de période requis (60 caractères au plus).");
+        if (request.CompanyIds is null || request.CompanyIds.Count == 0) return Error.Validation("consolidation.no_company", "Aucune entreprise sélectionnée.");
         if (request.ToDate < request.FromDate) return Error.Validation("consolidation.period", "Période invalide.");
+        if (request.ToDate.DayNumber - request.FromDate.DayNumber > 366)
+            return Error.Validation("consolidation.period_length", "Une consolidation couvre au plus un exercice (366 jours).");
 
         using var _ = tenant.BeginSystemScope();
-        var groupCompanies = await db.Companies.AsNoTracking().Where(c => c.GroupId == groupId).Select(c => c.Id).ToListAsync(ct);
-        if (request.CompanyIds.Any(id => !groupCompanies.Contains(id)))
+        var groupCompanies = await db.Companies.AsNoTracking().Where(c => c.GroupId == groupId)
+            .Select(c => new { c.Id, c.Status }).ToListAsync(ct);
+        if (request.CompanyIds.Any(id => groupCompanies.All(c => c.Id != id)))
             return Error.Validation("consolidation.company", "Une entreprise sélectionnée n'appartient pas au groupe.");
+        if (request.CompanyIds.Any(id => groupCompanies.Any(c => c.Id == id && c.Status == "archived")))
+            return Error.Validation("consolidation.archived_company", "Une société archivée ne peut plus être consolidée.");
+        if (request.ProfileId is { } pid && !await db.Database.SqlQuery<bool>($"""
+                SELECT EXISTS(SELECT 1 FROM nexora.consolidation_profile WHERE id = {pid} AND group_id = {groupId}) AS "Value"
+                """).FirstAsync(ct))
+            return Error.NotFound("consolidation.profile", "Profil de consolidation introuvable dans ce groupe.");
 
         var currencyId = await db.Database.SqlQuery<Guid>($"""
             SELECT COALESCE(
@@ -84,6 +95,7 @@ public sealed class SqlConsolidationService(NexoraDbContext db, IUnitOfWork uow,
         if (included.Count == 0) return Error.Validation("consolidation.no_company", "Aucune entreprise incluse.");
 
         var diagnostics = new List<string>();
+        var fxMissing = false;
         var aggByAccount = new Dictionary<Guid, (string Type, decimal Debit, decimal Credit)>();
 
         await uow.ExecuteInTransactionAsync(async token =>
@@ -99,11 +111,17 @@ public sealed class SqlConsolidationService(NexoraDbContext db, IUnitOfWork uow,
                     var rate = await db.Database.SqlQuery<decimal?>($"""
                         SELECT rate AS "Value" FROM nexora.exchange_rate
                         WHERE base_currency_id = {fc} AND quote_currency_id = {run.CurrencyId}
-                          AND effective_at <= {run.ToDate.ToDateTime(TimeOnly.MaxValue)}
+                          AND effective_at::date <= {run.ToDate}   -- taux de clôture (une date sans fuseau faisait planter l'exécution)
                         ORDER BY effective_at DESC LIMIT 1
                         """).FirstOrDefaultAsync(token);
                     if (rate is { } r && r > 0m) fx = r;
-                    else diagnostics.Add($"Taux de change {c.FunctionalCurrency}→{run.Currency} absent pour {c.CompanyName} — conversion à 1.");
+                    else
+                    {
+                        // Convertir à 1 une société en HTG dans une consolidation en USD donnerait des états faux :
+                        // le calcul reste visible, mais la consolidation n'est pas validable (finalisation phase 14).
+                        fxMissing = true;
+                        diagnostics.Add($"Taux de change {c.FunctionalCurrency}→{run.Currency} absent au {run.ToDate:dd/MM/yyyy} pour {c.CompanyName} — saisissez-le : consolidation non validable.");
+                    }
                 }
 
                 // Clôture de période (§17 étape 3 : vérifier, ne pas bloquer).
@@ -163,14 +181,14 @@ public sealed class SqlConsolidationService(NexoraDbContext db, IUnitOfWork uow,
                 FROM nexora.intercompany_match im
                 JOIN nexora.intercompany_transaction t ON t.id = im.source_transaction_id
                 WHERE im.group_id = {groupId} AND im.status = 'matched'
-                  AND t.occurred_at::date BETWEEN {run.FromDate} AND {run.ToDate}
+                  AND (t.occurred_at AT TIME ZONE 'UTC')::date BETWEEN {run.FromDate} AND {run.ToDate}
                 """).FirstAsync(token);
 
             var unreconciled = await db.Database.SqlQuery<int>($"""
                 SELECT COUNT(*)::int AS "Value"
                 FROM nexora.intercompany_transaction t
                 WHERE t.group_id = {groupId} AND t.status <> 'eliminated'
-                  AND t.occurred_at::date BETWEEN {run.FromDate} AND {run.ToDate}
+                  AND (t.occurred_at AT TIME ZONE 'UTC')::date BETWEEN {run.FromDate} AND {run.ToDate}
                   AND NOT EXISTS (
                       SELECT 1 FROM nexora.intercompany_match im
                       WHERE (im.source_transaction_id = t.id OR im.counterpart_transaction_id = t.id)
@@ -225,7 +243,8 @@ public sealed class SqlConsolidationService(NexoraDbContext db, IUnitOfWork uow,
                     """, token);
             }
 
-            var coherenceOk = Math.Abs(totalConD - totalConC) <= Cent && diagnostics.All(d => !d.StartsWith("Comptes groupe éliminables"));
+            var coherenceOk = Math.Abs(totalConD - totalConC) <= Cent && !fxMissing
+                && diagnostics.All(d => !d.StartsWith("Comptes groupe éliminables"));
             var status = unreconciled > 0 ? "reconciling" : "ready";
             var diagJson = System.Text.Json.JsonSerializer.Serialize(diagnostics);
 
@@ -272,8 +291,10 @@ public sealed class SqlConsolidationService(NexoraDbContext db, IUnitOfWork uow,
         await db.Database.ExecuteSqlAsync($"""
             UPDATE nexora.intercompany_transaction t SET status = 'eliminated', updated_at = now()
             FROM nexora.intercompany_match m
-            WHERE m.source_transaction_id = t.id AND m.status = 'matched' AND t.group_id = {groupId}
-              AND t.occurred_at::date BETWEEN {run.FromDate} AND {run.ToDate}
+            JOIN nexora.intercompany_transaction src ON src.id = m.source_transaction_id
+            WHERE (m.source_transaction_id = t.id OR m.counterpart_transaction_id = t.id)
+              AND m.status = 'matched' AND t.group_id = {groupId}
+              AND (src.occurred_at AT TIME ZONE 'UTC')::date BETWEEN {run.FromDate} AND {run.ToDate}
             """, ct);
         await uow.SaveChangesAsync(ct);
         return await GetRunAsync(groupId, runId, ct);

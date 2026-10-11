@@ -1,6 +1,8 @@
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Nexora.Application.Integrations;
 using Nexora.Application.Notifications;
+using Twilio.Rest.Api.V2010;
 using Nexora.Contracts.Notifications;
 using Twilio;
 using Twilio.Exceptions;
@@ -24,20 +26,62 @@ public sealed class TwilioSmsChannel(
     ILogger<TwilioSmsChannel> logger) : INotificationChannel
 {
     public string Channel => "sms";
+    public string ProviderName => "Twilio";
+
+    public bool IsConfigured
+    {
+        get
+        {
+            var o = opts.Value;
+            return o.Enabled && !string.IsNullOrWhiteSpace(o.AccountSid) && !string.IsNullOrWhiteSpace(o.AuthToken)
+                   && !string.IsNullOrWhiteSpace(o.FromNumber);
+        }
+    }
+
+    public string ConfigurationSummary => IsConfigured
+        ? $"Compte {NotificationMasks.Secret(opts.Value.AccountSid)} · expéditeur {opts.Value.FromNumber}"
+        : "Non configuré : renseignez Notifications:Twilio (Enabled, AccountSid, AuthToken, FromNumber) dans la configuration du serveur.";
+
+    public async Task<ChannelTestResultDto> TestAsync(CancellationToken ct = default)
+    {
+        if (!IsConfigured) return new ChannelTestResultDto(Channel, ConnectionStatus.NotConfigured, ConfigurationSummary, 0);
+        var o = opts.Value;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            // Lecture du compte : vérifie l'accès et les identifiants sans envoyer de SMS.
+            var client = new Twilio.Clients.TwilioRestClient(o.AccountSid, o.AuthToken);
+            var account = await AccountResource.FetchAsync(pathSid: o.AccountSid, client: client).WaitAsync(TimeSpan.FromSeconds(15), ct);
+            return new ChannelTestResultDto(Channel, ConnectionStatus.Connected,
+                $"Compte Twilio joint ({account.Status}) — aucun SMS envoyé.", (int)sw.ElapsedMilliseconds);
+        }
+        catch (TimeoutException)
+        {
+            return new ChannelTestResultDto(Channel, ConnectionStatus.Timeout, "Twilio n'a pas répondu en 15 secondes.", (int)sw.ElapsedMilliseconds);
+        }
+        catch (ApiException e) when (e.Status is 401 or 403 or 404)
+        {
+            return new ChannelTestResultDto(Channel, ConnectionStatus.AuthenticationFailed,
+                $"Twilio a refusé l'Account SID ou l'Auth Token : {e.Message}", (int)sw.ElapsedMilliseconds);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            return new ChannelTestResultDto(Channel, ConnectionStatus.Unavailable, $"Twilio injoignable : {e.Message}", (int)sw.ElapsedMilliseconds);
+        }
+    }
 
     public async Task<ChannelSendResult> SendAsync(OutboxMessageDto m, CancellationToken ct = default)
     {
         var o = opts.Value;
 
-        if (!o.Enabled || string.IsNullOrWhiteSpace(o.AccountSid) || string.IsNullOrWhiteSpace(o.FromNumber))
+        if (!IsConfigured)
         {
-            logger.LogInformation("[sms-twilio] canal non configuré — log seulement → {Address} · {Subject}",
-                m.Address, m.Subject);
-            return ChannelSendResult.Fail("Canal Twilio SMS non configuré (Notifications:Twilio:Enabled=false).");
+            logger.LogInformation("[sms-twilio] fournisseur non configuré — rien n'est envoyé → {Subject}", m.Subject);
+            return ChannelSendResult.Unconfigured("Fournisseur SMS non configuré : le message n'a pas été envoyé.");
         }
 
         if (string.IsNullOrWhiteSpace(m.Address))
-            return ChannelSendResult.Retry($"Numéro de téléphone absent pour la notification {m.Id}.");
+            return ChannelSendResult.Fail("Le destinataire n'a pas de numéro de téléphone.");
 
         // Twilio SDK utilise une initialisation globale thread-safe.
         TwilioClient.Init(o.AccountSid, o.AuthToken);

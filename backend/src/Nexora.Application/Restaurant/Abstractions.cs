@@ -13,6 +13,10 @@ public interface IRestaurantService
     Task<Result<Guid>> CreateAreaAsync(CreateAreaRequest request, CancellationToken ct = default);
     Task<Result<Guid>> CreateTableAsync(CreateTableRequest request, CancellationToken ct = default);
     Task<IReadOnlyList<RestaurantTableDto>> ListTablesAsync(CancellationToken ct = default);
+    Task<IReadOnlyList<RestaurantAreaDto>> ListAreasAsync(CancellationToken ct = default);
+    Task<RestaurantSetupDto> SetupAsync(CancellationToken ct = default);
+    Task<Result<RestaurantOrderDto>> AddItemsAsync(AddOrderItemsRequest request, CancellationToken ct = default);
+    Task<Result> CancelOrderAsync(CancelOrderRequest request, CancellationToken ct = default);
 
     Task<Result<RestaurantOrderDto>> PlaceOrderAsync(PlaceOrderRequest request, CancellationToken ct = default);
     Task<Result> AdvanceKitchenAsync(KitchenAdvanceRequest request, CancellationToken ct = default);
@@ -26,4 +30,6 @@ public interface IRecipeService
 {
     Task<Result<Guid>> DefineAsync(DefineRecipeRequest request, CancellationToken ct = default);
     Task<Result<RecipeDto>> GetAsync(Guid productId, CancellationToken ct = default);
+    Task<IReadOnlyList<RecipeDto>> ListAsync(CancellationToken ct = default);
+    Task<RecipeOptionsDto> OptionsAsync(CancellationToken ct = default);
 }

@@ -5,6 +5,8 @@ import { Badge, Button, Card, DataTable, Drawer, Field, Modal, SectionLabel, Tex
 import { Icon } from "@/shared/icons";
 import { RecommendationCard, SectionHeader, SignalCount, evidenceMetrics } from "@/shared/intel";
 import { AiConversation } from "@/ai/AiConversation";
+import { useFormDialog } from "@/shared/FormDialog";
+import { usePrompt } from "@/shared/PromptDialog";
 import {
   acceptRecommendation, completeTask, deleteRule, dismissRecommendation, getBriefing,
   getIntelligenceDashboard, listModels, listRecommendations, listRules, listScores, listTasks,
@@ -235,18 +237,28 @@ export function RecommendationsSection({ canAct }: { canAct: boolean }) {
 export function RecommendationOutcomesSection({ canAct }: { canAct: boolean }) {
   // Exécution (résultat constaté) : après acceptation OU modification (résumé fonctionnel §17).
   const recs = useAsync(async () => [...await listRecommendations("accepted"), ...await listRecommendations("modified")]);
+  const prompt = usePrompt();
+  async function resolve(id: string, outcome: "positive" | "negative") {
+    const note = await prompt.ask({
+      title: outcome === "positive" ? "Résultat positif" : "Résultat négatif", label: "Note", multiline: true, confirmLabel: "Consigner",
+      hint: "Facultative : ce que la recommandation a réellement produit (sert à l'apprentissage des règles).",
+      onSubmit: (n) => resolveRecommendation(id, outcome, n || undefined),
+    });
+    if (note !== null) recs.load();
+  }
   const cols: Array<Column<Recommendation>> = [
     { key: "t", header: "Recommandation acceptée", render: (r) => r.title },
     { key: "d", header: "Décidée", render: (r) => new Date(r.createdAt).toLocaleDateString() },
     { key: "o", header: "", render: (r) => canAct && (
       <div style={{ display: "flex", gap: 6 }}>
-        <Button size="sm" onClick={() => recs.run(() => resolveRecommendation(r.id, "positive", prompt("Note (optionnel) :") ?? undefined))}>Résultat positif</Button>
-        <Button size="sm" variant="ghost" onClick={() => recs.run(() => resolveRecommendation(r.id, "negative", prompt("Note (optionnel) :") ?? undefined))}>Résultat négatif</Button>
+        <Button size="sm" onClick={() => void resolve(r.id, "positive")}>Résultat positif</Button>
+        <Button size="sm" variant="ghost" onClick={() => void resolve(r.id, "negative")}>Résultat négatif</Button>
       </div>
     ) },
   ];
   return (
     <Card>
+      {prompt.dialog}
       <SectionLabel>Boucle d'apprentissage (§33) — mesurer le résultat des recommandations acceptées</SectionLabel>
       {recs.error && <div className="nx-error-text">{recs.error}</div>}
       <DataTable columns={cols} rows={recs.data ?? []} rowKey={(r) => r.id} empty="Aucune recommandation en attente de mesure." />
@@ -299,6 +311,28 @@ export function ModelsSection() {
 
 export function RulesSection({ canManage }: { canManage: boolean }) {
   const rules = useAsync(listRules);
+  const form = useFormDialog();
+  async function override() {
+    const system = (rules.data ?? []).filter((r) => r.isSystemDefault);
+    const v = await form.ask({
+      title: "Surcharger une règle", confirmLabel: "Enregistrer la surcharge",
+      intro: "La surcharge s'applique à cette entreprise ; la règle système reste intacte et revient si la surcharge est retirée.",
+      fields: [
+        { name: "key", label: "Règle", type: "select", required: true, options: system.map((r) => ({ value: r.key, label: r.label })) },
+        { name: "label", label: "Libellé pour l'entreprise", hint: "Vide : libellé de la règle système." },
+        { name: "defaultPriority", label: "Priorité", type: "select", defaultValue: "medium",
+          options: [{ value: "high", label: "Haute" }, { value: "medium", label: "Moyenne" }, { value: "low", label: "Basse" }] },
+        { name: "enabled", label: "État", type: "select", options: [{ value: "true", label: "Activée" }, { value: "false", label: "Désactivée" }] },
+      ],
+      onSubmit: (f) => {
+        const label = f.label || system.find((r) => r.key === f.key)?.label || f.key;
+        return saveRule({
+          key: f.key, category: "custom", label, threshold: {}, defaultPriority: f.defaultPriority, actionLabel: label, enabled: f.enabled === "true",
+        });
+      },
+    });
+    if (v) rules.load();
+  }
   const cols: Array<Column<IntelligenceRule>> = [
     { key: "k", header: "Clé", render: (r) => <code>{r.key}</code> },
     { key: "l", header: "Libellé", render: (r) => r.label },
@@ -312,15 +346,10 @@ export function RulesSection({ canManage }: { canManage: boolean }) {
   return (
     <Card>
       <SectionLabel action={canManage && (
-        <Button size="sm" variant="ghost" disabled={rules.busy} onClick={() => {
-          const key = prompt("Clé de la règle à surcharger (ex. stock_reorder, cashflow_risk) :"); if (!key) return;
-          const label = prompt("Libellé :", key) ?? key;
-          void rules.run(() => saveRule({
-            key, category: "custom", label, threshold: {}, defaultPriority: "medium", actionLabel: label, enabled: true,
-          }));
-        }}>Surcharger une règle</Button>
+        <Button size="sm" variant="ghost" disabled={rules.busy || !rules.data} onClick={() => void override()}>Surcharger une règle</Button>
       )}>Règles configurables (§34)</SectionLabel>
       {rules.error && <div className="nx-error-text">{rules.error}</div>}
+      {form.dialog}
       <DataTable columns={cols} rows={rules.data ?? []} rowKey={(r) => r.id} empty="—" />
     </Card>
   );

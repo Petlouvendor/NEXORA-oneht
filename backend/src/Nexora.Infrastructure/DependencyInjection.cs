@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Nexora.Application.Abstractions;
 using Nexora.Application.Catalog;
 using Nexora.Application.Finance.Abstractions;
@@ -85,6 +86,10 @@ public static class DependencyInjection
 
         // Assistant d'installation (résumé fonctionnel §20) — SetupState est enregistré par l'hôte.
         services.AddScoped<Nexora.Application.Setup.ISetupInstaller, Nexora.Infrastructure.Setup.SetupInstaller>();
+        services.AddScoped<Nexora.Infrastructure.Setup.MigrationStatusProbe>();   // finalisation phase 18 : readiness, mise en production
+        // L'hôte web enregistre le vrai nom d'environnement avant ; à défaut (tests d'intégration) : variable d'environnement.
+        services.TryAddSingleton(_ => Nexora.Infrastructure.Operations.RuntimeEnvironment.From(config,
+            config["ASPNETCORE_ENVIRONMENT"] ?? config["DOTNET_ENVIRONMENT"] ?? "Production"));
 
         services.AddScoped<IUnitOfWork, UnitOfWork>();
         services.AddScoped<IUserRepository, UserRepository>();
@@ -98,6 +103,9 @@ public static class DependencyInjection
         services.AddScoped<IMfaService, SqlMfaService>();
 
         services.AddSingleton<IDateTimeProvider, SystemDateTimeProvider>();
+        // Date métier dans le fuseau de l'entreprise (analyse 2026-10 §5.5).
+        services.AddSingleton<CompanyTimeZoneCache>();
+        services.AddScoped<IBusinessCalendar, BusinessCalendar>();
         services.AddSingleton<IPasswordHasher>(new BcryptPasswordHasher());
         services.AddScoped<ITokenService, JwtTokenService>();
 
@@ -133,10 +141,16 @@ public static class DependencyInjection
         services.AddScoped<IStockLedger, EfStockLedger>();
         services.AddScoped<ICatalogStore, EfCatalogStore>();
         services.AddScoped<ICatalogPricingEngine, CatalogPricingEngine>();
+        services.AddScoped<ICatalogReferenceService, Nexora.Infrastructure.Catalog.SqlCatalogReferenceService>();
+        services.AddScoped<IUnitConverter, Nexora.Infrastructure.Catalog.SqlUnitConverter>();
+        services.AddScoped<IPromotionService, Nexora.Infrastructure.Catalog.SqlPromotionService>();
         services.AddScoped<ICatalogQueries, CatalogQueries>();
         services.AddScoped<IPurchasingStore, EfPurchasingStore>();
         services.AddScoped<IPurchasingQueries, SqlPurchasingQueries>();
         services.AddScoped<IInventoryOpsStore, EfInventoryOpsStore>();
+        services.AddScoped<IInventoryDocumentQueries, Nexora.Infrastructure.Inventory.SqlInventoryDocumentQueries>();
+        services.AddScoped<IPurchasingDocumentQueries, Nexora.Infrastructure.Purchasing.SqlPurchasingDocumentQueries>();
+        services.AddScoped<ISupplierTermsService, Nexora.Infrastructure.Purchasing.SqlSupplierTermsService>();
         services.AddScoped<IReorderService, SqlReorderService>();
 
         // Stock, entrepôts, lots & inventaires (Phase 24)
@@ -151,6 +165,11 @@ public static class DependencyInjection
         services.AddScoped<IPosLimits, SqlPosLimits>();
         services.AddScoped<ICreditControl, SqlCreditControl>();
         services.AddScoped<ISalesStore, EfSalesStore>();
+        services.AddScoped<ITenderOptionsQuery, Nexora.Infrastructure.Sales.SqlTenderOptionsQuery>();
+        services.AddScoped<IPosOfflineService, Nexora.Infrastructure.Sales.SqlPosOfflineService>();
+        services.AddScoped<Nexora.Application.Finance.ITreasuryManagementService, Nexora.Infrastructure.Finance.SqlTreasuryManagementService>();
+        services.AddScoped<Nexora.Application.Finance.IExpenseService, Nexora.Infrastructure.Finance.SqlExpenseService>();
+        services.AddScoped<Nexora.Application.Finance.Ledger.IChartManagementService, Nexora.Infrastructure.Finance.SqlChartManagementService>();
         services.AddScoped<ISalesReturnStore, EfSalesReturnStore>();
         // Guide fonctionnel développeur — validations Manager au POS (§10, §12, §13, §20).
         services.AddScoped<IPosApprovalNotifier, PosApprovalNotifier>();
@@ -279,11 +298,14 @@ public static class DependencyInjection
         services.AddScoped<Nexora.Application.Notifications.INotificationChannel,
             Nexora.Infrastructure.Notifications.TwilioSmsChannel>();
 
-        // Webhook de notification (distinct des webhooks sortants de l'API — Phase 12) :
-        // LoggingWebhookChannel conservé — le canal "webhook" in-app n'a pas de fournisseur
-        // tiers ; c'est l'HttpOutboundWebhookDispatcher qui gère les webhooks sortants.
-        services.AddScoped<Nexora.Application.Notifications.INotificationChannel,
-            Nexora.Infrastructure.Notifications.LoggingWebhookChannel>();
+        // Canaux sans fournisseur intégré (webhook de notification, WhatsApp) : « non configuré », jamais « envoyé ».
+        // Les webhooks sortants de l'API (Phase 12) passent par HttpOutboundWebhookDispatcher, pas par ce canal.
+        services.AddSingleton<Nexora.Application.Notifications.INotificationChannel>(
+            new Nexora.Infrastructure.Notifications.UnavailableChannel("webhook", "webhook de notification"));
+        services.AddSingleton<Nexora.Application.Notifications.INotificationChannel>(
+            new Nexora.Infrastructure.Notifications.UnavailableChannel("whatsapp", "WhatsApp"));
+        services.AddScoped<Nexora.Application.Notifications.INotificationDeliveryAdmin,
+            Nexora.Infrastructure.Notifications.SqlNotificationDeliveryAdmin>();
 
         // Push : FcmPushChannel (Singleton car FirebaseApp est un objet global process-unique).
         // Fail si Notifications:Fcm:Enabled=false.
@@ -312,6 +334,12 @@ public static class DependencyInjection
 
         // Intégrations, Paiements & Écosystème (Phase 12)
         services.AddSingleton<IOutboundWebhookDispatcher, HttpOutboundWebhookDispatcher>();
+        // Fournisseurs de paiement (finalisation phase 15) : simulation, MonCash, carte — transport HTTP substituable.
+        services.AddSingleton(sp => new ProviderHttp(sp.GetRequiredService<IConfiguration>(), sp.GetService<PaymentProviderHandler>()));
+        services.AddSingleton<IPaymentProvider, SimulatedPaymentProvider>();
+        services.AddSingleton<IPaymentProvider, MonCashPaymentProvider>();
+        services.AddSingleton<IPaymentProvider, CardPaymentProvider>();
+        services.AddSingleton<IPaymentProviderRegistry, PaymentProviderRegistry>();
         services.AddScoped<IIntegrationRegistry, SqlIntegrationRegistry>();
         services.AddScoped<IOutboundWebhookService, SqlOutboundWebhookService>();
         services.AddScoped<IPaymentGateway, SqlPaymentGateway>();

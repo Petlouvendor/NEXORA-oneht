@@ -11,7 +11,7 @@ namespace Nexora.Infrastructure.Administration;
 /// <summary>Paramètres résolus par périmètre (Phase 14 §2-3).</summary>
 public sealed class SqlSettingsService(NexoraDbContext db, IUnitOfWork uow, ITenantContext tenant) : ISettingsService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
     private static readonly string[] Scopes = ["system", "group", "company", "establishment"];
     private static int Rank(string s) => Array.IndexOf(Scopes, s);
 
@@ -149,35 +149,88 @@ public sealed class SqlSettingsService(NexoraDbContext db, IUnitOfWork uow, ITen
     }
 }
 
-/// <summary>Rôles personnalisés d'entreprise (Phase 14 §10-11).</summary>
-public sealed class SqlCustomRoleService(NexoraDbContext db, IUnitOfWork uow, ITenantContext tenant) : ICustomRoleService
+/// <summary>
+/// Rôles (Phase 14 §10-11 ; finalisation phase 11). Les rôles système sont listés en lecture seule (base de copie) ;
+/// les rôles de l'entreprise se créent, se renomment, changent de permissions, se désactivent et se réactivent.
+/// <b>Moindre privilège</b> : on n'accorde jamais à un rôle une permission que l'on ne détient pas soi-même — sinon
+/// un administrateur pourrait élargir un rôle qui lui est affecté et s'attribuer des droits.
+/// </summary>
+public sealed class SqlCustomRoleService(NexoraDbContext db, IUnitOfWork uow, ITenantContext tenant, IPermissionService permissions) : ICustomRoleService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record RoleRow(Guid Id, string Name, string? Description, bool SystemRole, string Status);
 
+    /// <summary>Rôles visibles : ceux de l'entreprise et les rôles système hors plateforme NEXORA.</summary>
     public async Task<IReadOnlyList<RoleDto>> ListAsync(CancellationToken ct = default)
     {
         var rows = await db.Database.SqlQuery<RoleRow>($"""
             SELECT id AS "Id", name AS "Name", description AS "Description", system_role AS "SystemRole", status AS "Status"
-            FROM nexora.role WHERE company_id = {Company} ORDER BY name
+            FROM nexora.role
+            WHERE company_id = {Company} OR (system_role AND name NOT LIKE 'platform\_%')
+            ORDER BY system_role, name
             """).ToListAsync(ct);
         var result = new List<RoleDto>();
         foreach (var r in rows) result.Add(await HydrateAsync(r, ct));
         return result;
     }
 
+    public async Task<IReadOnlyList<PermissionCatalogDto>> PermissionCatalogAsync(CancellationToken ct = default)
+    {
+        var held = await CallerPermissionsAsync(ct);
+        var rows = await db.Database.SqlQuery<PermRow>($"""
+            SELECT code AS "Code", COALESCE(NULLIF(name, ''), code) AS "Name", module AS "Module", action AS "Action"
+            FROM nexora.permission ORDER BY module, code
+            """).ToListAsync(ct);
+        return rows.Select(p => new PermissionCatalogDto(p.Code, p.Name, p.Module, p.Action, held.Contains(p.Code))).ToList();
+    }
+
+    private sealed record PermRow(string Code, string Name, string Module, string? Action);
+
+    private async Task<HashSet<string>> CallerPermissionsAsync(CancellationToken ct)
+        => tenant.UserId is { } uid
+            ? (await permissions.LoadProfileAsync(uid, ct)).PermissionsFor(Company).ToHashSet()
+            : [];
+
+    private async Task<Error?> CheckGrantableAsync(IEnumerable<string> codes, CancellationToken ct)
+    {
+        var held = await CallerPermissionsAsync(ct);
+        var refused = codes.Where(c => !held.Contains(c)).OrderBy(c => c).ToList();
+        return refused.Count == 0 ? null
+            : Error.Forbidden("roles.escalation",
+                $"Vous ne pouvez accorder que des permissions que vous détenez vous-même : {string.Join(", ", refused.Take(6))}{(refused.Count > 6 ? "…" : "")}.");
+    }
+
+    private async Task<Error?> CheckNameAsync(string name, Guid? exceptId, CancellationToken ct)
+    {
+        if (name.Length is < 2 or > 60) return Error.Validation("roles.name", "Nom de rôle invalide (2 à 60 caractères).");
+        var exists = await db.Database.SqlQuery<bool>($"""
+            SELECT EXISTS(SELECT 1 FROM nexora.role
+                          WHERE (company_id = {Company} OR system_role) AND lower(name) = {name.ToLowerInvariant()}
+                            AND ({exceptId}::uuid IS NULL OR id <> {exceptId}::uuid)) AS "Value"
+            """).FirstAsync(ct);
+        return exists ? Error.Conflict("roles.duplicate", "Un rôle porte déjà ce nom.") : null;
+    }
+
+    private async Task<(List<string> Valid, Error? Error)> ValidCodesAsync(IEnumerable<string> requested, CancellationToken ct)
+    {
+        var codes = requested.Select(p => p.Trim()).Where(p => p.Length > 0).Distinct().ToArray();
+        var valid = await db.Database.SqlQuery<string>($"""
+            SELECT code AS "Value" FROM nexora.permission WHERE code = ANY({codes})
+            """).ToListAsync(ct);
+        var unknown = codes.Except(valid).ToList();
+        return unknown.Count > 0
+            ? (valid, Error.Validation("roles.permission", $"Permission(s) inconnue(s) : {string.Join(", ", unknown)}."))
+            : (valid, null);
+    }
+
     public async Task<Result<Guid>> CreateAsync(CreateRoleRequest request, CancellationToken ct = default)
     {
         var name = request.Name?.Trim() ?? "";
-        if (name.Length is < 2 or > 60) return Error.Validation("roles.name", "Nom de rôle invalide (2 à 60 caractères).");
+        if (await CheckNameAsync(name, null, ct) is { } nameError) return nameError;
+        if (request.Description is { Length: > 300 }) return Error.Validation("roles.description", "Description limitée à 300 caractères.");
 
-        var exists = await db.Database.SqlQuery<int>($"""
-            SELECT COUNT(*)::int AS "Value" FROM nexora.role WHERE company_id = {Company} AND lower(name) = {name.ToLowerInvariant()}
-            """).FirstAsync(ct);
-        if (exists > 0) return Error.Conflict("roles.duplicate", "Un rôle porte déjà ce nom.");
-
-        var codes = new HashSet<string>(request.Permissions?.Select(p => p.Trim()).Where(p => p.Length > 0) ?? []);
+        var requested = new HashSet<string>(request.Permissions ?? []);
         if (request.BaseRoleId is { } baseId)
         {
             var baseCodes = await db.Database.SqlQuery<string>($"""
@@ -186,24 +239,21 @@ public sealed class SqlCustomRoleService(NexoraDbContext db, IUnitOfWork uow, IT
                 JOIN nexora.role r ON r.id = rp.role_id
                 WHERE rp.role_id = {baseId} AND (r.company_id = {Company} OR r.system_role)
                 """).ToListAsync(ct);
-            foreach (var c in baseCodes) codes.Add(c);
+            foreach (var c in baseCodes) requested.Add(c);
         }
-
-        var codeArray = codes.ToArray();
-        var validCodes = await db.Database.SqlQuery<string>($"""
-            SELECT code AS "Value" FROM nexora.permission WHERE code = ANY({codeArray})
-            """).ToListAsync(ct);
-        var unknown = codes.Except(validCodes).ToList();
-        if (unknown.Count > 0) return Error.Validation("roles.permission", $"Permission(s) inconnue(s) : {string.Join(", ", unknown)}.");
+        var (valid, unknown) = await ValidCodesAsync(requested, ct);
+        if (unknown is not null) return unknown;
+        if (valid.Count == 0) return Error.Validation("roles.permission", "Un rôle doit accorder au moins une permission.");
+        if (await CheckGrantableAsync(valid, ct) is { } escalation) return escalation;
 
         var id = Guid.NewGuid();
         await uow.ExecuteInTransactionAsync(async token =>
         {
             await db.Database.ExecuteSqlAsync($"""
                 INSERT INTO nexora.role (id, company_id, name, description, system_role, status)
-                VALUES ({id}, {Company}, {name}, {request.Description}, false, 'active')
+                VALUES ({id}, {Company}, {name}, {request.Description?.Trim()}, false, 'active')
                 """, token);
-            foreach (var code in validCodes)
+            foreach (var code in valid)
                 await db.Database.ExecuteSqlAsync($"""
                     INSERT INTO nexora.role_permission (role_id, permission_id)
                     SELECT {id}, id FROM nexora.permission WHERE code = {code}
@@ -214,18 +264,32 @@ public sealed class SqlCustomRoleService(NexoraDbContext db, IUnitOfWork uow, IT
         return Result.Success(id);
     }
 
+    public async Task<Result> UpdateAsync(Guid roleId, UpdateRoleRequest request, CancellationToken ct = default)
+    {
+        var role = await LoadOwnedAsync(roleId, ct);
+        if (role is null) return Error.NotFound("roles.role", "Rôle introuvable.");
+        if (role.SystemRole) return Error.Forbidden("roles.system", "Un rôle système ne se modifie pas : créez un rôle à partir de lui.");
+        var name = request.Name?.Trim() ?? "";
+        if (await CheckNameAsync(name, roleId, ct) is { } nameError) return nameError;
+        if (request.Description is { Length: > 300 }) return Error.Validation("roles.description", "Description limitée à 300 caractères.");
+        await db.Database.ExecuteSqlAsync($"""
+            UPDATE nexora.role SET name = {name}, description = {request.Description?.Trim()}, updated_at = now() WHERE id = {roleId}
+            """, ct);
+        return Result.Success();
+    }
+
     public async Task<Result> SetPermissionsAsync(Guid roleId, SetRolePermissionsRequest request, CancellationToken ct = default)
     {
         var role = await LoadOwnedAsync(roleId, ct);
-        if (role is null) return Error.NotFound("roles.role", "Rôle introuvable ou non modifiable.");
+        if (role is null) return Error.NotFound("roles.role", "Rôle introuvable.");
         if (role.SystemRole) return Error.Forbidden("roles.system", "Un rôle système ne se modifie pas.");
 
-        var codes = (request.Permissions ?? []).Select(p => p.Trim()).Where(p => p.Length > 0).Distinct().ToArray();
-        var valid = await db.Database.SqlQuery<string>($"""
-            SELECT code AS "Value" FROM nexora.permission WHERE code = ANY({codes})
-            """).ToListAsync(ct);
-        var unknown = codes.Except(valid).ToList();
-        if (unknown.Count > 0) return Error.Validation("roles.permission", $"Permission(s) inconnue(s) : {string.Join(", ", unknown)}.");
+        var (valid, unknown) = await ValidCodesAsync(request.Permissions ?? [], ct);
+        if (unknown is not null) return unknown;
+        if (valid.Count == 0) return Error.Validation("roles.permission", "Un rôle doit accorder au moins une permission.");
+        // Seuls les AJOUTS sont contrôlés : retirer une permission ne donne jamais de droit.
+        var current = (await HydrateAsync(role, ct)).Permissions;
+        if (await CheckGrantableAsync(valid.Except(current), ct) is { } escalation) return escalation;
 
         await uow.ExecuteInTransactionAsync(async token =>
         {
@@ -243,31 +307,55 @@ public sealed class SqlCustomRoleService(NexoraDbContext db, IUnitOfWork uow, IT
 
     public async Task<Result<RoleDto>> PreviewAsync(Guid roleId, CancellationToken ct = default)
     {
-        var role = await LoadOwnedAsync(roleId, ct);
+        var role = await db.Database.SqlQuery<RoleRow>($"""
+            SELECT id AS "Id", name AS "Name", description AS "Description", system_role AS "SystemRole", status AS "Status"
+            FROM nexora.role WHERE id = {roleId} AND (company_id = {Company} OR system_role)
+            """).FirstOrDefaultAsync(ct);
         return role is null ? Error.NotFound("roles.role", "Rôle introuvable.") : Result.Success(await HydrateAsync(role, ct));
     }
 
+    /// <summary>Désactiver un rôle lui retire tout effet : ses affectations ne donnent plus aucune permission
+    /// (le chargement des permissions ignore les rôles inactifs). D'où la confirmation exigée s'il est affecté.</summary>
     public async Task<Result> DisableAsync(Guid roleId, bool force, CancellationToken ct = default)
     {
         var role = await LoadOwnedAsync(roleId, ct);
         if (role is null) return Error.NotFound("roles.role", "Rôle introuvable.");
         if (role.SystemRole) return Error.Forbidden("roles.system", "Un rôle système ne se désactive pas.");
+        if (role.Status != "active") return Error.Conflict("roles.inactive", "Ce rôle est déjà désactivé.");
 
-        var assigned = await db.Database.SqlQuery<int>($"""
-            SELECT COUNT(*)::int AS "Value" FROM nexora.user_role WHERE role_id = {roleId}
-            """).FirstAsync(ct);
+        var assigned = await ActiveAssignmentsAsync(roleId, ct);
         if (assigned > 0 && !force)
             return Error.Conflict("roles.assigned",
-                $"Rôle assigné à {assigned} utilisateur(s) — retirez les affectations ou forcez la désactivation (§45).");
+                $"Rôle affecté à {assigned} utilisateur(s) : ils perdront les permissions de ce rôle. Confirmez la désactivation.");
 
         await db.Database.ExecuteSqlAsync($"UPDATE nexora.role SET status = 'inactive', updated_at = now() WHERE id = {roleId}", ct);
         return Result.Success();
     }
 
+    public async Task<Result> EnableAsync(Guid roleId, CancellationToken ct = default)
+    {
+        var role = await LoadOwnedAsync(roleId, ct);
+        if (role is null) return Error.NotFound("roles.role", "Rôle introuvable.");
+        if (role.SystemRole) return Error.Forbidden("roles.system", "Un rôle système ne se modifie pas.");
+        if (role.Status == "active") return Error.Conflict("roles.active", "Ce rôle est déjà actif.");
+        // Réactiver redonne les permissions aux utilisateurs encore affectés : même règle que pour les accorder.
+        if (await CheckGrantableAsync((await HydrateAsync(role, ct)).Permissions, ct) is { } escalation) return escalation;
+        await db.Database.ExecuteSqlAsync($"UPDATE nexora.role SET status = 'active', updated_at = now() WHERE id = {roleId}", ct);
+        return Result.Success();
+    }
+
     private Task<RoleRow?> LoadOwnedAsync(Guid roleId, CancellationToken ct) => db.Database.SqlQuery<RoleRow>($"""
         SELECT id AS "Id", name AS "Name", description AS "Description", system_role AS "SystemRole", status AS "Status"
-        FROM nexora.role WHERE id = {roleId} AND company_id = {Company}
+        FROM nexora.role WHERE id = {roleId} AND (company_id = {Company} OR (system_role AND name NOT LIKE 'platform\_%'))
         """).FirstOrDefaultAsync(ct);
+
+    /// <summary>Affectations en cours dans l'entreprise (ou son groupe) — jamais celles des autres entreprises.</summary>
+    private Task<int> ActiveAssignmentsAsync(Guid roleId, CancellationToken ct) => db.Database.SqlQuery<int>($"""
+        SELECT COUNT(*)::int AS "Value" FROM nexora.user_role ur JOIN nexora.access_scope sc ON sc.id = ur.scope_id
+        WHERE ur.role_id = {roleId} AND ur.revoked_at IS NULL AND (ur.valid_until IS NULL OR ur.valid_until > now())
+          AND (sc.company_id = {Company}
+               OR (sc.group_id IS NOT NULL AND sc.group_id = (SELECT group_id FROM nexora.company WHERE id = {Company})))
+        """).FirstAsync(ct);
 
     private async Task<RoleDto> HydrateAsync(RoleRow r, CancellationToken ct)
     {
@@ -276,9 +364,6 @@ public sealed class SqlCustomRoleService(NexoraDbContext db, IUnitOfWork uow, IT
             JOIN nexora.permission p ON p.id = rp.permission_id
             WHERE rp.role_id = {r.Id} ORDER BY p.code
             """).ToListAsync(ct);
-        var count = await db.Database.SqlQuery<int>($"""
-            SELECT COUNT(*)::int AS "Value" FROM nexora.user_role WHERE role_id = {r.Id}
-            """).FirstAsync(ct);
-        return new RoleDto(r.Id, r.Name, r.Description, r.SystemRole, r.Status, count, perms);
+        return new RoleDto(r.Id, r.Name, r.Description, r.SystemRole, r.Status, await ActiveAssignmentsAsync(r.Id, ct), perms);
     }
 }

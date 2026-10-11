@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { apiFetch, configureApiClient } from "@/core/apiClient";
+import { ApiError, apiFetch, clearStepUpTokens, configureApiClient } from "@/core/apiClient";
+import { secureGet, secureSet, secureStoreAvailable } from "@/shared/secureStore";
 import { config } from "@/core/config";
 import type { AuthTokenResponse, CurrentUser } from "@/auth/types";
 import { revokeServerSession } from "@/auth/accountApi";
@@ -38,6 +39,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Recette Phase 55 AUTH-004 : la session serveur est révoquée, plus seulement le navigateur vidé.
     void revokeServerSession(tokenRef.current);
     void clearToken();
+    clearStepUpTokens();
+    // Le profil gardé pour le hors ligne part avec la session.
+    if (secureStoreAvailable()) void secureSet(PROFILE_CACHE, null).catch(() => {});
     localStorage.removeItem(config.companyStorageKey);
     setToken(null);
     setUser(null);
@@ -45,10 +49,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setMfaToken(null);
   }, []);
 
+  // Jeton d'accès court renouvelé par le cookie de rafraîchissement (HttpOnly, jamais lisible ici).
+  const refresh = useCallback(async (): Promise<string | null> => {
+    for (let i = 0; i < 2; i++) {
+      let r: Response;
+      try {
+        r = await fetch(`${config.apiBaseUrl}/auth/refresh`, { method: "POST", credentials: "same-origin", headers: { Accept: "application/json" } });
+      } catch {
+        return null;   // hors ligne : on garde le jeton en place
+      }
+      if (r.ok) {
+        const res = (await r.json()) as AuthTokenResponse;
+        tokenRef.current = res.accessToken;   // la requête rejouée l'utilise tout de suite
+        await saveToken(res.accessToken);
+        setToken(res.accessToken);
+        return res.accessToken;
+      }
+      // Un autre onglet vient de renouveler la session : on réessaie avec son cookie.
+      const body = await r.json().catch(() => null) as { title?: string } | null;
+      if (body?.title !== "auth.refresh_race") return null;
+      await new Promise((ok) => setTimeout(ok, 400));
+    }
+    return null;
+  }, []);
+
   configureApiClient({
-    token: () => token,
+    token: () => tokenRef.current,
     company: () => activeCompanyId,
     onUnauthorized: logout,
+    refresh,
   });
 
   const setActiveCompany = useCallback((companyId: string) => {
@@ -56,8 +85,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setActive(companyId);
   }, []);
 
-  const acceptToken = useCallback((res: AuthTokenResponse, companyId?: string) => {
-    void saveToken(res.accessToken);
+  const acceptToken = useCallback(async (res: AuthTokenResponse, companyId?: string) => {
+    // Jeton écrit AVANT d'entrer dans l'application : un rechargement immédiat ne perd plus la session.
+    await saveToken(res.accessToken);
     setMfaToken(null);
     setToken(res.accessToken);
     setUser(res.user);
@@ -74,7 +104,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setMfaToken(res.mfaToken);
       return;
     }
-    acceptToken(res, companyId);
+    await acceptToken(res, companyId);
   }, [acceptToken]);
 
   const verifyMfa = useCallback(async (code: string) => {
@@ -83,7 +113,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       method: "POST",
       body: JSON.stringify({ mfaToken, code }),
     });
-    acceptToken(res);
+    await acceptToken(res);
   }, [mfaToken, acceptToken]);
 
   const cancelMfa = useCallback(() => setMfaToken(null), []);
@@ -111,19 +141,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       try {
         const me = await apiFetch<MeResponse>("/me");
         if (!cancelled) {
-          setUser((prev) => ({
-            id: me.userId,
-            email: prev?.email ?? "",
-            fullName: prev?.fullName ?? null,
-            mfaEnabled: prev?.mfaEnabled ?? false,
-            companies: me.memberships.map((m) => ({
-              companyId: m.companyId, companyName: m.companyName, groupId: m.groupId, roles: m.roles,
-            })),
-            permissions: me.permissions,
-          }));
+          setUser((prev) => {
+            const next: CurrentUser = {
+              id: me.userId,
+              email: prev?.email ?? "",
+              fullName: prev?.fullName ?? null,
+              mfaEnabled: prev?.mfaEnabled ?? false,
+              companies: me.memberships.map((m) => ({
+                companyId: m.companyId, companyName: m.companyName, groupId: m.groupId, roles: m.roles,
+              })),
+              permissions: me.permissions,
+            };
+            // Phase 6 : profil gardé chiffré pour rouvrir l'application sans réseau (caisse hors ligne).
+            if (secureStoreAvailable()) void secureSet(PROFILE_CACHE, next).catch(() => {});
+            return next;
+          });
         }
-      } catch {
-        if (!cancelled) logout();
+      } catch (e) {
+        // Seul un refus du serveur ferme la session. Sans réseau (ou serveur injoignable), on reprend le dernier
+        // profil connu : la caisse continue en file d'attente, le serveur revérifiera tout à la synchronisation.
+        const refused = e instanceof ApiError && (e.problem.status === 401 || e.problem.status === 403);
+        const cached = !refused && secureStoreAvailable() ? await secureGet<CurrentUser>(PROFILE_CACHE).catch(() => null) : null;
+        if (!cancelled) {
+          if (cached) setUser(cached);
+          else logout();
+        }
       } finally {
         if (!cancelled) setReady(true);
       }
@@ -148,6 +190,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;
 }
+
+const PROFILE_CACHE = "auth.profile";
 
 export function useAuth(): AuthState {
   const ctx = useContext(AuthCtx);

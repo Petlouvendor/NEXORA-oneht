@@ -1,9 +1,12 @@
 using Asp.Versioning;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Nexora.Api.Security;
 using Nexora.Application.Operations;
 using Nexora.Application.Security;
 using Nexora.Contracts.Operations;
+using Nexora.Infrastructure.Operations;
+using Nexora.Infrastructure.Setup;
 
 namespace Nexora.Api.Controllers;
 
@@ -16,6 +19,42 @@ namespace Nexora.Api.Controllers;
 [Route("api/v{version:apiVersion}/operations")]
 public sealed class OperationsController(IOperationsService operations) : ApiControllerBase
 {
+    // --- Finalisation phase 18 : état de production --------------------------
+
+    /// <summary>
+    /// Version et commit déployés, sondes readiness, écart de migrations, contrôles de configuration de production
+    /// (secrets, HTTPS, proxy, observabilité, journaux, planificateur, e-mail). Lecture seule, sans secret.
+    /// </summary>
+    [HttpGet("~/api/v{version:apiVersion}/ops/production")]
+    [RequirePermission(Permissions.Operations.View)]
+    public async Task<IActionResult> Production(
+        [FromServices] HealthCheckService health, [FromServices] MigrationStatusProbe migrationProbe,
+        [FromServices] IConfiguration configuration, [FromServices] RuntimeEnvironment runtime, CancellationToken ct)
+    {
+        var report = await health.CheckHealthAsync(c => c.Tags.Contains("ready"), ct);
+        var probes = report.Entries.Select(e => new HealthProbeDto(e.Key, e.Value.Status.ToString(), e.Value.Description,
+            Math.Round(e.Value.Duration.TotalMilliseconds, 1))).ToList();
+
+        MigrationStatusDto? migrations = null;
+        try
+        {
+            var m = await migrationProbe.GetAsync(ct);
+            migrations = new(m.Embedded, m.Applied, m.LatestApplied, m.LatestEmbedded, m.Pending, m.Drifted, m.Unknown);
+        }
+        catch (Exception) when (!ct.IsCancellationRequested)
+        {
+            // Base injoignable : la sonde « database » le dit déjà.
+        }
+
+        var checks = ProductionConfiguration.Evaluate(configuration, runtime.Name)
+            .Select(c => new ProductionCheckDto(c.Key, c.Label, c.Category, c.Status, c.Detail)).ToList();
+        var overall = report.Status == HealthStatus.Unhealthy || checks.Any(c => c.Status == "fail") ? "fail"
+            : report.Status == HealthStatus.Degraded || checks.Any(c => c.Status == "warn") ? "warn" : "pass";
+        var now = DateTimeOffset.UtcNow;
+        return Ok(new ProductionReadinessDto(runtime.Name, runtime.Version, runtime.Commit, runtime.StartedAt,
+            (long)(now - runtime.StartedAt).TotalSeconds, overall, probes, migrations, checks, now));
+    }
+
     // --- §29, §56 État système ---------------------------------------------
 
     [HttpGet("~/api/v{version:apiVersion}/system/status")]

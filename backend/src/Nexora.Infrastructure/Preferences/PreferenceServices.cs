@@ -109,7 +109,7 @@ public sealed class SqlUserPreferenceService(NexoraDbContext db, ITenantContext 
 /// <summary>Personnalisation de l'entreprise active (Phase 13 §35).</summary>
 public sealed class SqlCompanyBrandingService(NexoraDbContext db, ITenantContext tenant) : ICompanyBrandingService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
     private static readonly string[] ReceiptFormats = ["standard", "compact", "detailed"];
 
     private sealed record Row(

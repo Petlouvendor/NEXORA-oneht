@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 import { useAuth } from "@/auth/AuthContext";
 import { useToast } from "@/shared/Toast";
 import { Badge, Button, ConfirmDialog, DataTable, EmptyState, Field, Select, Spinner, TextInput, type Column } from "@/shared/ui";
-import { dateShort, money } from "@/shared/format";
+import { dateShort, money, todayIso } from "@/shared/format";
 import {
   approveExpense, approveRefund, EXPENSE_CATEGORIES, exportCustomerReport, listCustomerReports, listPendingExpenses,
   listPendingRefunds, rejectExpense, rejectRefund, runCustomerReport,
@@ -85,7 +85,7 @@ export function CustomerApprovalsPanel() {
   );
 }
 
-const iso = (d: Date) => d.toISOString().slice(0, 10);
+const iso = (d: Date) => todayIso(d);
 
 /** Rapports clients (§26) : tableau calculé par le serveur, export CSV selon `customers.export`. */
 export function CustomerReportsPanel() {

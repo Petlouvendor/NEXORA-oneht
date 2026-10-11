@@ -32,6 +32,7 @@ public sealed class InvoicesController(IDocumentService documents, IDocumentQuer
         => FromResult(await documents.IssueAsync(new IssueDocumentRequest(type, "sale", saleId), ct));
 
     [HttpPost("{id:guid}/cancel")]
+    [RequireStepUp(StepUpPurposes.Cancellation)]
     [RequirePermission(Permissions.Documents.Cancel)]
     public async Task<IActionResult> Cancel(Guid id, [FromBody] CancelDocumentRequest r, CancellationToken ct)
         => FromResult(await documents.CancelAsync(id, r, ct));

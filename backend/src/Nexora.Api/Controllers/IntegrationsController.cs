@@ -51,6 +51,16 @@ public sealed class IntegrationsController(
     public async Task<IActionResult> TestConnector(Guid id, CancellationToken ct)
         => FromResult(await registry.TestConnectionAsync(id, ct));
 
+    /// <summary>Identifiants fournisseur (écriture seule, chiffrés au repos ; jamais relus).</summary>
+    [HttpPut("connectors/{id:guid}/credentials")]
+    [RequirePermission(Permissions.Integrations.Configure)]
+    public async Task<IActionResult> SetCredentials(Guid id, [FromBody] SetConnectorCredentialsRequest r, CancellationToken ct)
+        => FromResult(await registry.SetCredentialsAsync(id, r, ct));
+
+    [HttpGet("payment-providers")]
+    [RequirePermission(Permissions.Integrations.View)]
+    public IActionResult PaymentProviders() => Ok(registry.Providers());
+
     [HttpPost("connectors/{id:guid}/rotate-secret")]
     [RequirePermission(Permissions.Integrations.Configure)]
     public async Task<IActionResult> RotateSecret(Guid id, CancellationToken ct)
@@ -76,13 +86,14 @@ public sealed class IntegrationsController(
     public async Task<IActionResult> TestIntegration(Guid id, CancellationToken ct) => FromResult(await registry.TestConnectionAsync(id, ct));
 
     /// <summary>
-    /// « Synchroniser » un connecteur (§37, §58) : dans cette architecture à adaptateur simulé
-    /// (§42), c'est la même opération qu'un test de connexion — elle rafraîchit <c>last_sync_at</c>.
-    /// Un connecteur réel ferait ici un vrai tirage delta/full selon <c>connector_type</c>.
+    /// « Synchroniser » (§37, §58) : aucun connecteur ne synchronise encore de données. La route le dit au lieu de
+    /// renvoyer un test de connexion présenté comme une synchronisation (finalisation phase 15).
     /// </summary>
     [HttpPost("{id:guid}/sync")]
     [RequirePermission(Permissions.Integrations.Configure)]
-    public async Task<IActionResult> SyncIntegration(Guid id, CancellationToken ct) => FromResult(await registry.TestConnectionAsync(id, ct));
+    public IActionResult SyncIntegration(Guid id)
+        => FromResult(Nexora.Domain.Common.Result.Failure(Nexora.Domain.Common.Error.Validation("integrations.sync_unsupported",
+            "Aucune synchronisation de données n'est disponible pour ce connecteur ; utilisez « Tester la connexion ».")));
 
     // --- Abstraction des paiements (§7-11) -------------------------
 
@@ -108,7 +119,13 @@ public sealed class IntegrationsController(
 
     /// <summary>Remboursement d'un paiement électronique : en plus de l'accès aux paiements, exige le
     /// droit de rembourser (guide §10 — jamais le caissier seul).</summary>
+    /// <summary>Paiement réel : interroge le fournisseur et confirme s'il est payé au bon montant.</summary>
+    [HttpPost("payments/intents/{id:guid}/verify")]
+    [RequirePermission(Permissions.Integrations.Payments)]
+    public async Task<IActionResult> VerifyIntent(Guid id, CancellationToken ct) => FromResult(await payments.VerifyAsync(id, ct));
+
     [HttpPost("payments/intents/{id:guid}/refund")]
+    [RequireStepUp(StepUpPurposes.Payment)]
     [RequirePermission(Permissions.Integrations.Payments)]
     [RequirePermission(Permissions.Pos.Refund)]
     public async Task<IActionResult> Refund(Guid id, [FromBody] RefundPaymentRequest r, CancellationToken ct)
@@ -202,6 +219,14 @@ public sealed class IntegrationsController(
     [HttpPost("bank/statements/{id:guid}/validate")]
     [RequirePermission(Permissions.Integrations.Bank)]
     public async Task<IActionResult> ValidateStatement(Guid id, CancellationToken ct) => FromResult(await bank.ValidateAsync(id, ct));
+
+    [HttpGet("bank/lines/{lineId:guid}/candidates")]
+    [RequirePermission(Permissions.Integrations.Bank)]
+    public async Task<IActionResult> LineCandidates(Guid lineId, CancellationToken ct) => FromResult(await bank.CandidatesAsync(lineId, ct));
+
+    [HttpPost("bank/lines/{lineId:guid}/unmatch")]
+    [RequirePermission(Permissions.Integrations.Bank)]
+    public async Task<IActionResult> UnmatchLine(Guid lineId, CancellationToken ct) => FromResult(await bank.UnmatchLineAsync(lineId, ct));
 
     [HttpPost("bank/lines/{lineId:guid}/match")]
     [RequirePermission(Permissions.Integrations.Bank)]

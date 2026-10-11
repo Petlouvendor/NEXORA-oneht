@@ -6,6 +6,7 @@ using Nexora.Application.Finance.Periods;
 using Nexora.Application.Finance.Reports;
 using Nexora.Application.Finance.Reversals;
 using Nexora.Application.Security;
+using Nexora.Domain.Common;
 using Nexora.Contracts.Finance;
 
 namespace Nexora.Api.Controllers;
@@ -25,11 +26,13 @@ public sealed class AccountingController(
         => Ok(await periods.ListAsync(ct));
 
     [HttpPost("periods/{id:guid}/close")]
+    [RequireStepUp(StepUpPurposes.AccountingValidation)]
     [RequirePermission(Permissions.Accounting.ClosePeriod)]
     public async Task<IActionResult> Close(Guid id, CancellationToken ct)
         => FromResult(await periodService.CloseAsync(id, ct));
 
     [HttpPost("periods/{id:guid}/reopen")]
+    [RequireStepUp(StepUpPurposes.AccountingValidation)]
     [RequirePermission(Permissions.Accounting.ReopenPeriod)]
     public async Task<IActionResult> Reopen(Guid id, [FromBody] ReverseEntryRequest body, CancellationToken ct)
         => FromResult(await periodService.ReopenAsync(id, body.Reason, ct));
@@ -37,6 +40,7 @@ public sealed class AccountingController(
     // --- Extourne (§28) -------------------------------------------------
 
     [HttpPost("journal-entries/{id:guid}/reverse")]
+    [RequireStepUp(StepUpPurposes.AccountingValidation)]
     [RequirePermission(Permissions.Accounting.Reverse)]
     public async Task<IActionResult> Reverse(Guid id, [FromBody] ReverseEntryRequest body, CancellationToken ct)
         => FromResult(await reversals.ReverseAsync(id, body.Reason, body.ReversalDate, ct));
@@ -52,7 +56,11 @@ public sealed class AccountingController(
     [RequirePermission(Permissions.Accounting.View)]
     public async Task<IActionResult> GeneralLedger(
         [FromQuery] string account, [FromQuery] DateOnly from, [FromQuery] DateOnly to, CancellationToken ct)
-        => Ok(await reports.GeneralLedgerAsync(account, from, to, ct));
+    {
+        // Compte inconnu : 404 explicite (une exception non gérée renvoyait une erreur 500).
+        try { return Ok(await reports.GeneralLedgerAsync(account, from, to, ct)); }
+        catch (InvalidOperationException ex) { throw new DomainException(Error.NotFound("accounting.account_not_found", ex.Message)); }
+    }
 
     [HttpGet("reports/income-statement")]
     [RequirePermission(Permissions.Accounting.View)]

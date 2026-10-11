@@ -95,6 +95,12 @@ public sealed record ApprovedCreditOverride(Guid RequestId, Guid? ApprovedBy, st
 
 // --- Stores -------------------------------------------------------------
 
+/// <summary>Moyens d'encaissement de la caisse et comptes compatibles (phase 5).</summary>
+public interface ITenderOptionsQuery
+{
+    Task<IReadOnlyList<Nexora.Contracts.Sales.TenderMethodOptionDto>> ListAsync(string currency, CancellationToken ct = default);
+}
+
 public interface ISalesStore
 {
     Task<Guid> ResolveCurrencyIdAsync(string code, CancellationToken ct = default);
@@ -102,15 +108,23 @@ public interface ISalesStore
     Task<Guid?> FindSaleByOperationAsync(Guid operationUuid, CancellationToken ct = default);
     Task<Domain.Sales.Sale?> GetSaleWithLinesAsync(Guid saleId, CancellationToken ct = default);
     Task AddSaleAsync(Domain.Sales.Sale sale, CancellationToken ct = default);
+    /// <summary>Restaurant (phase 13) : lignes ajoutées à une vente en attente.</summary>
+    Task AddSaleLinesAsync(IReadOnlyList<Domain.Sales.SaleLine> lines, CancellationToken ct = default);
     Task AddPaymentAsync(Domain.Finance.Payment payment, CancellationToken ct = default);
     Task AddSalePaymentAsync(Domain.Sales.SalePayment link, CancellationToken ct = default);
     Task AddSalePromotionAsync(Domain.Sales.SalePromotion promo, CancellationToken ct = default);
+    /// <summary>Incrémente l'usage d'un coupon s'il reste sous sa limite ; <c>false</c> = coupon épuisé.</summary>
+    Task<bool> ConsumeCouponAsync(Guid couponId, CancellationToken ct = default);
     Task<Guid?> DefaultTaxIdAsync(Guid productId, CancellationToken ct = default);
     Task<bool> ProductRequiresStockAsync(Guid productId, CancellationToken ct = default);
     Task<bool> ProductTracksLotsAsync(Guid productId, CancellationToken ct = default);
     Task<string> ProductNameAsync(Guid productId, CancellationToken ct = default);
     Task MarkSaleStatusAsync(Guid saleId, string status, CancellationToken ct = default);
     Task<Guid?> SessionCashAccountAsync(Guid sessionId, CancellationToken ct = default);
+    /// <summary>Comptes d'encaissement de l'entreprise parmi <paramref name="ids"/> (phase 5).</summary>
+    Task<IReadOnlyList<TenderAccountInfo>> TenderAccountsAsync(IReadOnlyCollection<Guid> ids, CancellationToken ct = default);
+    /// <summary>Moyens de paiement de l'entreprise parmi <paramref name="ids"/> (phase 5).</summary>
+    Task<IReadOnlyList<TenderMethodInfo>> TenderMethodsAsync(IReadOnlyCollection<Guid> ids, CancellationToken ct = default);
     /// <summary>Succursale de l'emplacement de stock (résumé fonctionnel §4 : chaque vente appartient à une succursale).</summary>
     Task<Guid?> LocationEstablishmentAsync(Guid inventoryLocationId, CancellationToken ct = default);
 }

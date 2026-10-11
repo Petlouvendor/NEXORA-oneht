@@ -1,43 +1,50 @@
+import { Suspense } from "react";
 import { createBrowserRouter, Navigate } from "react-router-dom";
 import { AppLayout } from "@/app/AppLayout";
+import { lazyPage } from "@/app/lazyPage";
 import { ProtectedRoute, RequirePermission } from "@/auth/ProtectedRoute";
 import { ALL_NAV } from "@/app/nav";
 import { LoginPage } from "@/auth/LoginPage";
-import { SetupPage } from "@/setup/SetupPage";
-import { DashboardPage } from "@/dashboard/DashboardPage";
-import { AdminCenterPage } from "@/admin/AdminCenterPage";
-import { CataloguePage } from "@/catalog/CataloguePage";
-import { StockCenterPage } from "@/inventory/StockCenterPage";
-import { OrdersPage } from "@/sales/OrdersPage";
-import { PurchasingPage } from "@/purchasing/PurchasingPage";
-import { PartiesPage } from "@/parties/PartiesPage";
-import { CustomerAccountPage } from "@/customers/CustomerAccountPage";
-import { RecoveryPage } from "@/credit/RecoveryPage";
-import { TreasuryCockpitPage } from "@/finance/TreasuryCockpitPage";
-import { LedgerPage } from "@/accounting/LedgerPage";
-import { DocumentsPage } from "@/documents/DocumentsPage";
-import { AnalyticsPage } from "@/reports/AnalyticsPage";
-import { IntelligencePage } from "@/intelligence/IntelligencePage";
-import { FieldOpsPage } from "@/mobile/FieldOpsPage";
-import { GedPage } from "@/ged/GedPage";
-import { HrPage } from "@/hr/HrPage";
-import { EmployeePage } from "@/hr/EmployeePage";
-import { PayrollRunPage } from "@/hr/PayrollRunPage";
-import { AdvancePage, MyHrPage } from "@/hr/MyHrPage";
-import { GroupPage } from "@/group/GroupPage";
-import { NotificationsPage } from "@/notifications/NotificationsPage";
-import { ContinuityPage } from "@/continuity/ContinuityPage";
-import { OperationsPage } from "@/operations/OperationsPage";
-import { PlatformConsolePage } from "@/platform/PlatformConsolePage";
-import { BillingPortalPage } from "@/billing/BillingPortalPage";
-import { MigrationWizardPage } from "@/migration/MigrationWizardPage";
-import { IntegrationsCenterPage } from "@/integrations/IntegrationsCenterPage";
+// La caisse reste dans le paquet principal : elle doit s'ouvrir hors ligne sans télécharger d'écran à la demande.
 import { PosPage } from "@/pos/PosPage";
-import { SectorSettingsPage } from "@/sectors/SectorSettingsPage";
-import { SecurityPage } from "@/security/SecurityPage";
-import { SettingsPage } from "@/settings/SettingsPage";
-import { SyncCenterPage } from "@/sync/SyncCenterPage";
-import { SaleDetailPage } from "@/sales/SaleDetailPage";
+
+// Finalisation phase 20 (§49) : tous les autres écrans sont chargés à la demande.
+const SetupPage = lazyPage(() => import("@/setup/SetupPage"), "SetupPage");
+const DashboardPage = lazyPage(() => import("@/dashboard/DashboardPage"), "DashboardPage");
+const AdminCenterPage = lazyPage(() => import("@/admin/AdminCenterPage"), "AdminCenterPage");
+const CataloguePage = lazyPage(() => import("@/catalog/CataloguePage"), "CataloguePage");
+const StockCenterPage = lazyPage(() => import("@/inventory/StockCenterPage"), "StockCenterPage");
+const OrdersPage = lazyPage(() => import("@/sales/OrdersPage"), "OrdersPage");
+const PurchasingPage = lazyPage(() => import("@/purchasing/PurchasingPage"), "PurchasingPage");
+const PartiesPage = lazyPage(() => import("@/parties/PartiesPage"), "PartiesPage");
+const CustomerAccountPage = lazyPage(() => import("@/customers/CustomerAccountPage"), "CustomerAccountPage");
+const RecoveryPage = lazyPage(() => import("@/credit/RecoveryPage"), "RecoveryPage");
+const TreasuryCockpitPage = lazyPage(() => import("@/finance/TreasuryCockpitPage"), "TreasuryCockpitPage");
+const LedgerPage = lazyPage(() => import("@/accounting/LedgerPage"), "LedgerPage");
+const DocumentsPage = lazyPage(() => import("@/documents/DocumentsPage"), "DocumentsPage");
+const AnalyticsPage = lazyPage(() => import("@/reports/AnalyticsPage"), "AnalyticsPage");
+const IntelligencePage = lazyPage(() => import("@/intelligence/IntelligencePage"), "IntelligencePage");
+const FieldOpsPage = lazyPage(() => import("@/mobile/FieldOpsPage"), "FieldOpsPage");
+const RestaurantPage = lazyPage(() => import("@/restaurant/RestaurantPage"), "RestaurantPage");
+const GedPage = lazyPage(() => import("@/ged/GedPage"), "GedPage");
+const HrPage = lazyPage(() => import("@/hr/HrPage"), "HrPage");
+const EmployeePage = lazyPage(() => import("@/hr/EmployeePage"), "EmployeePage");
+const PayrollRunPage = lazyPage(() => import("@/hr/PayrollRunPage"), "PayrollRunPage");
+const AdvancePage = lazyPage(() => import("@/hr/MyHrPage"), "AdvancePage");
+const MyHrPage = lazyPage(() => import("@/hr/MyHrPage"), "MyHrPage");
+const GroupPage = lazyPage(() => import("@/group/GroupPage"), "GroupPage");
+const NotificationsPage = lazyPage(() => import("@/notifications/NotificationsPage"), "NotificationsPage");
+const ContinuityPage = lazyPage(() => import("@/continuity/ContinuityPage"), "ContinuityPage");
+const OperationsPage = lazyPage(() => import("@/operations/OperationsPage"), "OperationsPage");
+const PlatformConsolePage = lazyPage(() => import("@/platform/PlatformConsolePage"), "PlatformConsolePage");
+const BillingPortalPage = lazyPage(() => import("@/billing/BillingPortalPage"), "BillingPortalPage");
+const MigrationWizardPage = lazyPage(() => import("@/migration/MigrationWizardPage"), "MigrationWizardPage");
+const IntegrationsCenterPage = lazyPage(() => import("@/integrations/IntegrationsCenterPage"), "IntegrationsCenterPage");
+const SectorSettingsPage = lazyPage(() => import("@/sectors/SectorSettingsPage"), "SectorSettingsPage");
+const SecurityPage = lazyPage(() => import("@/security/SecurityPage"), "SecurityPage");
+const SettingsPage = lazyPage(() => import("@/settings/SettingsPage"), "SettingsPage");
+const SyncCenterPage = lazyPage(() => import("@/sync/SyncCenterPage"), "SyncCenterPage");
+const SaleDetailPage = lazyPage(() => import("@/sales/SaleDetailPage"), "SaleDetailPage");
 
 /** Chaque écran exige la permission de son entrée de menu (guide §18, §27). */
 function guarded(to: string, element: React.ReactElement) {
@@ -46,7 +53,7 @@ function guarded(to: string, element: React.ReactElement) {
 }
 
 export const router = createBrowserRouter([
-  { path: "/setup", element: <SetupPage /> },   // assistant d'installation (§20)
+  { path: "/setup", element: <Suspense fallback={<div role="status">Chargement…</div>}><SetupPage /></Suspense> },   // assistant (§20)
   { path: "/login", element: <LoginPage /> },
   { path: "/reset-password", element: <LoginPage /> },
   {
@@ -68,6 +75,7 @@ export const router = createBrowserRouter([
       { path: "suppliers", element: guarded("/suppliers", <PartiesPage initialTab="suppliers" />) },
       { path: "customers/:id", element: guarded("/customers", <CustomerAccountPage />) },
       { path: "field-ops", element: guarded("/field-ops", <FieldOpsPage />) },
+      { path: "restaurant", element: guarded("/restaurant", <RestaurantPage />) },
       { path: "hr", element: guarded("/hr", <HrPage />) },
       { path: "hr/employees/:id", element: guarded("/hr", <EmployeePage />) },
       { path: "hr/payroll/:runId", element: guarded("/hr", <PayrollRunPage />) },

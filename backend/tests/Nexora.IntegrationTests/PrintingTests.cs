@@ -239,6 +239,25 @@ public sealed class PrintingTests(FinanceEngineFixture fx)
         t.PageCount.Should().Be(1);
     }
 
+    // ---- Analyse 2026-10 §6.2 : la réimpression d'un ticket de vente exige pos.reprint ----
+    [Fact]
+    public async Task Reprinting_a_sale_ticket_requires_the_reprint_permission()
+    {
+        var sale = await CreditSale((await NewCustomer()).Id, await Product(100m), 1m);
+        var cashier = await UserWithRole("cashier");     // pos.view + pos.reprint
+        var auditor = await UserWithRole("auditor");     // pos.view, sans pos.reprint
+
+        (await Print(PrintableKinds.Sale, sale.SaleId, "ticket", auditor)).Content.Should().NotBeEmpty("première impression : original");
+
+        await using var s = Scope();
+        As(s.ServiceProvider, auditor);
+        (await s.ServiceProvider.GetRequiredService<IReceiptService>().PrintAsync(PrintableKinds.Sale, sale.SaleId, "ticket"))
+            .Error!.Code.Should().Be("print.reprint_forbidden");
+
+        var copy = await Print(PrintableKinds.Sale, sale.SaleId, "xlsx", cashier);
+        Contains(copy, "DUPLICATA").Should().BeTrue("le caissier réimprime, et la copie le dit");
+    }
+
     // ---- Droits : l'encaisseur n'imprime que SES versements ; le portefeuille reste protégé ----
     [Fact]
     public async Task A_cashier_prints_only_the_receipts_of_payments_they_took()
@@ -280,7 +299,7 @@ public sealed class PrintingTests(FinanceEngineFixture fx)
         var receipt = (await po.ReceiveAsync(new ReceiveGoodsCommand(Guid.NewGuid(), Supplier1, Officine, order,
             [new ReceiveLine(product, null, 10m, 500m, null, null)], null, null))).Value;
         var invoice = (await po.RecordInvoiceAsync(new RecordPurchaseInvoiceCommand(
-            Guid.NewGuid(), Supplier1, order, "HTG", DateOnly.FromDateTime(DateTime.UtcNow), DateOnly.FromDateTime(DateTime.UtcNow.AddDays(30)),
+            Guid.NewGuid(), Supplier1, order, "HTG", TestDates.Today, DateOnly.FromDateTime(DateTime.UtcNow.AddDays(30)),
             OnCredit: true, null, [new InvoiceLine(product, "Achat reçu", 10m, 500m, null, 0m, 0m)], true,
             SupplierReference: $"FA-{Guid.NewGuid():N}"[..14]))).Value!;
         var paid = await po.PayPayableAsync(invoice.PayableId!.Value, new PayPayableRequest(Guid.NewGuid(), 2_000m, CashAccount, "CHQ-77"));

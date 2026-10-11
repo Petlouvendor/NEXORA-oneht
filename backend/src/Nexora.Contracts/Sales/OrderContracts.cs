@@ -35,7 +35,14 @@ public sealed record OrderDto(
     decimal DepositAmount, decimal RemainingBalance, bool OnCredit,
     DateTimeOffset? ExpectedAt, DateOnly? DueDate, string? DeliveryAddress, string? Notes,
     DateTimeOffset? ReservedAt, DateTimeOffset? FulfilledAt,
-    IReadOnlyList<OrderLineDto> Lines, IReadOnlyList<Guid> SaleIds);
+    IReadOnlyList<OrderLineDto> Lines, IReadOnlyList<Guid> SaleIds,
+    // Phase 4 : fiche complète.
+    string? CustomerName = null, Guid? InventoryLocationId = null, string? LocationName = null,
+    decimal DepositAvailable = 0m, IReadOnlyList<OrderSaleRefDto>? Sales = null, string? CancelledReason = null,
+    DateTimeOffset? CreatedAt = null);
+
+/// <summary>Vente issue de l'exécution (totale ou partielle) d'une commande.</summary>
+public sealed record OrderSaleRefDto(Guid Id, string DocumentNumber, DateTimeOffset SoldAt, decimal Total, decimal AmountDue, string Status);
 
 // --- Lecture d'une vente (Phase 25 §9, §43) --------------------------
 
@@ -52,3 +59,12 @@ public sealed record SaleDto(
     decimal Total, decimal AmountPaid, decimal AmountDue, decimal ChangeGiven,
     Guid? SalesOrderId, Guid? CashSessionId,
     IReadOnlyList<SaleLineDto> Lines, IReadOnlyList<SalePaymentDto> Payments);
+
+// --- Moyens d'encaissement de la caisse (finalisation, phase 5) ---------
+
+public sealed record TenderAccountOptionDto(Guid Id, string Name, string AccountType);
+
+/// <summary>Moyen de paiement proposé à la caisse et comptes sur lesquels il peut être encaissé.</summary>
+public sealed record TenderMethodOptionDto(
+    Guid Id, string Name, string Type, bool RequiresReference,
+    IReadOnlyList<TenderAccountOptionDto> Accounts, Guid? DefaultAccountId);

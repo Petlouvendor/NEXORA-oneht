@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using Nexora.Application.Abstractions;
 using Nexora.Application.Administration;
 using Nexora.Application.Integrations;
+using Nexora.Application.Observability;
 using Nexora.Application.Operations;
 using Nexora.Infrastructure.Persistence;
 
@@ -53,6 +54,7 @@ public sealed class SchedulerRunner(
     Nexora.Application.Ged.ISignatureService signatures,
     Nexora.Application.Security.ISecurityCertificateService certificates,
     Nexora.Application.Customers.ICreditAlertScanner creditAlerts,
+    Nexora.Application.Credit.CollectionsService collections,
     Nexora.Application.Payroll.IPayrollAlerts payrollAlerts,
     IJobRegistry jobs,
     ILogger<SchedulerRunner> logger)
@@ -85,6 +87,7 @@ public sealed class SchedulerRunner(
         await Run("ged.apply_retention");
         await Run("ged.expire_signatures");
         await Run("security.check_certificates");
+        await Run("credit.settle_promises");
         await Run("credit.scan_alerts");
         await Run("payroll.scan_alerts");
 
@@ -147,6 +150,7 @@ public sealed class SchedulerRunner(
         ["ged.apply_retention"] = token => PerCompanyAsync(companies, gedRetention.ApplyRetentionAsync, "rétention documentaire", token),
         ["ged.expire_signatures"] = token => PerCompanyAsync(companies, signatures.ExpireDueAsync, "expiration signatures", token),
         ["security.check_certificates"] = token => GlobalAsync(() => certificates.RefreshExpiryStatusAsync(token), "certificats"),
+        ["credit.settle_promises"] = token => PerCompanyAsync(companies, collections.SettleDuePromisesAsync, "échéance des promesses", token),
         ["credit.scan_alerts"] = token => PerCompanyAsync(companies, creditAlerts.ScanAsync, "alertes crédit", token),
         ["payroll.scan_alerts"] = token => PerCompanyAsync(companies, payrollAlerts.ScanAsync, "alertes paie", token),
     };
@@ -195,14 +199,20 @@ public sealed class SchedulerRunner(
     {
         if (!force && !await jobs.IsEnabledAsync(key, ct)) return (0, 0);
         var runId = await jobs.StartRunAsync(key, triggeredBy, triggeredByUser, ct);
+        using var activity = NexoraMetrics.ActivitySource.StartActivity($"job {key}");
+        activity?.SetTag("nexora.job", key);
+        activity?.SetTag("nexora.triggered_by", triggeredBy);
         try
         {
             var (count, failures) = await action(ct);
             await jobs.FinishRunAsync(runId, failures == 0, count, failures > 0 ? $"{failures} échec(s) entreprise" : null, ct);
+            NexoraMetrics.RecordJob(key, failures == 0 ? "succeeded" : "partial");
             return (count, failures);
         }
         catch (Exception ex)
         {
+            NexoraMetrics.RecordJob(key, "failed");
+            activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Error, ex.Message);
             await jobs.FinishRunAsync(runId, false, 0, ex.Message, ct);
             logger.LogWarning(ex, "Planificateur : échec du job {Key}", key);
             return (0, 1);

@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Configuration;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -120,7 +121,8 @@ public sealed class SqlWebhookIngestService(
                 return new WebhookIngestResult("failed", true, eventId, "Transaction inconnue.");
             }
 
-            var confirm = await gateway.ProviderCallbackAsync(intentId, new ProviderCallbackRequest("confirmed", providerAmount, reference), ct);
+            // Paiement réel : l'événement déclenche une vérification auprès du fournisseur, jamais une confirmation aveugle.
+            var confirm = await gateway.ConfirmFromProviderEventAsync(intentId, providerAmount, reference, ct);
             if (!confirm.IsSuccess)
             {
                 await MarkAsync(eventId, "failed", confirm.Error!.Message, ct);
@@ -159,7 +161,7 @@ public sealed class SqlWebhookIngestService(
 
     public async Task<IReadOnlyList<WebhookEventDto>> ListAsync(string? status, CancellationToken ct = default)
     {
-        var company = tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+        var company = tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
         var s = status?.Trim().ToLowerInvariant();
         var rows = await db.Database.SqlQuery<EventRow>($"""
             SELECT id AS "Id", connector_id AS "ConnectorId", provider_event_id AS "ProviderEventId",
@@ -231,10 +233,11 @@ public sealed class SqlWebhookIngestService(
 /// tentative avec back-off (1, 5, 15, 60, 180 min) jusqu'à épuisement.
 /// </summary>
 public sealed class SqlOutboundWebhookService(
-    NexoraDbContext db, ITenantContext tenant, IDateTimeProvider clock, IOutboundWebhookDispatcher dispatcher)
+    NexoraDbContext db, ITenantContext tenant, IDateTimeProvider clock, IOutboundWebhookDispatcher dispatcher,
+    IConfiguration configuration)
     : IOutboundWebhookService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
     private static readonly int[] BackoffMinutes = [1, 5, 15, 60, 180];
 
     private sealed record HookRow(Guid Id, string Name, string TargetUrl, string Events, string Status, int ConsecutiveFailures, DateTimeOffset? LastDeliveryAt);
@@ -246,8 +249,10 @@ public sealed class SqlOutboundWebhookService(
     public async Task<Result<Guid>> RegisterAsync(RegisterOutboundWebhookRequest request, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(request.Name)) return Error.Validation("integrations.webhook_name", "Nom requis.");
-        if (!Uri.TryCreate(request.TargetUrl, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https"))
-            return Error.Validation("integrations.webhook_url", "URL cible absolue http(s) requise.");
+        // Protection SSRF (analyse 2026-10 §6.5) : pas de cible interne, sauf installation sur site autorisée.
+        if (WebhookTargetPolicy.Validate(request.TargetUrl,
+                configuration.GetValue("Integrations:AllowPrivateWebhookTargets", false)) is { } refusal)
+            return Error.Validation("integrations.webhook_url", refusal);
         var events = (request.SubscribedEvents ?? []).Select(e => e.Trim()).Where(e => e.Length > 0).Distinct().ToArray();
         if (events.Length == 0) return Error.Validation("integrations.webhook_events", "Au moins un événement à souscrire.");
 

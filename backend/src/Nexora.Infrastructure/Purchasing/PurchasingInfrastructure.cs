@@ -3,14 +3,15 @@ using Nexora.Application.Abstractions;
 using Nexora.Application.Purchasing;
 using Nexora.Contracts.Purchasing;
 using Nexora.Infrastructure.Persistence;
+using Nexora.Domain.Common;
 
 namespace Nexora.Infrastructure.Purchasing;
 
 /// <summary>Lectures achats (Phase 26 §24, §36, §46).</summary>
-public sealed class SqlPurchasingQueries(NexoraDbContext db, ITenantContext tenant, IDateTimeProvider clock) : IPurchasingQueries
+public sealed class SqlPurchasingQueries(NexoraDbContext db, ITenantContext tenant, IBusinessCalendar calendar) : IPurchasingQueries
 {
     private Guid Company => tenant.ActiveCompanyId
-        ?? throw new InvalidOperationException("Aucune entreprise active.");
+        ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record PayableRow(
         Guid Id, Guid? SupplierInvoiceId, string? InvoiceNumber, string? SupplierReference,
@@ -21,7 +22,7 @@ public sealed class SqlPurchasingQueries(NexoraDbContext db, ITenantContext tena
     public async Task<IReadOnlyList<PayableDto>> ListPayablesAsync(Guid? supplierId, bool onlyOpen, int limit, CancellationToken ct = default)
     {
         limit = Math.Clamp(limit, 1, 500);
-        var today = DateOnly.FromDateTime(clock.UtcNow.UtcDateTime);
+        var today = calendar.Today;
         var rows = await db.Database.SqlQuery<PayableRow>($"""
             SELECT p.id AS "Id", p.supplier_invoice_id AS "SupplierInvoiceId",
                    si.document_number AS "InvoiceNumber", si.supplier_reference AS "SupplierReference",
@@ -60,7 +61,7 @@ public sealed class SqlPurchasingQueries(NexoraDbContext db, ITenantContext tena
             SELECT cur.code AS "Value" FROM nexora.supplier s JOIN nexora.currency cur ON cur.id = s.default_currency_id
             WHERE s.id = {supplierId}
             """).FirstAsync(ct);
-        var today = DateOnly.FromDateTime(clock.UtcNow.UtcDateTime);
+        var today = calendar.Today;
 
         var rows = await db.Database.SqlQuery<StmtRow>($"""
             SELECT si.invoice_date AS "Date", 'invoice' AS "DocumentType", si.document_number AS "DocumentNumber",

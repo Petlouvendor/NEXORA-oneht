@@ -30,6 +30,8 @@ public static class Permissions
         public const string CashInOut = "pos.cash_in_out";
         public const string ViewCustomerBalance = "pos.view_customer_balance";
         public const string ManageOrder = "pos.manage_order";
+        /// <summary>Réimprimer un ticket de vente déjà sorti (duplicata) — analyse 2026-10 : permission enfin vérifiée.</summary>
+        public const string Reprint = "pos.reprint";
 
         // Validations Manager du guide fonctionnel (§8, §10, §12, §13) — V064.
         // Refund = valider une demande de retour / exécuter un retour-remboursement.
@@ -47,6 +49,8 @@ public static class Permissions
         public const string Transfer = "finance.transfer";
         public const string Reconcile = "finance.reconcile";
         public const string Export = "finance.export";
+        /// <summary>Paramétrage de la trésorerie : comptes, catégories de dépense (phase 7 ; permission existante en base).</summary>
+        public const string Update = "finance.update";
 
         // Finance & trésorerie — cockpit de pilotage (Phase 28 §32, §38)
         public const string ClosePeriod = "finance.close_period";
@@ -207,6 +211,8 @@ public static class Permissions
     public static class Purchasing
     {
         public const string View = "purchasing.view";
+        /// <summary>Saisie directe d'une facture fournisseur dans le moteur comptable (API finance).</summary>
+        public const string Create = "purchasing.create";
         public const string Order = "purchasing.order";
         public const string Receive = "purchasing.receive";
         public const string Invoice = "purchasing.invoice";
@@ -306,6 +312,13 @@ public static class Permissions
         public const string Publish = "consolidation.publish";
     }
 
+    /// <summary>
+    /// Permission de gouvernance de groupe : n'a d'effet que portée par un rôle attribué au niveau
+    /// du groupe (ou de la plateforme). Attribuée dans une seule société, elle reste inerte.
+    /// </summary>
+    public static bool IsGroupLevel(string code) =>
+        code.StartsWith("group.", StringComparison.Ordinal) || code.StartsWith("consolidation.", StringComparison.Ordinal);
+
     /// <summary>Local, Offline, Hybride & Cloud (Phase 10 §30-31).</summary>
     public static class Sync
     {
@@ -360,6 +373,7 @@ public static class Permissions
     public static class Notifications
     {
         public const string ManageTemplates = "notifications.manage_templates";
+        public const string ManageDelivery = "notifications.manage_delivery";
     }
 
     /// <summary>

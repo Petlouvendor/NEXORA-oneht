@@ -9,6 +9,8 @@
 # Variables d'environnement facultatives :
 #   NEXORA_API_URL      ex. http://localhost:5080   (déclenche l'enregistrement au registre)
 #   NEXORA_API_KEY      clé d'API avec le scope `continuity.manage`
+#                       (l'identifiant rendu par le registre est écrit dans <dump>.id : restore.sh --verify
+#                        le marque « vérifié » après une restauration réelle réussie — finalisation phase 18)
 #   NEXORA_BACKUP_KIND  full | incremental | config | documents | snapshot   (défaut : full)
 set -euo pipefail
 
@@ -18,6 +20,8 @@ PGHOST="${PGHOST:-localhost}"
 PGPORT="${PGPORT:-5432}"
 PGUSER="${PGUSER:-postgres}"
 KIND="${NEXORA_BACKUP_KIND:-full}"
+[ -n "${PGPASSWORD_FILE:-}" ] && export PGPASSWORD="$(cat "$PGPASSWORD_FILE")"
+export PGCLIENTENCODING=UTF8
 
 PGDUMP_BIN="${PGDUMP_BIN:-pg_dump}"
 if ! command -v "$PGDUMP_BIN" >/dev/null 2>&1; then
@@ -51,10 +55,17 @@ echo "$CHECKSUM  $(basename "$FILE")" > "$FILE.sha256"
 
 if [ -n "${NEXORA_API_URL:-}" ] && [ -n "${NEXORA_API_KEY:-}" ]; then
   echo ">> enregistrement au registre applicatif : $NEXORA_API_URL/api/v1/backups"
-  curl -fsS -X POST "$NEXORA_API_URL/api/v1/backups" \
+  if RESPONSE=$(curl -fsS -X POST "$NEXORA_API_URL/api/v1/backups" \
     -H "X-Api-Key: $NEXORA_API_KEY" -H "Content-Type: application/json" \
-    -d "{\"kind\":\"$KIND\",\"coversUpTo\":\"$COVERS_UP_TO\",\"sizeBytes\":$SIZE,\"checksum\":\"$CHECKSUM\",\"objectCount\":${OBJECTS:-null},\"locationRef\":\"$(basename "$FILE")\",\"encrypted\":false}" \
-    && echo " (enregistré)" || echo " (échec d'enregistrement — la sauvegarde locale reste valide)"
+    -d "{\"kind\":\"$KIND\",\"coversUpTo\":\"$COVERS_UP_TO\",\"sizeBytes\":$SIZE,\"checksum\":\"$CHECKSUM\",\"objectCount\":${OBJECTS:-null},\"locationRef\":\"$(basename "$FILE")\",\"encrypted\":false}"); then
+    # Identifiant du registre (finalisation phase 18) : restore.sh --verify le marque « vérifié » après une
+    # restauration réelle réussie.
+    BACKUP_ID=$(printf '%s' "$RESPONSE" | sed -n 's/.*"id":"\([0-9a-f-]\{36\}\)".*/\1/p')
+    [ -n "$BACKUP_ID" ] && printf '%s' "$BACKUP_ID" > "$FILE.id"
+    echo " (enregistré ${BACKUP_ID:-sans identifiant})"
+  else
+    echo " (échec d'enregistrement — la sauvegarde locale reste valide)"
+  fi
 fi
 
 echo ">> terminé : $FILE"

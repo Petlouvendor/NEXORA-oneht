@@ -25,13 +25,22 @@ public interface ICustomerCreditMemoWriter
     Task<Guid> IssueForOverpaymentAsync(Guid customerId, Guid paymentId, Guid currencyId, decimal amount,
         CancellationToken ct = default);
 
+    /// <summary>Acompte d'une commande client (phase 4) : avoir rattaché à la commande, porté en compte
+    /// d'attente comme l'encaissement qui l'a créé ; imputé sur la vente à l'exécution.</summary>
+    Task<Guid> IssueForOrderDepositAsync(Guid customerId, Guid paymentId, Guid salesOrderId, Guid currencyId, decimal amount,
+        string orderNumber, CancellationToken ct = default);
+
+    /// <summary>Acompte encore disponible d'une commande (avoirs « order_deposit » non consommés).</summary>
+    Task<decimal> OrderDepositAvailableAsync(Guid salesOrderId, CancellationToken ct = default);
+
     /// <summary>Avoir disponible du client dans cette devise.</summary>
     Task<decimal> AvailableAsync(Guid customerId, string currency, CancellationToken ct = default);
 
     /// <summary>Paiement par avoir (§7, §15) : impute les avoirs disponibles, du plus ancien au plus récent,
-    /// sur la créance indiquée (écriture Dr compte de l'avoir / Cr clients). Renvoie le montant imputé.</summary>
+    /// sur la créance indiquée (écriture Dr compte de l'avoir / Cr clients). Renvoie le montant imputé.
+    /// Avec <paramref name="preferSalesOrderId"/>, les acomptes de cette commande passent en premier.</summary>
     Task<decimal> ApplyToReceivableAsync(Guid customerId, Guid receivableId, string currency, decimal amount,
-        DateTimeOffset at, CancellationToken ct = default);
+        DateTimeOffset at, CancellationToken ct = default, Guid? preferSalesOrderId = null);
 }
 
 /// <summary>Versements (§9), annulation contrôlée (§22) et imputation d'avoirs (§7).</summary>

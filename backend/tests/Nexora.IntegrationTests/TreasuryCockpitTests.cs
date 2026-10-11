@@ -145,7 +145,7 @@ public sealed class TreasuryCockpitTests(FinanceEngineFixture fx)
 
         var late = await svc.OpenAsync(new OpenSuspenseRequest(
             null, "unidentified", -1_500m, "HTG", "Sortie non identifiee", null,
-            DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-5), null));
+            TestDates.Today.AddDays(-5), null));
         late.IsSuccess.Should().BeTrue(late.Error?.Message);
 
         var overdue = await svc.ListAsync(null, onlyOverdue: true);
@@ -193,7 +193,7 @@ public sealed class TreasuryCockpitTests(FinanceEngineFixture fx)
         var close = s.ServiceProvider.GetRequiredService<IFinancialCloseService>();
         var blocker = await suspense.OpenAsync(new OpenSuspenseRequest(
             null, "other", 10m, "HTG", "Blocage test cloture", null,
-            DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-2), null));
+            TestDates.Today.AddDays(-2), null));
         blocker.IsSuccess.Should().BeTrue(blocker.Error?.Message);
 
         (await close.CompleteAsync(period, new CompleteFinancialCloseRequest(Force: false)))

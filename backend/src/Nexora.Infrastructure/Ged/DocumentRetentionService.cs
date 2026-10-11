@@ -14,9 +14,9 @@ namespace Nexora.Infrastructure.Ged;
 /// n'est pas échue n'est jamais listé comme éligible, quelle que soit la politique générique.
 /// </summary>
 public sealed class SqlDocumentRetentionService(
-    NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow, IDateTimeProvider clock, IGedService ged) : IDocumentRetentionService
+    NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow, IGedService ged, IBusinessCalendar calendar) : IDocumentRetentionService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record PolicyRow(Guid Id, Guid? CompanyId, string? DocumentType, int RetentionYears, string LegalBasis);
 
@@ -69,7 +69,7 @@ public sealed class SqlDocumentRetentionService(
 
     public async Task<IReadOnlyList<GedDocumentDto>> ListEligibleForDeletionAsync(CancellationToken ct = default)
     {
-        var today = DateOnly.FromDateTime(clock.UtcNow.UtcDateTime);
+        var today = calendar.Today;
         var ids = await db.Database.SqlQueryRaw<Guid>("""
             SELECT id AS "Value" FROM nexora.document
             WHERE company_id = {0} AND status = 'archived' AND legal_hold = false

@@ -66,6 +66,13 @@ jobs:
         run: dotnet build backend/Nexora.sln -c Release --no-restore
       - name: Tests (unitaires + API + intégration)
         run: dotnet test backend/Nexora.sln -c Release --no-build
+      # Finalisation phase 18 : les migrations embarquées dans l'API sont exactement celles du dépôt, et la commande
+      # « migrate » de l'image (sans psql) les reconnaît comme appliquées — code 0, sinon 2 (en attente) ou 3 (écart).
+      - name: Migrations embarquées conformes (migrate --status)
+        env:
+          ASPNETCORE_ENVIRONMENT: Development
+          Database__ConnectionString: "Host=localhost;Port=5432;Database=nexora;Username=postgres;Password=postgres"
+        run: dotnet backend/src/Nexora.Api/bin/Release/net10.0/Nexora.Api.dll migrate --status
       - name: Scan de vulnérabilités des dépendances (§28)
         run: dotnet list backend/Nexora.sln package --vulnerable --include-transitive
 
@@ -84,5 +91,72 @@ jobs:
           cache-dependency-path: frontend/nexora-web/package-lock.json
       - run: npm ci
       - run: npm run typecheck
+      - run: npm run lint
       - run: npm test
       - run: npm run build
+
+  # --- Images de production (finalisation phase 18 §39) : construction, configuration, règles d'alerte ---
+  docker:
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configuration de production valide
+        run: |
+          mkdir -p infrastructure/secrets
+          for f in postgres_password migration_connection app_role_password app_connection jwt_signing_key                    mfa_encryption_key data_encryption_key backup_api_key smtp_password; do : > infrastructure/secrets/$f; done
+          docker compose -f infrastructure/docker-compose.prod.yml --env-file infrastructure/production.env.example             --profile observability config --quiet
+      - name: Règles d'alerte valides
+        run: |
+          docker run --rm --entrypoint promtool -v "$PWD/infrastructure/observability:/r" prom/prometheus:v3.6.0             check rules /r/alerts.yml
+      - name: Images API, interface, sauvegarde
+        run: |
+          docker build -f backend/Dockerfile --build-arg NEXORA_VERSION=0.0.0-ci --build-arg NEXORA_COMMIT=$GITHUB_SHA -t nexora-api:ci .
+          docker build -f frontend/nexora-web/Dockerfile -t nexora-web:ci .
+          docker build -f infrastructure/backup/Dockerfile -t nexora-backup:ci .
+      - name: L'image API démarre et répond à sa sonde
+        run: |
+          docker run -d --name api-ci -e ASPNETCORE_ENVIRONMENT=Production nexora-api:ci
+          for i in $(seq 1 30); do docker exec api-ci dotnet Nexora.Api.dll healthcheck && break; sleep 2; done
+          docker exec api-ci dotnet Nexora.Api.dll healthcheck
+
+  # --- E2E global (finalisation phase 19, plan maître §41-43) : installation neuve, scénarios métier complets ---
+  e2e:
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    env:
+      E: docker compose -p nexora-e2e -f infrastructure/docker-compose.prod.yml -f infrastructure/docker-compose.e2e.yml --env-file infrastructure/production.env
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/nexora-web/package-lock.json
+      - name: Installation neuve (images construites depuis ce commit)
+        run: |
+          bash infrastructure/scripts/generate-secrets.sh
+          cp infrastructure/production.env.example infrastructure/production.env
+          sed -i -e 's/^NEXORA_DOMAIN=.*/NEXORA_DOMAIN=localhost/' -e 's/^NEXORA_REGISTRY=.*/NEXORA_REGISTRY=nexora/' \
+                 -e 's/^NEXORA_OTLP_ENDPOINT=.*/NEXORA_OTLP_ENDPOINT=/' -e 's|^NEXORA_BACKUP_HOST_DIR=.*|NEXORA_BACKUP_HOST_DIR=./backups|' \
+                 infrastructure/production.env
+          $E up -d --build --wait api web
+          $E run --rm -e 'Bootstrap__AdminPassword=E2e!Nexora2026' migrate bootstrap --company "Supermarché E2E" \
+            --activity supermarket --currency HTG --admin-name "Direction E2E" --admin-email direction@e2e.ht
+      - name: Scénarios E2E (Playwright)
+        working-directory: frontend/nexora-web
+        env:
+          E2E_BASE_URL: http://localhost:8090
+          E2E_ARTIFACTS: ${{ runner.temp }}/e2e
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+          npx playwright test
+      - name: Rapport et journaux en cas d'échec
+        if: failure()
+        run: $E logs api > ${{ runner.temp }}/e2e/api.log 2>&1 || true
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-report
+          path: ${{ runner.temp }}/e2e

@@ -228,11 +228,16 @@ public sealed class RecetteCorrectionsTests(FinanceEngineFixture fx)
     {
         public List<OutboxMessageDto> Sent { get; } = [];
         public string Channel => "email";
+        public string ProviderName => "capture de test";
+        public bool IsConfigured => true;
+        public string ConfigurationSummary => "Canal de capture (tests).";
         public Task<ChannelSendResult> SendAsync(OutboxMessageDto message, CancellationToken ct = default)
         {
             Sent.Add(message);
             return Task.FromResult(ChannelSendResult.Ok());
         }
+        public Task<ChannelTestResultDto> TestAsync(CancellationToken ct = default)
+            => Task.FromResult(new ChannelTestResultDto("email", "CONNECTED", "Capture", 0));
     }
 
     private async Task<Guid> CreateUserAsync(IServiceProvider sp, string email)

@@ -14,7 +14,7 @@ public sealed class SqlUserAssignmentService(
     : IUserAssignmentService
 {
     private Guid Caller => tenant.UserId ?? throw new InvalidOperationException("Utilisateur requis.");
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
     private static readonly string[] ProtectedRoles = ["super_administrator", "group_administrator"];
     private static readonly string[] Statuses = ["active", "suspended", "locked"];
 
@@ -59,13 +59,21 @@ public sealed class SqlUserAssignmentService(
             return Error.NotFound("identity.user", "Utilisateur introuvable dans votre périmètre.");
 
         var scopeType = request.ScopeType?.Trim().ToUpperInvariant() ?? "COMPANY";
-        if (scopeType is not ("COMPANY" or "ESTABLISHMENT"))
-            return Error.Validation("identity.scope_type", "Périmètre autorisé : COMPANY ou ESTABLISHMENT.");
+        if (scopeType is not ("COMPANY" or "ESTABLISHMENT" or "GROUP"))
+            return Error.Validation("identity.scope_type", "Périmètre autorisé : COMPANY, ESTABLISHMENT ou GROUP.");
 
         var companyId = request.CompanyId ?? Company;
         var authorized = await AuthorizedCompaniesAsync(ct);
         if (!authorized.Contains(companyId))
             return Error.Forbidden("identity.scope", "Vous ne pouvez affecter que dans votre périmètre (§18).");
+
+        // Périmètre groupe (finalisation phase 14) : le groupe de la société indiquée — toutes ses sociétés.
+        Guid? groupId = null;
+        if (scopeType == "GROUP")
+        {
+            groupId = await db.Companies.AsNoTracking().Where(c => c.Id == companyId).Select(c => c.GroupId).FirstOrDefaultAsync(ct);
+            if (groupId is null) return Error.Validation("identity.no_group", "Cette entreprise n'appartient à aucun groupe.");
+        }
 
         Guid? establishmentId = null;
         if (scopeType == "ESTABLISHMENT")
@@ -95,8 +103,14 @@ public sealed class SqlUserAssignmentService(
             JOIN nexora.permission p ON p.id = rp.permission_id WHERE rp.role_id = {role}
             """).ToListAsync(ct);
         var callerProfile = await permissions.LoadProfileAsync(Caller, ct);
-        var callerPerms = callerProfile.PermissionsFor(companyId).ToHashSet();
-        var escalation = rolePerms.Where(p => !callerPerms.Contains(p)).ToList();
+        // Au niveau groupe, on compare aux droits de groupe de l'appelant (toutes les sociétés du groupe) ;
+        // au niveau société, les droits de groupe du rôle sont inertes et n'entrent pas en compte.
+        var callerPerms = (groupId is { } g
+            ? callerProfile.GroupPermissionsFor(g).Concat(await CommonCompanyPermissionsAsync(callerProfile, g, ct))
+            : callerProfile.PermissionsFor(companyId)).ToHashSet();
+        var escalation = rolePerms
+            .Where(p => groupId is not null || !Application.Security.Permissions.IsGroupLevel(p))
+            .Where(p => !callerPerms.Contains(p)).ToList();
         if (escalation.Count > 0)
             return Error.Forbidden("identity.escalation",
                 $"Élévation de privilège refusée — permission(s) que vous ne détenez pas : {string.Join(", ", escalation.Take(5))}.");
@@ -104,15 +118,19 @@ public sealed class SqlUserAssignmentService(
         if (request.ValidUntil is { } until && request.ValidFrom is { } from && until <= from)
             return Error.Validation("identity.validity", "La fin de validité doit suivre le début.");
 
-        var scopeId = await FindOrCreateScopeAsync(scopeType, companyId, establishmentId, ct);
-        var id = Guid.NewGuid();
-        await db.Database.ExecuteSqlAsync($"""
+        var scopeId = groupId is { } gid
+            ? await FindOrCreateGroupScopeAsync(gid, ct)
+            : await FindOrCreateScopeAsync(scopeType, companyId, establishmentId, ct);
+        // Une affectation retirée puis rendue est réactivée : on renvoie SON identifiant (le nouvel identifiant
+        // généré n'existait pas, et le retrait par l'identifiant renvoyé échouait — finalisation phase 14).
+        var id = (await db.Database.SqlQuery<Guid>($"""
             INSERT INTO nexora.user_role (id, user_id, role_id, scope_id, granted_by, valid_from, valid_until, reason)
-            VALUES ({id}, {userId}, {role}, {scopeId}, {Caller}, {request.ValidFrom}, {request.ValidUntil}, {request.Reason})
+            VALUES ({Guid.NewGuid()}, {userId}, {role}, {scopeId}, {Caller}, {request.ValidFrom}, {request.ValidUntil}, {request.Reason})
             ON CONFLICT (user_id, role_id, scope_id) DO UPDATE SET
                 valid_from = EXCLUDED.valid_from, valid_until = EXCLUDED.valid_until,
                 reason = EXCLUDED.reason, revoked_at = NULL, revoked_by = NULL, granted_by = EXCLUDED.granted_by
-            """, ct);
+            RETURNING id AS "Value"
+            """).ToListAsync(ct)).Single();
         return Result.Success(id);
     }
 
@@ -130,6 +148,10 @@ public sealed class SqlUserAssignmentService(
         var scopeCompanies = await CompaniesForScopeAsync(row, ct);
         if (!scopeCompanies.Any(authorized.Contains))
             return Error.Forbidden("identity.scope", "Cette affectation est hors de votre périmètre.");
+        // Un rôle de groupe ne se retire que depuis le niveau groupe : un administrateur d'une seule
+        // société ne peut pas retirer l'accès de la direction du groupe (finalisation phase 14).
+        if (row.ScopeType == "GROUP" && row.GroupId is { } rg && !await ManagesUsersGroupWideAsync(rg, ct))
+            return Error.Forbidden("identity.group_scope", "Ce rôle est attribué au niveau du groupe : seul un administrateur du groupe peut le retirer.");
 
         await db.Database.ExecuteSqlAsync($"""
             UPDATE nexora.user_role
@@ -233,6 +255,44 @@ public sealed class SqlUserAssignmentService(
             return exists > 0 && noAssignments == 0;
         }
         return false;
+    }
+
+    private async Task<bool> ManagesUsersGroupWideAsync(Guid groupId, CancellationToken ct)
+    {
+        var profile = await permissions.LoadProfileAsync(Caller, ct);
+        const string manage = Application.Security.Permissions.Admin.ManageUsers;
+        return profile.GroupPermissionsFor(groupId).Contains(manage)
+            || (await CommonCompanyPermissionsAsync(profile, groupId, ct)).Contains(manage);
+    }
+
+    /// <summary>Permissions détenues dans CHACUNE des sociétés actives du groupe (rôle de groupe ou rôles société partout).</summary>
+    private async Task<IReadOnlyCollection<string>> CommonCompanyPermissionsAsync(UserSecurityProfile profile, Guid groupId, CancellationToken ct)
+    {
+        var companies = await db.Companies.AsNoTracking()
+            .Where(c => c.GroupId == groupId && c.Status != "archived").Select(c => c.Id).ToListAsync(ct);
+        if (companies.Count == 0) return [];
+        IEnumerable<string>? common = null;
+        foreach (var c in companies)
+        {
+            var perms = profile.PermissionsFor(c);
+            if (!profile.CompanyIds.Contains(c)) return [];
+            common = common is null ? perms : common.Intersect(perms);
+        }
+        return (common ?? []).ToArray();
+    }
+
+    private async Task<Guid> FindOrCreateGroupScopeAsync(Guid groupId, CancellationToken ct)
+    {
+        var existing = await db.Database.SqlQuery<Guid>($"""
+            SELECT id AS "Value" FROM nexora.access_scope
+            WHERE scope_type = 'GROUP' AND group_id = {groupId} AND company_id IS NULL LIMIT 1
+            """).FirstOrDefaultAsync(ct);
+        if (existing != Guid.Empty) return existing;
+        var id = Guid.NewGuid();
+        await db.Database.ExecuteSqlAsync($"""
+            INSERT INTO nexora.access_scope (id, scope_type, group_id) VALUES ({id}, 'GROUP', {groupId})
+            """, ct);
+        return id;
     }
 
     private async Task<Guid> FindOrCreateScopeAsync(string scopeType, Guid companyId, Guid? establishmentId, CancellationToken ct)

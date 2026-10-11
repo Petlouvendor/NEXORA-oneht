@@ -26,10 +26,10 @@ public sealed class SqlStockAvailabilityPolicy(ISettingsService settings) : ISto
 /// <summary>Cycle de vie des lots — blocage, rappel, balayage des expirations (Phase 24 §13-15).</summary>
 public sealed class SqlLotService(
     NexoraDbContext db, ITenantContext tenant, InventoryOperationsService ops,
-    IDateTimeProvider clock, ISettingsService settings) : ILotService
+    IDateTimeProvider clock, ISettingsService settings, IBusinessCalendar calendar) : ILotService
 {
     private Guid Company => tenant.ActiveCompanyId
-        ?? throw new InvalidOperationException("Aucune entreprise active.");
+        ?? throw TenantErrors.ActiveCompanyRequired();
 
     public async Task<Result> BlockAsync(Guid lotId, string reason, CancellationToken ct = default)
     {
@@ -82,7 +82,7 @@ public sealed class SqlLotService(
     public async Task<IReadOnlyList<ExpiringLotDto>> ExpiringAsync(int? withinDays, CancellationToken ct = default)
     {
         var alertDays = withinDays ?? await AlertDaysAsync(ct);
-        var today = DateOnly.FromDateTime(clock.UtcNow.UtcDateTime);
+        var today = calendar.Today;
         var horizon = today.AddDays(alertDays);
 
         var rows = await db.Database.SqlQuery<ExpRow>($"""
@@ -113,7 +113,7 @@ public sealed class SqlLotService(
 
     public async Task<Result<LotSweepResultDto>> SweepExpiredAsync(CancellationToken ct = default)
     {
-        var today = DateOnly.FromDateTime(clock.UtcNow.UtcDateTime);
+        var today = calendar.Today;
 
         var rows = await db.Database.SqlQuery<ExpRow>($"""
             SELECT l.id AS "LotId", l.lot_number AS "LotNumber", l.product_id AS "ProductId",
@@ -177,7 +177,7 @@ public sealed class SqlLotService(
 public sealed class SqlWarehouseService(NexoraDbContext db, ITenantContext tenant) : IWarehouseService
 {
     private Guid Company => tenant.ActiveCompanyId
-        ?? throw new InvalidOperationException("Aucune entreprise active.");
+        ?? throw TenantErrors.ActiveCompanyRequired();
 
     public async Task<Result<Guid>> CreateWarehouseAsync(CreateWarehouseRequest r, CancellationToken ct = default)
     {
@@ -235,10 +235,10 @@ public sealed class SqlWarehouseService(NexoraDbContext db, ITenantContext tenan
 
 /// <summary>Lectures stock (Phase 24 §38-41).</summary>
 public sealed class SqlStockQueries(
-    NexoraDbContext db, ITenantContext tenant, IDateTimeProvider clock, ISettingsService settings) : IStockQueries
+    NexoraDbContext db, ITenantContext tenant, ISettingsService settings, IBusinessCalendar calendar) : IStockQueries
 {
     private Guid Company => tenant.ActiveCompanyId
-        ?? throw new InvalidOperationException("Aucune entreprise active.");
+        ?? throw TenantErrors.ActiveCompanyRequired();
 
     public async Task<IReadOnlyList<StockBalanceDto>> BalancesAsync(Guid? locationId, Guid? productId, bool onlyPositive, CancellationToken ct = default)
         => await db.Database.SqlQuery<StockBalanceDto>($"""
@@ -283,7 +283,7 @@ public sealed class SqlStockQueries(
 
     public async Task<IReadOnlyList<LotDto>> LotsAsync(Guid? productId, Guid? locationId, string? status, int? expiringWithinDays, CancellationToken ct = default)
     {
-        var today = DateOnly.FromDateTime(clock.UtcNow.UtcDateTime);
+        var today = calendar.Today;
         var alertDays = expiringWithinDays ?? 3650;
         var horizon = today.AddDays(alertDays);
         var rows = await db.Database.SqlQuery<LotRow>($"""
@@ -321,7 +321,7 @@ public sealed class SqlStockQueries(
 
     public async Task<IReadOnlyList<StockAlertDto>> AlertsAsync(CancellationToken ct = default)
     {
-        var today = DateOnly.FromDateTime(clock.UtcNow.UtcDateTime);
+        var today = calendar.Today;
         var days = await ExpiryAlertDaysAsync(ct);
         var horizon = today.AddDays(days);
 

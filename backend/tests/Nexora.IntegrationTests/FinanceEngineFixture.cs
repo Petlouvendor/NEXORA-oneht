@@ -79,13 +79,20 @@ public sealed class FinanceEngineFixture : IAsyncLifetime
             Password = Environment.GetEnvironmentVariable("NEXORA_IT_APP_PASSWORD") ?? "nexora_app_dev",
         }.ConnectionString);
 
-    private ServiceProvider BuildProvider(string connectionString)
+    /// <summary>Fournisseur complété par des enregistrements de test (ex. faux serveur d'un fournisseur de paiement).</summary>
+    public ServiceProvider CreateProviderWith(Action<IServiceCollection> extra, IDictionary<string, string?>? settings = null)
+        => BuildProvider(TestConnectionString, extra, settings);
+
+    private ServiceProvider BuildProvider(string connectionString, Action<IServiceCollection>? extra = null,
+        IDictionary<string, string?>? settings = null)
     {
-        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        var values = new Dictionary<string, string?>
         {
             ["Database:ConnectionString"] = connectionString,
             ["Jwt:SigningKey"] = "integration-test-signing-key-000000000000000000",
-        }).Build();
+        };
+        foreach (var (k, v) in settings ?? new Dictionary<string, string?>()) values[k] = v;
+        var config = new ConfigurationBuilder().AddInMemoryCollection(values).Build();
 
         var services = new ServiceCollection();
         services.AddLogging();
@@ -100,6 +107,7 @@ public sealed class FinanceEngineFixture : IAsyncLifetime
             t.SetScope([CompanyId], [], CompanyId);
             return t;
         });
+        extra?.Invoke(services);
         return services.BuildServiceProvider();
     }
 

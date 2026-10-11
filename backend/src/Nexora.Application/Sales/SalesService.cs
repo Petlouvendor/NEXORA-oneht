@@ -3,6 +3,7 @@ using Nexora.Application.Abstractions;
 using Nexora.Application.Finance.Engine;
 using Nexora.Application.Finance.Events;
 using Nexora.Application.Inventory;
+using Nexora.Application.Observability;
 using Nexora.Domain.Common;
 using Nexora.Domain.Finance;
 using Nexora.Domain.Inventory;
@@ -30,21 +31,62 @@ public sealed class SalesService(
     IUnitOfWork uow,
     ITenantContext tenant,
     IDateTimeProvider clock,
-    ILogger<SalesService> logger)
+    ILogger<SalesService> logger, IBusinessCalendar calendar)
 {
     private Guid Company => tenant.ActiveCompanyId
-        ?? throw new InvalidOperationException("Aucune entreprise active.");
+        ?? throw TenantErrors.ActiveCompanyRequired();
 
     /// <summary>Vente saisie par un client (POS, API, synchronisation hors ligne, restaurant) : les
     /// montants saisis passent par <see cref="ISalePricingGuard"/> (recette Phase 55).</summary>
-    public Task<Result<CheckoutResult>> CheckoutAsync(CheckoutCommand cmd, CancellationToken ct = default)
-        => CheckoutCoreAsync(cmd, guardClientPricing: true, ct);
+    public async Task<Result<CheckoutResult>> CheckoutAsync(CheckoutCommand cmd, CancellationToken ct = default)
+    {
+        var result = await CheckoutCoreAsync(cmd, guardClientPricing: true, ct);
+        if (result.IsSuccess) NexoraMetrics.RecordCheckout("direct");
+        return result;
+    }
 
     /// <summary>Exécution d'une commande : ses prix ont été figés — et contrôlés — à la saisie de la
     /// commande ou du devis d'origine ; les rejouer ici exigerait à tort <c>pos.change_price</c>
     /// de la personne qui livre. Non exposé hors de la couche Application.</summary>
-    internal Task<Result<CheckoutResult>> CheckoutFrozenPricesAsync(CheckoutCommand cmd, CancellationToken ct = default)
-        => CheckoutCoreAsync(cmd, guardClientPricing: false, ct);
+    /// <summary>
+    /// Aperçu du panier (phase 6) : exactement le calcul de l'encaissement (prix, promotions, coupon, taxes, arrondis),
+    /// sans rien écrire. La caisse affiche ainsi le montant réellement dû — avant, elle ignorait taxes et promotions.
+    /// Jamais de coût.
+    /// </summary>
+    public async Task<Result<Nexora.Contracts.Sales.CartPreviewDto>> PreviewAsync(Nexora.Contracts.Sales.CartPreviewRequest r, CancellationToken ct = default)
+    {
+        if (r.Lines is null || r.Lines.Count == 0)
+            return Result.Success(new Nexora.Contracts.Sales.CartPreviewDto(0m, 0m, 0m, 0m, []));
+        if (r.Lines.Any(l => l.Quantity <= 0m || l.LineDiscount < 0m))
+            return Error.Validation("pos.cart_line", "Quantité positive et remise non négative requises.");
+        var lines = r.Lines.Select(l => new CheckoutLine(l.ProductId, l.Quantity, null, l.LineDiscount, null)).ToList();
+        if (await pricingGuard.ValidateProductsAsync(lines, ct) is { IsSuccess: false } unsellable) return unsellable.Error!;
+        var priced = await pricing.PriceCartAsync(r.InventoryLocationId, r.CustomerId, r.Currency, clock.UtcNow, lines, r.CouponCode, ct);
+
+        decimal subtotal = 0, discountTotal = 0, taxTotal = 0;
+        var result = new List<Nexora.Contracts.Sales.CartPreviewLineDto>();
+        foreach (var p in priced)
+        {
+            var gross = Rounding.Money(p.UnitPrice * p.Quantity);
+            var disc = Rounding.Money(p.ManualDiscount + p.PromotionDiscount);
+            var net = gross - disc;
+            var tax = Rounding.Money(net * p.TaxRate / 100m);
+            subtotal += gross;
+            discountTotal += disc;
+            taxTotal += tax;
+            result.Add(new(p.ProductId, p.Quantity, p.UnitPrice, p.ManualDiscount, p.PromotionDiscount, p.PromotionLabel,
+                tax, Rounding.Money(net + tax)));
+        }
+        return Result.Success(new Nexora.Contracts.Sales.CartPreviewDto(
+            subtotal, discountTotal, taxTotal, Rounding.Money(subtotal - discountTotal + taxTotal), result));
+    }
+
+    internal async Task<Result<CheckoutResult>> CheckoutFrozenPricesAsync(CheckoutCommand cmd, CancellationToken ct = default)
+    {
+        var result = await CheckoutCoreAsync(cmd, guardClientPricing: false, ct);
+        if (result.IsSuccess) NexoraMetrics.RecordCheckout("order");
+        return result;
+    }
 
     private async Task<Result<CheckoutResult>> CheckoutCoreAsync(CheckoutCommand cmd, bool guardClientPricing, CancellationToken ct)
     {
@@ -87,6 +129,12 @@ public sealed class SalesService(
         }
         var total = Rounding.Money(subtotal - discountTotal + taxTotal);
 
+        // Phase 5 : chaque encaissement est contrôlé (compte, moyen, référence, espèces ↔ caisse).
+        var sessionCashAccount = cmd.CashSessionId is { } scId ? await store.SessionCashAccountAsync(scId, ct) : null;
+        var tenderCheck = await ClassifyTendersAsync(cmd, sessionCashAccount, ct);
+        if (!tenderCheck.IsSuccess) return tenderCheck.Error!;
+        var isCash = tenderCheck.Value!;
+
         var paid = Rounding.Money(cmd.Tenders.Sum(t => t.Amount));
         var tenders = cmd.Tenders.ToList();
         decimal change = 0m;
@@ -94,6 +142,7 @@ public sealed class SalesService(
         // imputé par le serveur sur le crédit né de la vente, dans la même transaction.
         var storeCredit = Rounding.Money(cmd.StoreCreditAmount);
         if (storeCredit < 0m) return Error.Validation("pos.store_credit_amount", "Montant d'avoir invalide.");
+        if (cmd.CapStoreCreditToTotal && storeCredit > total) storeCredit = total;
         if (storeCredit > 0m)
         {
             if (cmd.CustomerId is not { } memoCustomer)
@@ -106,13 +155,25 @@ public sealed class SalesService(
         }
         decimal creditAmount = Rounding.Money(total - storeCredit - paid);
 
+        // Seules les espèces rendent la monnaie : carte, virement, mobile money… ne dépassent jamais le reste dû.
+        var nonCash = Rounding.Money(tenders.Where(t => !isCash(t)).Sum(t => t.Amount));
+        if (nonCash > Rounding.Money(total - storeCredit))
+            return Error.Validation("pos.non_cash_overpayment",
+                "Les paiements hors espèces (carte, mobile money, virement…) dépassent le reste dû : aucune monnaie ne peut être rendue sur ces moyens.");
+
         if (creditAmount < 0m)
         {
             change = -creditAmount;
             creditAmount = 0m;
-            // Le rendu monnaie sort de l'espèce : on ramène le dernier moyen au net.
-            var last = tenders[^1];
-            tenders[^1] = last with { Amount = Rounding.Money(last.Amount - change) };
+            // Le rendu monnaie sort des espèces, en partant du dernier encaissement en espèces.
+            var left = change;
+            for (var i = tenders.Count - 1; i >= 0 && left > 0m; i--)
+            {
+                if (!isCash(tenders[i])) continue;
+                var cut = Math.Min(left, tenders[i].Amount);
+                tenders[i] = tenders[i] with { Amount = Rounding.Money(tenders[i].Amount - cut) };
+                left -= cut;
+            }
         }
 
         var overrideApplied = false;
@@ -152,7 +213,7 @@ public sealed class SalesService(
         // (ni relancé, ni compté dans l'aging) — la durée de la fiche client ou le réglage s'applique.
         var creditDueDate = cmd.CreditDueDate;
         if (creditAmount > 0m && creditDueDate is null && cmd.CustomerId is { } dueCustomer)
-            creditDueDate = await credit.DefaultDueDateAsync(dueCustomer, DateOnly.FromDateTime(soldAt.UtcDateTime), ct);
+            creditDueDate = await credit.DefaultDueDateAsync(dueCustomer, calendar.DateOf(soldAt), ct);
 
         try
         {
@@ -279,6 +340,12 @@ public sealed class SalesService(
                         }, token);
                 }
 
+                // Un coupon est consommé une fois par vente, dans la transaction de vente : s'il a atteint
+                // sa limite entre le calcul du prix et l'encaissement, la vente entière est annulée.
+                if (priced.Select(x => x.CouponId).FirstOrDefault(c => c is not null) is { } couponUsed
+                    && !await store.ConsumeCouponAsync(couponUsed, token))
+                    throw new InvalidOperationException("Ce coupon a atteint sa limite d'utilisation.");
+
                 await store.AddSaleAsync(sale, token);
                 if (movements.Count > 0)
                 {
@@ -286,9 +353,6 @@ public sealed class SalesService(
                     movements[0] = movements[0] with { SourceOperationUuid = cmd.OperationUuid };
                     await stock.PostManyAsync(movements, token);
                 }
-
-                var sessionCashAccount = cmd.CashSessionId is { } sc
-                    ? await store.SessionCashAccountAsync(sc, token) : null;
 
                 foreach (var t in tenders.Where(t => t.Amount > 0m))
                 {
@@ -318,7 +382,9 @@ public sealed class SalesService(
                         PaymentId = payment.Id, Amount = t.Amount, CurrencyId = currencyId, CreatedAt = clock.UtcNow,
                     }, token);
 
-                    if (cmd.CashSessionId is { } sessionId && (t.FinancialAccountId == sessionCashAccount || IsCashLike(t)))
+                    // Seules les espèces entrent dans le tiroir : la carte ou le mobile money ne gonflent pas
+                    // l'attendu de la caisse à la clôture.
+                    if (cmd.CashSessionId is { } sessionId && isCash(t))
                         await sessions.AddMovementAsync(new CashMovement
                         {
                             Id = Guid.NewGuid(), CompanyId = Company, CashSessionId = sessionId,
@@ -345,14 +411,14 @@ public sealed class SalesService(
                 var posted = await engine.HandleAsync(new PosSaleRecorded(
                     Company, cmd.OperationUuid, soldAt, sale.Id, cmd.CustomerId,
                     netMoney, taxMoney, tenderSplits, new Money(creditAmount + storeCredit, cmd.Currency),
-                    creditDueDate ?? (storeCredit > 0m ? DateOnly.FromDateTime(soldAt.UtcDateTime) : null),
+                    creditDueDate ?? (storeCredit > 0m ? calendar.DateOf(soldAt) : null),
                     cogsTotal > 0m ? new Money(cogsTotal, cmd.Currency) : null), token);
                 if (!posted.IsSuccess) throw new InvalidOperationException(posted.Error!.Message);
 
                 if (storeCredit > 0m)
                 {
                     var used = await creditMemos.ApplyToReceivableAsync(cmd.CustomerId!.Value, posted.Value!.ReceivableId!.Value,
-                        cmd.Currency, storeCredit, soldAt, token);
+                        cmd.Currency, storeCredit, soldAt, token, cmd.StoreCreditSalesOrderId);
                     if (used != storeCredit)
                         throw new InvalidOperationException($"Avoir disponible insuffisant au moment de l'encaissement ({used} / {storeCredit}).");
                 }
@@ -412,6 +478,36 @@ public sealed class SalesService(
         return Result.Success(sale.Id);
     }
 
+    /// <summary>Restaurant (finalisation phase 13) : ajoute des articles à une vente en attente — mêmes contrôles de
+    /// produit et même tarification qu'à la mise en attente. Les montants définitifs sont recalculés à l'encaissement.
+    /// Renvoie les identifiants des lignes créées (dans l'ordre des lignes demandées).</summary>
+    public async Task<Result<IReadOnlyList<Guid>>> AddToParkedAsync(Guid saleId, string currency, IReadOnlyList<CheckoutLine> lines, CancellationToken ct = default)
+    {
+        if (lines.Count == 0) return Error.Validation("pos.empty_cart", "Aucun article à ajouter.");
+        var sale = await store.GetSaleWithLinesAsync(saleId, ct);
+        if (sale is null) return Error.NotFound("pos.sale_not_found", "Vente introuvable.");
+        if (sale.Status != SaleStatus.Parked) return Error.Conflict("pos.not_parked", "Cette commande n'est plus ouverte.");
+        if (await pricingGuard.ValidateProductsAsync(lines, ct) is { IsSuccess: false } unsellable)
+            return unsellable.Error!;
+        var location = sale.Lines.Select(l => l.InventoryLocationId).FirstOrDefault(l => l is not null);
+        if (location is null) return Error.Validation("pos.location_required", "Emplacement de stock inconnu pour cette commande.");
+        var priced = await pricing.PriceCartAsync(location.Value, sale.CustomerId, currency, clock.UtcNow, lines, null, ct);
+        var added = priced.Select(p => new SaleLine
+        {
+            Id = Guid.NewGuid(), SaleId = sale.Id, CompanyId = Company, ProductId = p.ProductId,
+            Description = p.Description, Quantity = p.Quantity, UnitPrice = p.UnitPrice,
+            Discount = p.ManualDiscount, TaxId = p.TaxId, LineTotal = Rounding.Money(p.UnitPrice * p.Quantity),
+            CostSnapshot = p.UnitCost, UnitCost = p.UnitCost, InventoryLocationId = location,
+        }).ToList();
+        await store.AddSaleLinesAsync(added, ct);
+        await uow.SaveChangesAsync(ct);
+        return Result.Success<IReadOnlyList<Guid>>(added.Select(l => l.Id).ToList());
+    }
+
+    /// <summary>Lignes d'une vente en attente (création) : identifiants, pour y rattacher des précisions de cuisine.</summary>
+    public async Task<IReadOnlyList<Guid>> ParkedLineIdsAsync(Guid saleId, CancellationToken ct = default)
+        => (await store.GetSaleWithLinesAsync(saleId, ct))?.Lines.Select(l => l.Id).ToList() ?? [];
+
     // --- Annulation contrôlée après validation (§24) ------------------
     public async Task<Result> VoidAsync(Guid saleId, string reason, CancellationToken ct = default)
     {
@@ -437,7 +533,54 @@ public sealed class SalesService(
             "Annuler une vente validée via un retour total (correction traçable) — voir SalesReturnService.");
     }
 
-    private static bool IsCashLike(TenderInput t) => t.PaymentMethodId is null;
+    /// <summary>
+    /// Contrôle des encaissements (phase 5) et classement espèces / hors espèces. Espèces = moyen de type
+    /// « cash », ou sans moyen sur un compte de type caisse (API historique, synchronisation hors ligne).
+    /// </summary>
+    private async Task<Result<Func<TenderInput, bool>>> ClassifyTendersAsync(CheckoutCommand cmd, Guid? sessionCashAccount, CancellationToken ct)
+    {
+        if (cmd.Tenders.Any(t => t.Amount < 0m))
+            return Error.Validation("pos.tender_amount", "Un montant encaissé ne peut être négatif.");
+        // Un encaissement nul (vente entièrement à crédit) est ignoré, comme à l'enregistrement des paiements.
+        var real = cmd.Tenders.Where(t => t.Amount > 0m).ToList();
+        if (real.Count == 0) return Result.Success<Func<TenderInput, bool>>(_ => false);
+
+        var accounts = (await store.TenderAccountsAsync(real.Select(t => t.FinancialAccountId).Distinct().ToList(), ct))
+            .ToDictionary(a => a.Id);
+        var methodIds = real.Where(t => t.PaymentMethodId is not null).Select(t => t.PaymentMethodId!.Value).Distinct().ToList();
+        var methods = methodIds.Count == 0 ? new Dictionary<Guid, TenderMethodInfo>()
+            : (await store.TenderMethodsAsync(methodIds, ct)).ToDictionary(m => m.Id);
+
+        bool Cash(TenderInput t) => t.PaymentMethodId is { } m && methods.TryGetValue(m, out var method)
+            ? method.Type == "cash"
+            : accounts.TryGetValue(t.FinancialAccountId, out var a) && a.AccountType == "cash";
+
+        foreach (var t in real)
+        {
+            if (!accounts.TryGetValue(t.FinancialAccountId, out var account) || account.Status != "active")
+                return Error.Validation("pos.tender_account", "Compte d'encaissement inconnu ou inactif.");
+            if (!string.Equals(account.Currency, cmd.Currency, StringComparison.OrdinalIgnoreCase))
+                return Error.Validation("pos.tender_currency", $"Le compte « {account.Name} » est en {account.Currency}, la vente en {cmd.Currency}.");
+            if (t.PaymentMethodId is { } mid)
+            {
+                if (!methods.TryGetValue(mid, out var method) || method.Status != "active")
+                    return Error.Validation("pos.tender_method", "Moyen de paiement inconnu ou inactif.");
+                if (method.Currency is { } mc && !string.Equals(mc, cmd.Currency, StringComparison.OrdinalIgnoreCase))
+                    return Error.Validation("pos.tender_currency", $"« {method.Name} » n'accepte que le {mc}.");
+                if (method.RequiresReference && string.IsNullOrWhiteSpace(t.Reference))
+                    return Error.Validation("pos.tender_reference", $"« {method.Name} » exige une référence (n° d'autorisation, de transaction…).");
+                var cashAccount = account.AccountType == "cash";
+                if (method.Type == "cash" && !cashAccount)
+                    return Error.Validation("pos.tender_account_type", $"Des espèces s'encaissent dans une caisse, pas sur « {account.Name} ».");
+                if (method.Type != "cash" && cashAccount)
+                    return Error.Validation("pos.tender_account_type",
+                        $"« {method.Name} » ne s'encaisse pas dans la caisse « {account.Name} » : choisissez le compte bancaire ou mobile money.");
+            }
+            if (Cash(t) && sessionCashAccount is { } drawer && t.FinancialAccountId != drawer)
+                return Error.Validation("pos.cash_account_mismatch", "Les espèces vont dans la caisse de la session ouverte.");
+        }
+        return Result.Success<Func<TenderInput, bool>>(Cash);
+    }
 
     /// <summary>Réglage <c>pos.require_cash_session</c> (défaut : non, pour les ventes API / commandes).</summary>
     private async Task<bool> RequiresCashSessionAsync(CancellationToken ct)

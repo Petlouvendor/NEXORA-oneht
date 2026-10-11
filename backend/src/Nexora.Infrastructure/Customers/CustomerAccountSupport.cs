@@ -36,14 +36,15 @@ internal static class CustomerAccountRules
     public static decimal Money(decimal v) => Math.Round(v, 2, MidpointRounding.AwayFromZero);
 
     public static Guid Company(ITenantContext tenant)
-        => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+        => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     public static Guid User(ITenantContext tenant)
         => tenant.UserId ?? throw new InvalidOperationException("Utilisateur requis.");
 
     public static async Task<string> NextNumberAsync(NexoraDbContext db, Guid company, string type, string prefix, CancellationToken ct)
     {
-        var year = DateTime.UtcNow.Year;
+        // Année locale de l'entreprise : next_document_number prend current_date (session au fuseau de l'entreprise).
+        int? year = null;
         var rows = await db.Database.SqlQuery<string>(
             $"""SELECT nexora.next_document_number({company}, {type}, {(Guid?)null}, {year}) AS "Value" """).ToListAsync(ct);
         return prefix + rows[0];
@@ -72,6 +73,7 @@ internal static class CustomerAccountRules
             return await db.Database.SqlQuery<Guid>($"""
                 SELECT DISTINCT ur.user_id AS "Value"
                 FROM nexora.user_role ur
+                JOIN nexora.role ro ON ro.id = ur.role_id AND ro.status = 'active'
                 JOIN nexora.role_permission rp ON rp.role_id = ur.role_id
                 JOIN nexora.permission p ON p.id = rp.permission_id
                 JOIN nexora.access_scope sc ON sc.id = ur.scope_id
@@ -154,8 +156,32 @@ public sealed class SqlCustomerCreditMemoWriter(NexoraDbContext db, ITenantConte
               AND m.status IN ('available', 'partially_used')
             """).FirstAsync(ct);
 
+    public async Task<Guid> IssueForOrderDepositAsync(Guid customerId, Guid paymentId, Guid salesOrderId, Guid currencyId,
+        decimal amount, string orderNumber, CancellationToken ct = default)
+    {
+        var company = CustomerAccountRules.Company(tenant);
+        var id = Guid.NewGuid();
+        var number = await CustomerAccountRules.NextNumberAsync(db, company, "customer_credit_memo", "AVC-", ct);
+        await db.Database.ExecuteSqlAsync($"""
+            INSERT INTO nexora.customer_credit_memo
+                (id, company_id, memo_number, customer_id, source_type, payment_id, sales_order_id, currency_id, amount,
+                 gl_account_key, reason, created_by)
+            VALUES ({id}, {company}, {number}, {customerId}, 'order_deposit', {paymentId}, {salesOrderId}, {currencyId}, {amount},
+                    'suspense', {"Commande " + orderNumber}, {tenant.UserId})
+            """, ct);
+        return id;
+    }
+
+    public Task<decimal> OrderDepositAvailableAsync(Guid salesOrderId, CancellationToken ct = default)
+        => db.Database.SqlQuery<decimal>($"""
+            SELECT COALESCE(SUM(m.remaining_amount), 0) AS "Value"
+            FROM nexora.customer_credit_memo m
+            WHERE m.company_id = {CustomerAccountRules.Company(tenant)} AND m.sales_order_id = {salesOrderId}
+              AND m.source_type = 'order_deposit' AND m.status IN ('available', 'partially_used')
+            """).FirstAsync(ct);
+
     public async Task<decimal> ApplyToReceivableAsync(Guid customerId, Guid receivableId, string currency, decimal amount,
-        DateTimeOffset at, CancellationToken ct = default)
+        DateTimeOffset at, CancellationToken ct = default, Guid? preferSalesOrderId = null)
     {
         var company = CustomerAccountRules.Company(tenant);
         // Avoirs verrouillés, du plus ancien au plus récent : deux caisses ne consomment pas le même avoir.
@@ -164,7 +190,8 @@ public sealed class SqlCustomerCreditMemoWriter(NexoraDbContext db, ITenantConte
             FROM nexora.customer_credit_memo m JOIN nexora.currency c ON c.id = m.currency_id
             WHERE m.company_id = {company} AND m.customer_id = {customerId} AND c.code = {currency}
               AND m.status IN ('available', 'partially_used') AND m.remaining_amount > 0
-            ORDER BY m.created_at, m.id
+            ORDER BY COALESCE(m.sales_order_id = {preferSalesOrderId}::uuid, false) DESC,
+                     m.created_at, m.id
             FOR UPDATE OF m
             """).ToListAsync(ct);
 

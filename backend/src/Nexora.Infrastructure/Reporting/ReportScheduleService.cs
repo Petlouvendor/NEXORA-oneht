@@ -24,7 +24,7 @@ public sealed class SqlReportScheduleService(
     private static readonly string[] Frequencies = ["daily", "weekly", "monthly", "on_close"];
     private static readonly string[] Formats = ["csv", "xlsx", "pdf"];
 
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record Row(Guid Id, string Name, string ReportKey, string Filter, string Frequency, string Format,
         string Recipients, string Status, DateTimeOffset? LastRunAt, DateTimeOffset? NextRunAt);

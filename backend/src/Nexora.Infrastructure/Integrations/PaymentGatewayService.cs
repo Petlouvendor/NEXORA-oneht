@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Nexora.Application.Abstractions;
+using Nexora.Application.Customers;
 using Nexora.Application.Finance;
 using Nexora.Application.Integrations;
 using Nexora.Contracts.Finance;
@@ -11,16 +12,18 @@ using Nexora.Infrastructure.Persistence;
 namespace Nexora.Infrastructure.Integrations;
 
 /// <summary>
-/// Passerelle de paiement indépendante du fournisseur (§7-11). L'intention est créée en
-/// « pending » via un adaptateur simulé ; la confirmation vient d'un webhook signé ou d'un
-/// rappel simulé (§42) et, seulement alors, déclenche un <c>payment</c> réel par le moteur
-/// financier. Le montant annoncé par le fournisseur est toujours revérifié (§12).
+/// Passerelle de paiement indépendante du fournisseur (§7-11 ; finalisation phase 15). L'intention est
+/// créée chez le fournisseur du connecteur (<see cref="IPaymentProvider"/>) et porte son mode :
+/// « simulation » (aucun argent réel, confirmée à la main en environnement de test) ou « réel »
+/// (confirmé seulement par le fournisseur, interrogé par <see cref="VerifyAsync"/>). Ce n'est qu'à la
+/// confirmation qu'un <c>payment</c> est passé par le moteur financier ; le montant est toujours revérifié (§12).
 /// </summary>
 public sealed class SqlPaymentGateway(
     NexoraDbContext db, ITenantContext tenant, IDateTimeProvider clock,
-    IFinanceOperations finance, IOutboundWebhookService outbound) : IPaymentGateway
+    IFinanceOperations finance, IOutboundWebhookService outbound, IPaymentProviderRegistry providers,
+    Payroll.PersonalDataProtector protector, ICustomerAccountService customerAccounts) : IPaymentGateway
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
     private static readonly string[] Methods = ["card", "mobile_money", "bank_transfer", "wallet", "link", "qr"];
     private static readonly string[] Purposes = ["sale", "receivable", "link"];
 
@@ -28,9 +31,9 @@ public sealed class SqlPaymentGateway(
         Guid Id, Guid ConnectorId, string? ProviderReference, decimal Amount, Guid CurrencyId, string Currency,
         string Method, string Purpose, string Status, Guid? PaymentId, decimal RefundedAmount, Guid? CustomerId,
         Guid? FinancialAccountId, string ProviderResponse, DateTimeOffset? ExpiresAt, DateTimeOffset? ConfirmedAt,
-        string? FailureReason, DateTimeOffset CreatedAt);
+        string? FailureReason, DateTimeOffset CreatedAt, string Mode, string? RedirectUrl, string? ProviderOrderId);
 
-    private sealed record ConnectorRow(Guid Id, string ConnectorType, string Status, string Provider);
+    private sealed record ConnectorRow(Guid Id, string ConnectorType, string Status, string Provider, string Environment);
 
     public async Task<Result<PaymentIntentDto>> CreateIntentAsync(CreatePaymentIntentRequest request, CancellationToken ct = default)
     {
@@ -44,15 +47,21 @@ public sealed class SqlPaymentGateway(
         if (dup is not null) return Result.Success(ToDto(dup));
 
         var connector = await db.Database.SqlQuery<ConnectorRow>($"""
-            SELECT id AS "Id", connector_type AS "ConnectorType", status AS "Status", provider AS "Provider"
+            SELECT id AS "Id", connector_type AS "ConnectorType", status AS "Status", provider AS "Provider", environment AS "Environment"
             FROM nexora.integration_connector WHERE id = {request.ConnectorId} AND company_id = {Company}
             """).FirstOrDefaultAsync(ct);
         if (connector is null) return Error.NotFound("integrations.connector", "Connecteur introuvable.");
         if (connector.ConnectorType != "payment") return Error.Validation("integrations.connector_type", "Le connecteur n'est pas de type paiement.");
         if (connector.Status != "active") return Error.Validation("integrations.connector_inactive", "Connecteur désactivé : paiement refusé (§40).");
+        var provider = providers.Resolve(connector.Provider);
+        if (provider is null) return Error.Validation("integrations.provider_unknown", "Aucun fournisseur de paiement n'est disponible pour ce connecteur.");
+        var currencyCode = request.Currency.Trim().ToUpperInvariant();
+        if (provider.Currencies.Count > 0 && !provider.Currencies.Contains(currencyCode))
+            return Error.Validation("integrations.currency_unsupported",
+                $"{provider.DisplayName} n'accepte que : {string.Join(", ", provider.Currencies)}.");
 
         var currencyId = await db.Database.SqlQuery<Guid>($"""
-            SELECT id AS "Value" FROM nexora.currency WHERE code = {request.Currency.Trim().ToUpperInvariant()}
+            SELECT id AS "Value" FROM nexora.currency WHERE code = {currencyCode}
             """).FirstOrDefaultAsync(ct);
         if (currencyId == Guid.Empty) return Error.Validation("integrations.currency", $"Devise « {request.Currency} » inconnue.");
 
@@ -67,7 +76,16 @@ public sealed class SqlPaymentGateway(
         if (accountExists == 0) return Error.NotFound("integrations.settlement_account", "Compte de règlement introuvable.");
 
         var expiresAt = clock.UtcNow.AddMinutes(Math.Clamp(request.ExpiresInMinutes ?? 30, 1, 1440));
-        var providerRef = "SIM-" + Guid.NewGuid().ToString("N")[..16].ToUpperInvariant();
+        // Numéro de commande transmis au fournisseur : chiffres seulement (forme des exemples MonCash), unique.
+        var orderId = $"{clock.UtcNow:yyMMddHHmmss}{Random.Shared.Next(100000, 999999)}";
+        var context = await ConnectorContexts.LoadAsync(db, protector, connector.Id, Company, ct);
+        var providerResult = await provider.CreatePaymentAsync(context!,
+            new ProviderPaymentRequest(orderId, request.Amount, currencyCode, request.Reference), ct);
+        if (!providerResult.Success)
+            return Error.Conflict("integrations.provider_refused",
+                $"{provider.DisplayName} : {providerResult.Message}{(providerResult.ErrorStatus is { } es ? $" ({es})" : "")}");
+        var providerRef = providerResult.ProviderReference;
+        var mode = provider.IsSimulation ? "simulation" : "real";
 
         var allocations = (request.Allocations ?? [])
             .Where(a => a.Amount > 0m)
@@ -75,7 +93,8 @@ public sealed class SqlPaymentGateway(
             .ToArray();
         var providerResponse = JsonSerializer.Serialize(new
         {
-            adapter = "simulated",
+            adapter = provider.Key,
+            mode,
             provider = connector.Provider,
             state = "pending",
             nexora = new { allocations, reference = request.Reference },
@@ -88,10 +107,11 @@ public sealed class SqlPaymentGateway(
                 INSERT INTO nexora.payment_intent
                     (id, company_id, connector_id, idempotency_key, provider_reference, amount, currency_id,
                      method, purpose, sale_id, customer_id, financial_account_id, status, provider_response,
-                     expires_at, requested_by)
+                     expires_at, requested_by, mode, redirect_url, provider_order_id)
                 VALUES ({id}, {Company}, {request.ConnectorId}, {request.IdempotencyKey.Trim()}, {providerRef},
                         {request.Amount}, {currencyId}, {method}, {purpose}, {request.SaleId}, {request.CustomerId},
-                        {request.SettlementAccountId}, 'pending', {providerResponse}::jsonb, {expiresAt}, {tenant.UserId})
+                        {request.SettlementAccountId}, 'pending', {providerResponse}::jsonb, {expiresAt}, {tenant.UserId},
+                        {mode}, {providerResult.RedirectUrl}, {orderId})
                 """, ct);
         }
         catch (Npgsql.PostgresException pg) when (pg.SqlState == "23505")
@@ -121,7 +141,8 @@ public sealed class SqlPaymentGateway(
                    pi.refunded_amount AS "RefundedAmount", pi.customer_id AS "CustomerId",
                    pi.financial_account_id AS "FinancialAccountId", pi.provider_response::text AS "ProviderResponse",
                    pi.expires_at AS "ExpiresAt", pi.confirmed_at AS "ConfirmedAt", pi.failure_reason AS "FailureReason",
-                   pi.created_at AS "CreatedAt"
+                   pi.created_at AS "CreatedAt", pi.mode AS "Mode", pi.redirect_url AS "RedirectUrl",
+                   pi.provider_order_id AS "ProviderOrderId"
             FROM nexora.payment_intent pi JOIN nexora.currency cur ON cur.id = pi.currency_id
             WHERE pi.company_id = {Company} AND ({s}::text IS NULL OR pi.status = {s})
             ORDER BY pi.created_at DESC LIMIT 200
@@ -133,15 +154,22 @@ public sealed class SqlPaymentGateway(
     {
         var row = await LoadAsync(id: intentId, ct: ct);
         if (row is null) return Error.NotFound("integrations.intent", "Intention de paiement introuvable.");
+        // Une réponse « fournisseur » saisie à la main n'existe qu'en simulation : un paiement réel n'est
+        // confirmé que par le fournisseur lui-même (sinon on encaisserait de l'argent qui n'est jamais arrivé).
+        if (row.Mode != "simulation")
+            return Error.Conflict("integrations.not_simulation",
+                "Paiement réel : seule la vérification auprès du fournisseur peut le confirmer.");
+        if (await ConnectorEnvironmentAsync(row.ConnectorId, ct) == "production")
+            return Error.Conflict("integrations.not_simulation", "Simulation interdite sur un connecteur de production.");
 
         return (request.Outcome?.Trim().ToLowerInvariant()) switch
         {
             "confirmed" or "confirm" or "success" or "succeeded"
                 => await ConfirmAsync(row, request.ProviderAmount, request.ProviderReference ?? row.ProviderReference, ct),
             "failed" or "failure" or "declined"
-                => await TerminateAsync(row, "failed", "Paiement refusé par le fournisseur (simulation §42).", ct),
+                => await TerminateAsync(row, "failed", "SIMULATION : paiement refusé.", ct),
             "cancelled" or "canceled" or "expired"
-                => await TerminateAsync(row, "cancelled", "Paiement annulé chez le fournisseur (simulation §42).", ct),
+                => await TerminateAsync(row, "cancelled", "SIMULATION : paiement annulé.", ct),
             _ => Error.Validation("integrations.callback_outcome", "Issue inconnue (confirmed / failed / cancelled)."),
         };
     }
@@ -242,23 +270,43 @@ public sealed class SqlPaymentGateway(
         return Result.Success(ToDto(row with { Status = status, FailureReason = reason }));
     }
 
+    /// <summary>
+    /// Remboursement (finalisation phase 15). Il changeait seulement le statut : ni l'argent ni la comptabilité ne
+    /// bougeaient. Désormais : simulation → remboursement total qui annule réellement le versement client
+    /// (contre-passation) ; fournisseur réel sans remboursement par API (MonCash) → refus explicite.
+    /// </summary>
     public async Task<Result<PaymentIntentDto>> RefundAsync(Guid intentId, RefundPaymentRequest request, CancellationToken ct = default)
     {
         var row = await LoadAsync(id: intentId, ct: ct);
         if (row is null) return Error.NotFound("integrations.intent", "Intention de paiement introuvable.");
-        if (row.Status is not ("confirmed" or "partially_refunded"))
+        if (row.Status != "confirmed")
             return Error.Validation("integrations.refund_state", "Seul un paiement confirmé peut être remboursé.");
         if (request.Amount <= 0m) return Error.Validation("integrations.refund_amount", "Le montant du remboursement doit être positif.");
-        var newRefunded = row.RefundedAmount + request.Amount;
-        if (newRefunded > row.Amount)
-            return Error.Validation("integrations.refund_amount", $"Remboursement cumulé {newRefunded} > montant du paiement {row.Amount}.");
+        var reason = request.Reason?.Trim() ?? "";
+        if (reason.Length < 5) return Error.Validation("integrations.refund_reason", "Le motif du remboursement est obligatoire (5 caractères au moins).");
 
-        var status = newRefunded >= row.Amount ? "refunded" : "partially_refunded";
+        var provider = providers.Resolve(await ConnectorProviderAsync(row.ConnectorId, ct));
+        if (provider is null || !provider.SupportsRefund || (row.Mode == "real" && !provider.IsSimulation))
+            return Error.Conflict("integrations.refund_unsupported",
+                $"{provider?.DisplayName ?? "Ce fournisseur"} ne propose pas de remboursement par API : remboursez le client depuis le portail du " +
+                "fournisseur, puis annulez le versement dans son compte client (Clients → versements).");
+        if (request.Amount != row.Amount)
+            return Error.Validation("integrations.refund_partial",
+                "Seul le remboursement total est pris en charge : il annule le versement et ses écritures.");
+        if (row.PaymentId is not { } paymentId)
+            return Error.Conflict("integrations.refund_no_payment", "Aucun versement n'est lié à ce paiement.");
+
+        var voided = await customerAccounts.VoidPaymentAsync(paymentId, new Nexora.Contracts.Customers.VoidPaymentRequest(
+            $"Remboursement {(row.Mode == "simulation" ? "(SIMULATION) " : "")}{row.ProviderReference} : {reason}"), ct);
+        if (!voided.IsSuccess) return voided.Error!;
+
+        var newRefunded = row.Amount;
+        var status = "refunded";
         var pr = PatchProviderResponse(row.ProviderResponse, "refund", request.Amount, row.ProviderReference);
         await db.Database.ExecuteSqlAsync($"""
             UPDATE nexora.payment_intent
             SET status = {status}, refunded_amount = {newRefunded},
-                failure_reason = {"Remboursement : " + (request.Reason ?? "").Trim()},
+                failure_reason = {"Remboursement : " + reason},
                 provider_response = {pr}::jsonb, updated_at = now()
             WHERE id = {row.Id}
             """, ct);
@@ -272,6 +320,53 @@ public sealed class SqlPaymentGateway(
         var updated = await LoadAsync(id: row.Id, ct: ct);
         return Result.Success(ToDto(updated!));
     }
+
+    public async Task<Result<PaymentIntentDto>> VerifyAsync(Guid intentId, CancellationToken ct = default)
+    {
+        var row = await LoadAsync(id: intentId, ct: ct);
+        if (row is null) return Error.NotFound("integrations.intent", "Intention de paiement introuvable.");
+        if (row.Status == "confirmed") return Result.Success(ToDto(row));
+        if (row.Mode != "real")
+            return Error.Conflict("integrations.simulation_no_provider",
+                "SIMULATION : aucun fournisseur à interroger ; utilisez « Simuler la réponse du fournisseur ».");
+        if (row.Status is not ("pending" or "authorized"))
+            return Error.Conflict("integrations.intent_terminal", $"Paiement déjà « {row.Status} ».");
+        var provider = providers.Resolve(await ConnectorProviderAsync(row.ConnectorId, ct));
+        if (provider is null || row.ProviderOrderId is null)
+            return Error.Validation("integrations.provider_unknown", "Fournisseur ou numéro de commande inconnu : vérification impossible.");
+
+        var context = await ConnectorContexts.LoadAsync(db, protector, row.ConnectorId, Company, ct);
+        var lookup = await provider.RetrievePaymentAsync(context!, row.ProviderOrderId, ct);
+        return lookup.State switch
+        {
+            // Le montant du fournisseur passe par le contrôle d'écart habituel (§12).
+            "paid" => await ConfirmAsync(row, lookup.Amount ?? -1m, lookup.TransactionId ?? row.ProviderReference, ct),
+            "not_found" => Result.Success(ToDto(row with { FailureReason = lookup.Message })),
+            _ => Error.Unexpected("integrations.provider_unreachable",
+                $"{provider.DisplayName} : {lookup.Message}{(lookup.ErrorStatus is { } es ? $" ({es})" : "")}"),
+        };
+    }
+
+    public async Task<Result<PaymentIntentDto>> ConfirmFromProviderEventAsync(
+        Guid intentId, decimal? providerAmount, string? providerReference, CancellationToken ct = default)
+    {
+        var row = await LoadAsync(id: intentId, ct: ct);
+        if (row is null) return Error.NotFound("integrations.intent", "Intention de paiement introuvable.");
+        // Un événement reçu ne suffit pas pour un paiement réel : on interroge le fournisseur.
+        return row.Mode == "real"
+            ? await VerifyAsync(intentId, ct)
+            : await ProviderCallbackAsync(intentId, new ProviderCallbackRequest("confirmed", providerAmount, providerReference), ct);
+    }
+
+    private Task<string> ConnectorProviderAsync(Guid connectorId, CancellationToken ct)
+        => db.Database.SqlQuery<string>($"""
+            SELECT provider AS "Value" FROM nexora.integration_connector WHERE id = {connectorId} AND company_id = {Company}
+            """).FirstAsync(ct);
+
+    private Task<string> ConnectorEnvironmentAsync(Guid connectorId, CancellationToken ct)
+        => db.Database.SqlQuery<string>($"""
+            SELECT environment AS "Value" FROM nexora.integration_connector WHERE id = {connectorId} AND company_id = {Company}
+            """).FirstAsync(ct);
 
     public async Task<int> ExpireStaleAsync(CancellationToken ct = default)
         => await db.Database.ExecuteSqlAsync($"""
@@ -290,7 +385,8 @@ public sealed class SqlPaymentGateway(
                    pi.refunded_amount AS "RefundedAmount", pi.customer_id AS "CustomerId",
                    pi.financial_account_id AS "FinancialAccountId", pi.provider_response::text AS "ProviderResponse",
                    pi.expires_at AS "ExpiresAt", pi.confirmed_at AS "ConfirmedAt", pi.failure_reason AS "FailureReason",
-                   pi.created_at AS "CreatedAt"
+                   pi.created_at AS "CreatedAt", pi.mode AS "Mode", pi.redirect_url AS "RedirectUrl",
+                   pi.provider_order_id AS "ProviderOrderId"
             FROM nexora.payment_intent pi JOIN nexora.currency cur ON cur.id = pi.currency_id
             WHERE pi.company_id = {Company}
               AND (({id}::uuid IS NULL) OR pi.id = {id})
@@ -338,13 +434,14 @@ public sealed class SqlPaymentGateway(
 
     private static PaymentIntentDto ToDto(IntentRow r) => new(
         r.Id, r.ConnectorId, r.ProviderReference, r.Amount, r.Currency, r.Method, r.Purpose, r.Status,
-        r.PaymentId, r.RefundedAmount, r.ExpiresAt, r.ConfirmedAt, r.FailureReason, r.CreatedAt);
+        r.PaymentId, r.RefundedAmount, r.ExpiresAt, r.ConfirmedAt, r.FailureReason, r.CreatedAt,
+        r.Mode, r.RedirectUrl, r.ProviderOrderId, r.CustomerId);
 }
 
 /// <summary>Rapprochement des paiements : intentions fournisseur ↔ paiements internes (§15).</summary>
 public sealed class SqlPaymentReconciliationService(NexoraDbContext db, ITenantContext tenant) : IPaymentReconciliationService
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     private sealed record IntentLite(
         Guid Id, string? ProviderReference, decimal Amount, string Status, Guid? PaymentId,

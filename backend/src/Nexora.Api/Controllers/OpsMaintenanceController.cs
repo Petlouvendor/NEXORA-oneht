@@ -144,6 +144,7 @@ public sealed class OpsMaintenanceController(
         => Ok(await retention.PreviewAsync(request, ct));
 
     [HttpPost("purge/execute")]
+    [RequireStepUp(StepUpPurposes.Deletion)]
     [RequirePermission(Permissions.Operations.Manage)]
     public async Task<IActionResult> ExecutePurge([FromBody] PurgePreviewRequest request, CancellationToken ct)
         => FromResult(await retention.ExecuteAsync(request, ct));

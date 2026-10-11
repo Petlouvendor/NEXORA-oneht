@@ -6,6 +6,12 @@ public sealed record CheckoutLine(
 public sealed record TenderInput(
     Guid FinancialAccountId, Guid? PaymentMethodId, decimal Amount, string? Reference);
 
+/// <summary>Compte d'encaissement vu par le contrôle des paiements (phase 5).</summary>
+public sealed record TenderAccountInfo(Guid Id, string Name, string AccountType, string Currency, string Status);
+
+/// <summary>Moyen de paiement vu par le contrôle des paiements (phase 5).</summary>
+public sealed record TenderMethodInfo(Guid Id, string Name, string Type, string? Currency, bool RequiresReference, string Status);
+
 public sealed record CheckoutCommand(
     Guid OperationUuid,
     Guid InventoryLocationId,
@@ -22,7 +28,11 @@ public sealed record CheckoutCommand(
     string? CreditOverrideReason,
     DateTimeOffset? SoldAt,
     // Module clients §7, §15 : part payée avec l'avoir disponible du client (imputé par le serveur).
-    decimal StoreCreditAmount = 0m);
+    decimal StoreCreditAmount = 0m,
+    // Phase 4 : acompte d'une commande — ses avoirs sont imputés en premier ; le montant est plafonné au
+    // total de la vente (le total exact n'est connu qu'après tarification).
+    Guid? StoreCreditSalesOrderId = null,
+    bool CapStoreCreditToTotal = false);
 
 public sealed record CheckoutLineResult(
     Guid ProductId, decimal Quantity, decimal UnitPrice, decimal Discount, decimal TaxAmount, decimal LineTotal);

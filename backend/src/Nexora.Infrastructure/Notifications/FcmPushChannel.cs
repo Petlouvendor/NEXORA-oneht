@@ -3,6 +3,7 @@ using FirebaseAdmin.Messaging;
 using Google.Apis.Auth.OAuth2;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Nexora.Application.Integrations;
 using Nexora.Application.Notifications;
 using Nexora.Contracts.Notifications;
 
@@ -33,6 +34,52 @@ public sealed class FcmPushChannel : INotificationChannel, IDisposable
     private bool _initFailed;
 
     public string Channel => "push";
+    public string ProviderName => "Firebase Cloud Messaging";
+    public bool IsConfigured => _opts.Enabled && !string.IsNullOrWhiteSpace(_opts.ServiceAccountJson);
+
+    public string ConfigurationSummary => !IsConfigured
+        ? "Non configuré : renseignez Notifications:Fcm (Enabled, ServiceAccountJson) dans la configuration du serveur."
+        : _opts.ServiceAccountJson.TrimStart().StartsWith('{')
+            ? "Compte de service fourni dans la configuration (contenu masqué)."
+            : $"Compte de service : fichier {System.IO.Path.GetFileName(_opts.ServiceAccountJson)}";
+
+    /// <summary>
+    /// Test sans rien envoyer : message « à blanc » (dryRun) vers un jeton fictif. Si Firebase authentifie la
+    /// demande, il refuse le jeton (attendu) ; s'il refuse le compte de service, c'est une erreur d'authentification.
+    /// </summary>
+    public async Task<ChannelTestResultDto> TestAsync(CancellationToken ct = default)
+    {
+        if (!IsConfigured) return new ChannelTestResultDto(Channel, ConnectionStatus.NotConfigured, ConfigurationSummary, 0);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var messaging = GetMessaging();
+        if (messaging is null)
+            return new ChannelTestResultDto(Channel, ConnectionStatus.AuthenticationFailed,
+                "Compte de service Firebase illisible ou invalide : vérifiez Notifications:Fcm:ServiceAccountJson.", 0);
+        try
+        {
+            await messaging.SendAsync(new Message { Token = "nexora-test-connexion", Notification = new Notification { Title = "Test" } },
+                dryRun: true, ct).WaitAsync(TimeSpan.FromSeconds(15), ct);
+            return new ChannelTestResultDto(Channel, ConnectionStatus.Connected, "Firebase a accepté la demande à blanc (aucun message envoyé).", (int)sw.ElapsedMilliseconds);
+        }
+        catch (FirebaseMessagingException e) when (e.ErrorCode is ErrorCode.Unauthenticated or ErrorCode.PermissionDenied)
+        {
+            return new ChannelTestResultDto(Channel, ConnectionStatus.AuthenticationFailed, $"Firebase refuse le compte de service : {e.Message}", (int)sw.ElapsedMilliseconds);
+        }
+        catch (FirebaseMessagingException e) when (e.ErrorCode is ErrorCode.InvalidArgument or ErrorCode.NotFound
+                                                   || e.MessagingErrorCode is MessagingErrorCode.Unregistered or MessagingErrorCode.InvalidArgument)
+        {
+            return new ChannelTestResultDto(Channel, ConnectionStatus.Connected,
+                "Firebase a authentifié la demande et refusé le jeton fictif, comme prévu (aucun message envoyé).", (int)sw.ElapsedMilliseconds);
+        }
+        catch (TimeoutException)
+        {
+            return new ChannelTestResultDto(Channel, ConnectionStatus.Timeout, "Firebase n'a pas répondu en 15 secondes.", (int)sw.ElapsedMilliseconds);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            return new ChannelTestResultDto(Channel, ConnectionStatus.Unavailable, $"Firebase injoignable : {e.Message}", (int)sw.ElapsedMilliseconds);
+        }
+    }
 
     public FcmPushChannel(IOptions<FcmOptions> opts, ILogger<FcmPushChannel> logger)
     {
@@ -42,15 +89,14 @@ public sealed class FcmPushChannel : INotificationChannel, IDisposable
 
     public async Task<ChannelSendResult> SendAsync(OutboxMessageDto m, CancellationToken ct = default)
     {
-        if (!_opts.Enabled || string.IsNullOrWhiteSpace(_opts.ServiceAccountJson))
+        if (!IsConfigured)
         {
-            _logger.LogInformation("[push-fcm] canal non configuré — log seulement → {Address} · {Subject}",
-                m.Address, m.Subject);
-            return ChannelSendResult.Fail("Canal FCM non configuré (Notifications:Fcm:Enabled=false).");
+            _logger.LogInformation("[push-fcm] fournisseur non configuré — rien n'est envoyé → {Subject}", m.Subject);
+            return ChannelSendResult.Unconfigured("Fournisseur push non configuré : le message n'a pas été envoyé.");
         }
 
         if (string.IsNullOrWhiteSpace(m.Address))
-            return ChannelSendResult.Retry($"Jeton FCM absent pour la notification {m.Id}.");
+            return ChannelSendResult.Fail("Le destinataire n'a pas d'appareil enregistré pour les notifications push.");
 
         var messaging = GetMessaging();
         if (messaging is null)
@@ -73,10 +119,11 @@ public sealed class FcmPushChannel : INotificationChannel, IDisposable
                 ["notificationId"] = m.Id.ToString(),
                 ["category"] = m.Category,
             },
-            // Android : priorité haute pour les notifications critiques (Priority >= 3).
+            // Android : priorité haute pour les notifications importantes. L'échelle va de 1 (la plus haute) à 5 :
+            // l'ancien test « >= 3 » donnait la priorité haute aux messages les moins importants.
             Android = new AndroidConfig
             {
-                Priority = m.Priority >= 3 ? Priority.High : Priority.Normal,
+                Priority = m.Priority <= 2 ? Priority.High : Priority.Normal,
             },
             // APNs (iOS) : badge + son par défaut.
             Apns = new ApnsConfig

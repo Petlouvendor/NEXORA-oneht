@@ -25,6 +25,7 @@ public sealed class UsersController(IUserAssignmentService assignments, IMfaServ
     /// Un compte n'existe jamais sans rôle, et ne peut pas être plus puissant que son créateur.</summary>
     [HttpPost]
     [RequirePermission(Permissions.Admin.ManageUsers)]
+    [RequireStepUp(StepUpPurposes.PermissionChange)]
     public async Task<IActionResult> Create([FromBody] CreateUserRequest r, CancellationToken ct)
         => FromResult(await assignments.CreateUserAsync(r, ct));
 
@@ -34,11 +35,13 @@ public sealed class UsersController(IUserAssignmentService assignments, IMfaServ
         => FromResult(await assignments.ListAssignmentsAsync(id, ct));
 
     [HttpPost("{id:guid}/assignments")]
+    [RequireStepUp(StepUpPurposes.PermissionChange)]
     [RequirePermission(Permissions.Admin.ManageUsers)]
     public async Task<IActionResult> Grant(Guid id, [FromBody] GrantAssignmentRequest r, CancellationToken ct)
         => FromResult(await assignments.GrantAsync(id, r, ct));
 
     [HttpPost("assignments/{assignmentId:guid}/revoke")]
+    [RequireStepUp(StepUpPurposes.PermissionChange)]
     [RequirePermission(Permissions.Admin.ManageUsers)]
     public async Task<IActionResult> Revoke(Guid assignmentId, [FromBody] RevokeAssignmentRequest r, CancellationToken ct)
         => FromResult(await assignments.RevokeAsync(assignmentId, r, ct));

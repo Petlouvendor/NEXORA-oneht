@@ -38,7 +38,7 @@ public static class PayrollRules
     public static decimal Money(decimal v) => Math.Round(v, 2, MidpointRounding.AwayFromZero);
 
     public static Guid Company(ITenantContext tenant)
-        => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+        => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     public static Guid User(ITenantContext tenant)
         => tenant.UserId ?? throw new InvalidOperationException("Utilisateur requis.");
@@ -46,7 +46,7 @@ public static class PayrollRules
     /// <summary>Numéro de pièce : préfixe + séquence d'entreprise par an (ex. <c>AVS-2026-000001</c>).</summary>
     public static async Task<string> NextNumberAsync(NexoraDbContext db, Guid company, string type, string prefix, int? year, CancellationToken ct)
     {
-        var y = year ?? DateTime.UtcNow.Year;
+        var y = year;   // null : année locale de l'entreprise (current_date, session au fuseau de l'entreprise)
         var rows = await db.Database.SqlQuery<string>(
             $"""SELECT nexora.next_document_number({company}, {type}, {(Guid?)null}, {y}) AS "Value" """).ToListAsync(ct);
         return prefix + rows[0];

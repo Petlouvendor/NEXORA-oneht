@@ -10,8 +10,14 @@ namespace Nexora.Api.Controllers;
 /// <summary>Commandes clients (Phase 25 §18-20, §43) : création → confirmation → réservation → acompte → exécution.</summary>
 [ApiVersion("1.0")]
 [Route("api/v{version:apiVersion}/orders")]
-public sealed class OrdersController(OrderService orders, ISalesQueries queries) : ApiControllerBase
+public sealed class OrdersController(OrderService orders, ISalesQueries queries, Nexora.Application.Customers.ICustomerAccountQueries accounts)
+    : ApiControllerBase
 {
+    /// <summary>Comptes d'encaissement et moyens de paiement (acompte, solde à la livraison), sans solde de trésorerie.</summary>
+    [HttpGet("payment-options")]
+    [RequirePermission(Permissions.Pos.ManageOrder)]
+    public async Task<IActionResult> PaymentOptions(CancellationToken ct) => Ok(await accounts.PaymentOptionsAsync(ct));
+
     [HttpGet]
     [RequirePermission(Permissions.Pos.ManageOrder)]
     public async Task<IActionResult> List([FromQuery] string? status, [FromQuery] int limit = 50, CancellationToken ct = default)
@@ -29,6 +35,11 @@ public sealed class OrdersController(OrderService orders, ISalesQueries queries)
         var o = await queries.GetOrderAsync(id, ct);
         return o is null ? NotFound() : Ok(o);
     }
+
+    [HttpPut("{id:guid}")]
+    [RequirePermission(Permissions.Pos.ManageOrder)]
+    public async Task<IActionResult> Update(Guid id, [FromBody] CreateOrderRequest r, CancellationToken ct)
+        => FromResult(await orders.UpdateOrderAsync(id, r, ct));
 
     [HttpPost("{id:guid}/confirm")]
     [RequirePermission(Permissions.Pos.ManageOrder)]

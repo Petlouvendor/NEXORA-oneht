@@ -62,8 +62,12 @@ public sealed class MeController(
     public async Task<IActionResult> Logout(CancellationToken ct)
     {
         if (tenant.UserId is not { } userId) return Unauthorized();
-        if (Guid.TryParse(User.FindFirst("jti")?.Value, out var tokenId))
+        // La session entière tombe : jeton d'accès courant et jetons de rafraîchissement (finalisation phase 17).
+        if (Guid.TryParse(User.FindFirst("sid")?.Value, out var sessionId))
+            await sessions.RevokeSessionAsync(sessionId, "déconnexion", ct);
+        else if (Guid.TryParse(User.FindFirst("jti")?.Value, out var tokenId))
             await sessions.RevokeTokenAsync(tokenId, "déconnexion", ct);
+        AuthController.ClearRefreshCookie(Response);
         await securityEvents.RecordAsync("logout", userId, tenant.ActiveCompanyId,
             ipAddress: HttpContext.Connection.RemoteIpAddress?.ToString(), ct: ct);
         return NoContent();

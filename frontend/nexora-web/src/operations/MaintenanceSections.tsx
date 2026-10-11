@@ -1,5 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { ApiError } from "@/core/apiClient";
+import { usePrompt } from "@/shared/PromptDialog";
+import { TopLayer } from "@/shared/TopLayer";
+import { Button, ConfirmDialog, Field, Modal, Select, TextInput } from "@/shared/ui";
 import {
   databaseMaintenance, deadLetters, decideDataCorrection, deleteDeadLetter, deleteFeatureFlag,
   diagnostics, executePurge, invalidateCache, listDataCorrections, listFeatureFlags, listJobs,
@@ -212,21 +215,25 @@ export function DiagnosticsSection({ canManage }: { canManage: boolean }) {
 
 export function FeatureFlagsSection({ canManage }: { canManage: boolean }) {
   const flags = useAsync(listFeatureFlags);
+  const prompt = usePrompt();
   return (
     <section className="nx-card" style={{ display: "grid", gap: 8 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div style={label}>Bascules de fonctionnalité (§27)</div>
         {canManage && (
           <button className="nx-btn nx-btn--ghost" style={{ padding: "4px 12px", fontSize: 13 }} disabled={flags.busy}
-                  onClick={() => {
-                    const key = prompt("Clé de la bascule :"); if (!key) return;
-                    void flags.run(() => saveFeatureFlag({ key, scope: "global", enabled: true }));
+                  onClick={async () => {
+                    const key = await prompt.ask({ title: "Nouvelle bascule globale", label: "Clé de la bascule", required: true, minLength: 2,
+                      hint: "Ex. caisse.nouveau_ticket — 2 à 100 caractères. Créée activée ; « Désactiver » sert de coupe-circuit.",
+                      confirmLabel: "Créer", onSubmit: (k) => saveFeatureFlag({ key: k, scope: "global", enabled: true }) });
+                    if (key) flags.load();
                   }}>
             Nouvelle bascule globale
           </button>
         )}
       </div>
       {flags.error && <div className="nx-error-text">{flags.error}</div>}
+      {prompt.dialog}
       <div style={{ overflowX: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
           <thead><tr>{["Clé", "Portée", "État", "Expire", canManage ? "" : undefined].filter(Boolean).map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
@@ -268,24 +275,20 @@ const NEXT_STATUS: Record<string, string[]> = {
 
 export function MaintenanceWindowsSection({ canManage }: { canManage: boolean }) {
   const mw = useAsync(listMaintenanceWindows);
+  const [planning, setPlanning] = useState(false);
   return (
     <section className="nx-card" style={{ display: "grid", gap: 8 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div style={label}>Maintenance planifiée (§23-24)</div>
         {canManage && (
           <button className="nx-btn nx-btn--ghost" style={{ padding: "4px 12px", fontSize: 13 }} disabled={mw.busy}
-                  onClick={() => {
-                    const impact = prompt("Impact de la maintenance :"); if (!impact) return;
-                    void mw.run(() => scheduleMaintenance({
-                      scheduledAt: new Date(Date.now() + 24 * 3600_000).toISOString(),
-                      durationMinutes: 60, impact, services: ["api", "database"],
-                    }));
-                  }}>
-            Planifier (+24h, 60 min)
+                  onClick={() => setPlanning(true)}>
+            Planifier une maintenance
           </button>
         )}
       </div>
       {mw.error && <div className="nx-error-text">{mw.error}</div>}
+      {planning && <ScheduleMaintenanceDialog onClose={() => setPlanning(false)} onSaved={() => { setPlanning(false); mw.load(); }} />}
       <div style={{ overflowX: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
           <thead><tr>{["Prévue", "Durée", "Impact", "Services", "Statut", canManage ? "" : undefined].filter(Boolean).map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
@@ -326,15 +329,26 @@ export function RetentionSection({ canManage }: { canManage: boolean }) {
   const history = useAsync(purgeHistory);
   const [preview, setPreview] = useState<PurgeRun | null>(null);
   const [busyType, setBusyType] = useState<string | null>(null);
+  const [confirmPurge, setConfirmPurge] = useState<PurgeRun | null>(null);
+  const [purgeError, setPurgeError] = useState<string | null>(null);
 
   async function doPreview(dataType: string) {
     setBusyType(dataType);
     try { setPreview(await previewPurge(dataType)); } catch { setPreview(null); }
     finally { setBusyType(null); }
   }
+  /** Aperçu d'abord (aucune écriture), puis confirmation avec le nombre réel d'objets concernés. */
+  async function askPurge(dataType: string) {
+    setBusyType(dataType); setPurgeError(null);
+    try { setConfirmPurge(await previewPurge(dataType)); }
+    catch (e) { setPurgeError(e instanceof ApiError ? e.message : "Aperçu impossible"); }
+    finally { setBusyType(null); }
+  }
   async function doExecute(dataType: string) {
-    setBusyType(dataType);
-    try { await executePurge(dataType); setPreview(null); history.load(); } finally { setBusyType(null); }
+    setConfirmPurge(null); setBusyType(dataType); setPurgeError(null);
+    try { await executePurge(dataType); setPreview(null); history.load(); }
+    catch (e) { setPurgeError(e instanceof ApiError ? e.message : "Purge impossible"); }
+    finally { setBusyType(null); }
   }
 
   return (
@@ -342,6 +356,15 @@ export function RetentionSection({ canManage }: { canManage: boolean }) {
       <section className="nx-card" style={{ display: "grid", gap: 8 }}>
         <div style={label}>Politiques de rétention (§17, §22)</div>
         {policies.error && <div className="nx-error-text">{policies.error}</div>}
+        {purgeError && <div role="alert" className="nx-error-text">{purgeError}</div>}
+        {confirmPurge && (
+          <TopLayer>
+            <ConfirmDialog danger title={`Purger « ${confirmPurge.dataType} »`} confirmLabel="Purger définitivement"
+              message={`${confirmPurge.objectCount} objet(s) concerné(s), traités selon la politique (suppression ou archivage) ; ${confirmPurge.protectedExcludedCount} objet(s) protégé(s) restent exclus.`}
+              impact="Action irréversible et journalisée ; une confirmation d'identité peut être demandée."
+              onConfirm={() => void doExecute(confirmPurge.dataType)} onCancel={() => setConfirmPurge(null)} />
+          </TopLayer>
+        )}
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
             <thead><tr>{["Type de donnée", "Entreprise", "Durée", "Action", canManage ? "" : undefined].filter(Boolean).map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
@@ -358,7 +381,7 @@ export function RetentionSection({ canManage }: { canManage: boolean }) {
                         <button className="nx-btn nx-btn--ghost" style={{ padding: "1px 8px", fontSize: 12 }} disabled={busyType === p.dataType}
                                 onClick={() => void doPreview(p.dataType)}>Aperçu</button>
                         <button className="nx-btn nx-btn--ghost" style={{ padding: "1px 8px", fontSize: 12, color: "var(--nx-warning)" }} disabled={busyType === p.dataType}
-                                onClick={() => { if (confirm(`Purger « ${p.dataType} » maintenant ?`)) void doExecute(p.dataType); }}>Purger</button>
+                                onClick={() => void askPurge(p.dataType)}>Purger</button>
                       </div>
                     </td>
                   )}
@@ -409,25 +432,22 @@ const CORRECTABLE: Record<string, string[]> = {
 
 export function DataCorrectionsSection({ canManage, canDecide }: { canManage: boolean; canDecide: boolean }) {
   const corr = useAsync(() => listDataCorrections());
+  const [requesting, setRequesting] = useState(false);
+  const prompt = usePrompt();
   return (
     <section className="nx-card" style={{ display: "grid", gap: 8 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div style={label}>Correction de donnée contrôlée (§44)</div>
         {canManage && (
           <button className="nx-btn nx-btn--ghost" style={{ padding: "4px 12px", fontSize: 13 }} disabled={corr.busy}
-                  onClick={() => {
-                    const tableName = prompt(`Table (${Object.keys(CORRECTABLE).join(", ")}) :`); if (!tableName || !CORRECTABLE[tableName]) return;
-                    const recordId = prompt("Identifiant de l'enregistrement :"); if (!recordId) return;
-                    const fieldName = prompt(`Champ (${CORRECTABLE[tableName].join(", ")}) :`); if (!fieldName) return;
-                    const newValue = prompt("Nouvelle valeur :"); if (newValue == null) return;
-                    const reason = prompt("Motif (obligatoire) :"); if (!reason) return;
-                    void corr.run(() => requestDataCorrection({ tableName, recordId, fieldName, newValue, reason }));
-                  }}>
+                  onClick={() => setRequesting(true)}>
             Demander une correction
           </button>
         )}
       </div>
       {corr.error && <div className="nx-error-text">{corr.error}</div>}
+      {prompt.dialog}
+      {requesting && <DataCorrectionDialog onClose={() => setRequesting(false)} onSaved={() => { setRequesting(false); corr.load(); }} />}
       <div style={{ overflowX: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
           <thead><tr>{["Table / champ", "Avant → après", "Motif", "Statut", canDecide ? "" : undefined].filter(Boolean).map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
@@ -445,7 +465,12 @@ export function DataCorrectionsSection({ canManage, canDecide }: { canManage: bo
                         <button className="nx-btn nx-btn--ghost" style={{ padding: "1px 8px", fontSize: 12, color: "var(--nx-success)" }} disabled={corr.busy}
                                 onClick={() => void corr.run(() => decideDataCorrection(c.id, true))}>Approuver</button>
                         <button className="nx-btn nx-btn--ghost" style={{ padding: "1px 8px", fontSize: 12, color: "var(--nx-error)" }} disabled={corr.busy}
-                                onClick={() => { const n = prompt("Motif du refus :") ?? undefined; void corr.run(() => decideDataCorrection(c.id, false, n)); }}>Refuser</button>
+                                onClick={async () => {
+                                  const n = await prompt.ask({ title: "Refuser la correction", label: "Motif du refus", required: true,
+                                    multiline: true, danger: true, confirmLabel: "Refuser",
+                                    onSubmit: (reason) => decideDataCorrection(c.id, false, reason) });
+                                  if (n) corr.load();
+                                }}>Refuser</button>
                       </div>
                     )}
                   </td>
@@ -457,5 +482,164 @@ export function DataCorrectionsSection({ canManage, canDecide }: { canManage: bo
         </table>
       </div>
     </section>
+  );
+}
+
+// --- Finalisation phase 18 : fenêtres de saisie (remplacent les boîtes natives) ------------------------------
+
+const SERVICES: Array<{ value: string; label: string }> = [
+  { value: "api", label: "API" }, { value: "database", label: "Base de données" }, { value: "pos", label: "Caisse" },
+  { value: "sync", label: "Synchronisation hors ligne" }, { value: "notifications", label: "Notifications" },
+  { value: "integrations", label: "Intégrations et paiements" },
+];
+
+/** Valeur d'un champ date-heure local (AAAA-MM-JJTHH:MM) pour un instant donné. */
+function localInput(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function ScheduleMaintenanceDialog({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const [at, setAt] = useState(() => localInput(new Date(Date.now() + 24 * 3600_000)));
+  const [duration, setDuration] = useState("60");
+  const [impact, setImpact] = useState("");
+  const [services, setServices] = useState<string[]>(["api", "database"]);
+  const [responsible, setResponsible] = useState("");
+  const [rollbackPlan, setRollbackPlan] = useState("");
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function save(e?: FormEvent) {
+    e?.preventDefault();
+    const next: Record<string, string> = {};
+    const when = new Date(at);
+    const minutes = Number(duration);
+    if (!at || Number.isNaN(when.getTime())) next.at = "Date et heure requises.";
+    else if (when.getTime() < Date.now()) next.at = "La maintenance doit être planifiée dans le futur.";
+    if (!Number.isInteger(minutes) || minutes < 5 || minutes > 1440) next.duration = "Entre 5 et 1 440 minutes.";
+    if (impact.trim().length < 5) next.impact = "Décrivez l'impact pour les utilisateurs (5 caractères au moins).";
+    if (services.length === 0) next.services = "Au moins un service concerné.";
+    setErrors(next);
+    if (Object.keys(next).length > 0) return;
+    setBusy(true); setError(null);
+    try {
+      await scheduleMaintenance({ scheduledAt: when.toISOString(), durationMinutes: minutes, impact: impact.trim(), services,
+        responsible: responsible.trim() || null, rollbackPlan: rollbackPlan.trim() || null });
+      onSaved();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Planification impossible");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <TopLayer>
+      <Modal title="Planifier une maintenance" onClose={onClose}
+        footer={<><Button variant="ghost" onClick={onClose}>Annuler</Button><Button disabled={busy} onClick={() => void save()}>Planifier</Button></>}>
+        <form noValidate onSubmit={save} style={{ display: "grid", gap: 10 }}>
+          {error && <div role="alert" className="nx-error-text">{error}</div>}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(200px, 100%), 1fr))", gap: 10 }}>
+            <Field label="Début" required error={errors.at}>
+              <TextInput type="datetime-local" value={at} onChange={(e) => setAt(e.target.value)} />
+            </Field>
+            <Field label="Durée (minutes)" required error={errors.duration}>
+              <TextInput inputMode="numeric" value={duration} onChange={(e) => setDuration(e.target.value)} />
+            </Field>
+          </div>
+          <Field label="Impact pour les utilisateurs" required error={errors.impact} hint="Affiché avant et pendant la maintenance.">
+            <textarea className="nx-textarea" rows={2} value={impact} onChange={(e) => setImpact(e.target.value)} />
+          </Field>
+          <Field label="Services concernés" required error={errors.services}>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px" }}>
+              {SERVICES.map((s) => (
+                <label key={s.value} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <input type="checkbox" checked={services.includes(s.value)}
+                    onChange={(e) => setServices((cur) => e.target.checked ? [...cur, s.value] : cur.filter((v) => v !== s.value))} />
+                  {s.label}
+                </label>
+              ))}
+            </div>
+          </Field>
+          <Field label="Responsable">
+            <TextInput value={responsible} onChange={(e) => setResponsible(e.target.value)} />
+          </Field>
+          <Field label="Plan de retour arrière" hint="Que faire si la maintenance échoue.">
+            <textarea className="nx-textarea" rows={2} value={rollbackPlan} onChange={(e) => setRollbackPlan(e.target.value)} />
+          </Field>
+          <button type="submit" hidden />
+        </form>
+      </Modal>
+    </TopLayer>
+  );
+}
+
+const TABLE_LABEL: Record<string, string> = { customer: "Client", supplier: "Fournisseur", product: "Produit", app_user: "Utilisateur" };
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function DataCorrectionDialog({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const [tableName, setTableName] = useState("customer");
+  const [recordId, setRecordId] = useState("");
+  const [fieldName, setFieldName] = useState(CORRECTABLE.customer[0]);
+  const [newValue, setNewValue] = useState("");
+  const [reason, setReason] = useState("");
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function save(e?: FormEvent) {
+    e?.preventDefault();
+    const next: Record<string, string> = {};
+    if (!UUID.test(recordId.trim())) next.recordId = "Identifiant (UUID) de l'enregistrement, tel qu'affiché dans sa fiche.";
+    if (!newValue.trim()) next.newValue = "Nouvelle valeur requise.";
+    if (reason.trim().length < 5) next.reason = "Motif obligatoire (5 caractères au moins).";
+    setErrors(next);
+    if (Object.keys(next).length > 0) return;
+    setBusy(true); setError(null);
+    try {
+      await requestDataCorrection({ tableName, recordId: recordId.trim(), fieldName, newValue: newValue.trim(), reason: reason.trim() });
+      onSaved();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Demande impossible");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <TopLayer>
+      <Modal title="Demander une correction de donnée" onClose={onClose}
+        footer={<><Button variant="ghost" onClick={onClose}>Annuler</Button><Button disabled={busy} onClick={() => void save()}>Demander</Button></>}>
+        <form noValidate onSubmit={save} style={{ display: "grid", gap: 10 }}>
+          <div style={{ fontSize: 12, color: "var(--nx-text-2)" }}>
+            La correction n'est appliquée qu'après approbation par une autre personne (quatre yeux), avec l'ancienne valeur conservée.
+          </div>
+          {error && <div role="alert" className="nx-error-text">{error}</div>}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(200px, 100%), 1fr))", gap: 10 }}>
+            <Field label="Type d'enregistrement" required>
+              <Select value={tableName} onChange={(e) => { setTableName(e.target.value); setFieldName(CORRECTABLE[e.target.value][0]); }}>
+                {Object.keys(CORRECTABLE).map((t) => <option key={t} value={t}>{TABLE_LABEL[t] ?? t}</option>)}
+              </Select>
+            </Field>
+            <Field label="Champ" required>
+              <Select value={fieldName} onChange={(e) => setFieldName(e.target.value)}>
+                {CORRECTABLE[tableName].map((f) => <option key={f} value={f}>{f}</option>)}
+              </Select>
+            </Field>
+          </div>
+          <Field label="Identifiant de l'enregistrement" required error={errors.recordId}>
+            <TextInput value={recordId} onChange={(e) => setRecordId(e.target.value)} placeholder="00000000-0000-0000-0000-000000000000" />
+          </Field>
+          <Field label="Nouvelle valeur" required error={errors.newValue}>
+            <TextInput value={newValue} onChange={(e) => setNewValue(e.target.value)} />
+          </Field>
+          <Field label="Motif" required error={errors.reason}>
+            <textarea className="nx-textarea" rows={2} value={reason} onChange={(e) => setReason(e.target.value)} />
+          </Field>
+          <button type="submit" hidden />
+        </form>
+      </Modal>
+    </TopLayer>
   );
 }

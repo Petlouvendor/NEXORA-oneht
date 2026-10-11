@@ -79,17 +79,29 @@ public sealed record OcrResultDto(
 public sealed record CreateSignerInput(
     string SignerType, Guid? UserId, string? ExternalName, string? ExternalEmail, string? Role, DateTimeOffset? DueAt);
 
-public sealed record CreateSignatureRequestRequest(IReadOnlyList<CreateSignerInput> Signers);
+/// <summary><c>Message</c> : mot du demandeur transmis aux destinataires (facultatif).</summary>
+public sealed record CreateSignatureRequestRequest(IReadOnlyList<CreateSignerInput> Signers, string? Message = null);
+
+/// <summary>Utilisateur pouvant être désigné signataire (détient <c>ged.sign</c> dans l'entreprise).</summary>
+public sealed record SignerCandidateDto(Guid Id, string FullName, string? Email);
 
 /// <summary><c>status</c> ∈ pending|signed|declined.</summary>
 public sealed record SignerDto(
     Guid Id, int SequenceNo, string SignerType, Guid? UserId, string? ExternalName, string? ExternalEmail,
-    string? Role, string Status, DateTimeOffset? DueAt, DateTimeOffset? SignedAt, string? DeclinedReason);
+    string? Role, string Status, DateTimeOffset? DueAt, DateTimeOffset? SignedAt, string? DeclinedReason,
+    string? UserName = null, string? RecordedByName = null, DateTimeOffset? DeclinedAt = null);
 
 /// <summary><c>status</c> ∈ pending|completed|cancelled|expired.</summary>
 public sealed record SignatureRequestDto(
     Guid Id, Guid DocumentId, string Status, DateTimeOffset? CompletedAt,
-    IReadOnlyList<SignerDto> Signers, DateTimeOffset CreatedAt);
+    IReadOnlyList<SignerDto> Signers, DateTimeOffset CreatedAt,
+    string? DocumentName = null, int? VersionNo = null, Guid? RequestedById = null, string? RequestedByName = null,
+    string? Message = null, string? CancelledReason = null, string? CancelledByName = null,
+    /// <summary>Signataire dont c'est le tour (le premier encore en attente), s'il y en a un.</summary>
+    Guid? CurrentSignerId = null,
+    /// <summary>Vrai si l'utilisateur courant peut agir sur ce tour : signataire interne désigné, ou
+    /// signataire externe dont la signature est recueillie par un utilisateur habilité.</summary>
+    bool IsMyTurn = false);
 
 /// <summary>§22 « preuve » — l'identité/authentification/date/hash sont capturées côté serveur ;
 /// <c>Note</c> est la seule donnée libre que le signataire ajoute.</summary>

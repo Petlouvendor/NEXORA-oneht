@@ -27,7 +27,7 @@ public sealed class PosSalesTests(FinanceEngineFixture fx)
     private AsyncServiceScope Scope() => fx.Provider.CreateAsyncScope();
 
     // Échéance future : un crédit échu bloque désormais toute nouvelle vente à crédit du client (module clients §12).
-    private static DateOnly Due => DateOnly.FromDateTime(DateTime.UtcNow).AddDays(30);
+    private static DateOnly Due => TestDates.Today.AddDays(30);
 
     private async Task<Guid> NewCustomer(decimal creditLimit)
     {
@@ -128,10 +128,18 @@ public sealed class PosSalesTests(FinanceEngineFixture fx)
     {
         var p = await Stocked("D", 100m, 40m, 20m);
         await using var s = Scope();
+        // Phase 5 : une carte payée en HTG s'encaisse sur un compte bancaire en HTG (le compte Unibank de la
+        // démo est en USD — ce test l'utilisait à tort).
+        var cardHtg = Guid.NewGuid();
+        await s.ServiceProvider.GetRequiredService<NexoraDbContext>().Database.ExecuteSqlAsync($"""
+            INSERT INTO nexora.financial_account (id, company_id, account_type, name, currency_id, ledger_account_id)
+            SELECT {cardHtg}, company_id, 'bank', 'Banque HTG (test carte)', (SELECT id FROM nexora.currency WHERE code = 'HTG'), ledger_account_id
+            FROM nexora.financial_account WHERE id = {CardAccount}
+            """);
         var r = await s.ServiceProvider.GetRequiredService<SalesService>().CheckoutAsync(
             new CheckoutCommand(Guid.NewGuid(), Officine, null, null, null, null, "HTG",
                 [new CheckoutLine(p, 10m, null, 0m, null)],
-                [new TenderInput(CardAccount, CardMethod, 600m, "AUTH-1"), new TenderInput(CashAccount, CashMethod, 500m, null)],
+                [new TenderInput(cardHtg, CardMethod, 600m, "AUTH-1"), new TenderInput(CashAccount, CashMethod, 500m, null)],
                 1100m, null, null, null, null));
         r.IsSuccess.Should().BeTrue(r.Error?.Message);
         r.Value!.Total.Should().Be(1000m);

@@ -65,3 +65,28 @@ public sealed record DeploymentDto(
 
 public sealed record RecordDeploymentRequest(string Version, string Environment = "production", string? Notes = null);
 public sealed record RollbackRequest(string Reason, string? ToVersion = null);
+
+// --- Finalisation phase 18 : état de production -----------------------------
+
+/// <summary>Contrôle de configuration de production (<c>pass</c> / <c>warn</c> / <c>fail</c>) ; jamais la valeur d'un secret.</summary>
+public sealed record ProductionCheckDto(string Key, string Label, string Category, string Status, string Detail);
+
+/// <summary>Résultat d'une sonde de santé (readiness) : <c>Healthy</c>, <c>Degraded</c>, <c>Unhealthy</c>.</summary>
+public sealed record HealthProbeDto(string Name, string Status, string? Description, double DurationMs);
+
+public sealed record MigrationStatusDto(
+    int Embedded, int Applied, string? LatestApplied, string? LatestEmbedded,
+    IReadOnlyList<string> Pending, IReadOnlyList<string> Drifted, IReadOnlyList<string> Unknown);
+
+/// <summary>Vue « Production » de l'exploitation : version déployée, sondes, migrations, configuration.</summary>
+public sealed record ProductionReadinessDto(
+    string Environment,
+    string Version,
+    string? Commit,
+    DateTimeOffset StartedAt,
+    long UptimeSeconds,
+    string Overall,
+    IReadOnlyList<HealthProbeDto> Probes,
+    MigrationStatusDto? Migrations,
+    IReadOnlyList<ProductionCheckDto> Checks,
+    DateTimeOffset GeneratedAt);

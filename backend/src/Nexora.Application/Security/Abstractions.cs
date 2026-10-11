@@ -42,6 +42,8 @@ public interface IStepUpAuthService
 {
     Task<Result<StepUpChallengeResponse>> ChallengeAsync(StepUpChallengeRequest request, CancellationToken ct = default);
     Task<bool> VerifyAsync(StepUpVerifyRequest request, CancellationToken ct = default);
+    /// <summary>Réauthentification valide pour cette catégorie (non consommée : valable jusqu'à son expiration).</summary>
+    Task<bool> ValidateAsync(string token, string purpose, Guid? sessionId, CancellationToken ct = default);
 }
 
 /// <summary>
@@ -53,6 +55,15 @@ public interface ISessionSecurityService
 {
     /// <summary>Enregistre une session à l'ouverture (appelé après login — le contexte tenant n'est pas encore posé).</summary>
     Task RecordAsync(Guid userId, Guid? activeCompanyId, string? deviceLabel, string? ipAddress, string? userAgent, Guid? tokenId = null, CancellationToken ct = default);
+    /// <summary>Ouvre la session (identifiant porté par le jeton) et émet son premier jeton de rafraîchissement.</summary>
+    Task<SessionStart> StartAsync(Guid sessionId, Guid userId, Guid? activeCompanyId, string? ipAddress, string? userAgent, Guid? tokenId, CancellationToken ct = default);
+    /// <summary>Rotation : consomme le jeton de rafraîchissement, en émet un nouveau avec un nouveau jeton d'accès.
+    /// Un jeton déjà consommé trahit un vol : toutes les sessions de l'utilisateur sont révoquées.</summary>
+    Task<Result<RefreshOutcome>> RefreshAsync(string refreshToken, string? ipAddress, CancellationToken ct = default);
+    /// <summary>Déconnexion de la session courante (jeton d'accès et jetons de rafraîchissement).</summary>
+    Task RevokeSessionAsync(Guid sessionId, string reason, CancellationToken ct = default);
+    /// <summary>Déconnexion par le cookie de rafraîchissement : fonctionne même si le jeton d'accès a expiré.</summary>
+    Task RevokeByRefreshTokenAsync(string refreshToken, CancellationToken ct = default);
     /// <summary>Déconnexion (recette AUTH-004) : révoque la session portée par ce jeton — le
     /// middleware refuse ensuite tout appel avec ce même jeton.</summary>
     Task<Result> RevokeTokenAsync(Guid tokenId, string reason, CancellationToken ct = default);
@@ -138,3 +149,9 @@ public interface ISecurityScoreService
     Task<SecurityScoreDto> ComputeAsync(CancellationToken ct = default);
     Task<SecurityDashboardDto> DashboardAsync(CancellationToken ct = default);
 }
+
+/// <summary>Session ouverte : jeton de rafraîchissement (en clair, remis une seule fois au client) et fin de session.</summary>
+public sealed record SessionStart(string RefreshToken, DateTimeOffset ExpiresAt);
+
+/// <summary>Résultat d'un rafraîchissement : nouveau jeton d'accès et nouveau jeton de rafraîchissement.</summary>
+public sealed record RefreshOutcome(Nexora.Contracts.Auth.AuthTokenResponse Token, string RefreshToken, DateTimeOffset ExpiresAt);

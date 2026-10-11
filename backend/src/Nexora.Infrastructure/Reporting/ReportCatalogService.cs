@@ -22,7 +22,7 @@ public sealed class SqlReportCatalogService(
     private static readonly string[] GenericKeys =
         ["sales_journal", "stock_valuation", "stock_ruptures", "stock_dormant", "top_products", "aging_receivables", "aging_payables"];
 
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
     public IReadOnlyList<ReportCatalogEntryDto> StandardReports() =>
     [

@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { ApiError } from "@/core/apiClient";
 import { useAuth } from "@/auth/AuthContext";
+import { DeliveryAdmin, TemplatesAdmin } from "@/notifications/DeliveryAdmin";
 import {
   deletePreference,
+  listChannelStatus,
   listNotifications,
   listPreferences,
   markAllRead,
@@ -29,8 +31,10 @@ const rel = (iso: string) => {
 
 /** Centre de notifications & préférences (Phase 34 §4-5). */
 export function NotificationsPage() {
-  const { activeCompanyId } = useAuth();
-  const [tab, setTab] = useState<"unread" | "all" | "pinned" | "archived" | "preferences">("unread");
+  const { activeCompanyId, hasPermission } = useAuth();
+  const [tab, setTab] = useState<"unread" | "all" | "pinned" | "archived" | "preferences" | "delivery" | "templates">("unread");
+  const [channelStatus, setChannelStatus] = useState<Record<string, boolean>>({});
+  const admin = tab === "delivery" || tab === "templates";
   const [items, setItems] = useState<Notification[]>([]);
   const [prefs, setPrefs] = useState<NotificationPreference[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -38,8 +42,10 @@ export function NotificationsPage() {
 
   const load = useCallback(() => {
     setError(null);
+    if (tab === "delivery" || tab === "templates") return;
     if (tab === "preferences") {
       listPreferences().then(setPrefs).catch((e) => setError(e instanceof ApiError ? e.message : "Erreur"));
+      listChannelStatus().then((l) => setChannelStatus(Object.fromEntries(l.map((c) => [c.channel, c.configured])))).catch(() => {});
     } else {
       listNotifications(tab).then((p) => setItems(p.items)).catch((e) => setError(e instanceof ApiError ? e.message : "Erreur"));
     }
@@ -61,13 +67,15 @@ export function NotificationsPage() {
     ["pinned", "Épinglées"],
     ["archived", "Archivées"],
     ["preferences", "Préférences"],
+    ...(hasPermission("notifications.manage_delivery") ? [["delivery", "Envois"] as const] : []),
+    ...(hasPermission("notifications.manage_templates") ? [["templates", "Modèles"] as const] : []),
   ] as const;
 
   return (
-    <div style={{ display: "grid", gap: 16, maxWidth: 860 }}>
+    <div style={{ display: "grid", gap: 16, maxWidth: admin ? undefined : 860, gridTemplateColumns: "minmax(0, 1fr)" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <h1 style={{ margin: 0 }}>Notifications</h1>
-        {tab !== "preferences" && (
+        {!admin && tab !== "preferences" && (
           <button className="nx-btn nx-btn--ghost" style={{ padding: "4px 12px", fontSize: 13 }} disabled={busy}
                   onClick={() => run(() => markAllRead())}>Tout marquer lu</button>
         )}
@@ -84,7 +92,10 @@ export function NotificationsPage() {
         ))}
       </div>
 
-      {tab !== "preferences" && (
+      {tab === "delivery" && <DeliveryAdmin />}
+      {tab === "templates" && <TemplatesAdmin />}
+
+      {!admin && tab !== "preferences" && (
         <section className="nx-card" style={{ display: "grid", gap: 8 }}>
           {items.length === 0 && <div style={{ color: "var(--nx-text-2)" }}>Aucune notification.</div>}
           {items.map((n) => (
@@ -119,7 +130,7 @@ export function NotificationsPage() {
       )}
 
       {tab === "preferences" && (
-        <PreferencesPanel prefs={prefs} busy={busy} activeCompanyId={activeCompanyId}
+        <PreferencesPanel prefs={prefs} busy={busy} activeCompanyId={activeCompanyId} channelStatus={channelStatus}
           onSave={(p) => run(() => upsertPreference(p))}
           onDelete={(id) => run(() => deletePreference(id))} />
       )}
@@ -131,8 +142,9 @@ const CATEGORIES = ["", "dunning", "low_stock", "expiring_lot", "delivery_failed
 const DIGESTS = ["instant", "daily", "weekly", "off"];
 
 function PreferencesPanel({
-  prefs, busy, activeCompanyId, onSave, onDelete,
+  prefs, busy, activeCompanyId, channelStatus, onSave, onDelete,
 }: {
+  channelStatus: Record<string, boolean>;
   prefs: NotificationPreference[];
   busy: boolean;
   activeCompanyId: string | null;
@@ -180,6 +192,13 @@ function PreferencesPanel({
           ))}
         </tbody>
       </table>
+
+      {(["email", "sms"] as const).filter((c) => channelStatus[c] === false).length > 0 && (
+        <div style={{ fontSize: 12, color: "var(--nx-warning)" }}>
+          Fournisseur non configuré pour : {(["email", "sms"] as const).filter((c) => channelStatus[c] === false).map((c) => (c === "email" ? "e-mail" : "SMS")).join(", ")} —
+          ces canaux n'enverront rien tant qu'un administrateur ne l'aura pas configuré.
+        </div>
+      )}
 
       <form
         style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}

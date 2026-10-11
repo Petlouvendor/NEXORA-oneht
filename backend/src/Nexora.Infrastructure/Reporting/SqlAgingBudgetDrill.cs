@@ -4,12 +4,13 @@ using Nexora.Application.Abstractions;
 using Nexora.Application.Reporting;
 using Nexora.Contracts.Reporting;
 using Nexora.Infrastructure.Persistence;
+using Nexora.Domain.Common;
 
 namespace Nexora.Infrastructure.Reporting;
 
 public sealed class SqlAgingReports(NexoraDbContext db, ITenantContext tenant) : IAgingReports
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
     private sealed record Bucket(string label, int from_days, int? to_days);
     private sealed record AgingRaw(string Party, decimal Remaining, int DaysOverdue);
 
@@ -59,7 +60,7 @@ public sealed class SqlAgingReports(NexoraDbContext db, ITenantContext tenant) :
 
 public sealed class SqlBudgetReports(NexoraDbContext db, ITenantContext tenant) : IBudgetReports
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
     private sealed record Row(string AccountCode, string AccountName, decimal Budget, decimal Actual);
 
     public async Task<BudgetVsActualResponse> BudgetVsActualAsync(int fiscalYear, ReportFilter filter, CancellationToken ct = default)
@@ -109,7 +110,7 @@ public sealed class SqlBudgetReports(NexoraDbContext db, ITenantContext tenant) 
 /// <summary>Drill-down (Phase 7 §29) : CA → jour → vente → ligne ; créance → client → factures.</summary>
 public sealed class SqlDrillDown(NexoraDbContext db, ITenantContext tenant) : IDrillDown
 {
-    private Guid Company => tenant.ActiveCompanyId ?? throw new InvalidOperationException("Entreprise active requise.");
+    private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
     private sealed record Node(string Level, string Id, string Label, decimal Value);
 
     public async Task<DrillResponse> ExpandAsync(string path, CancellationToken ct = default)
