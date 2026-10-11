@@ -16,7 +16,8 @@ namespace Nexora.Infrastructure.Ged;
 /// cycle de vie et les verrous. La détection de doublon (§39) compare des empreintes SHA-256,
 /// jamais bloquante — une décision humaine.
 /// </summary>
-public sealed class SqlGedService(NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow, IBusinessCalendar calendar) : IGedService
+public sealed class SqlGedService(NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow, IBusinessCalendar calendar,
+    IPasswordHasher hasher) : IGedService
 {
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
     private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
@@ -446,7 +447,7 @@ public sealed class SqlGedService(NexoraDbContext db, ITenantContext tenant, IUn
 
         var shareId = Guid.NewGuid();
         var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(24)).ToLowerInvariant();
-        var passwordHash = string.IsNullOrWhiteSpace(request.Password) ? null : HashPassword(request.Password);
+        var passwordHash = string.IsNullOrWhiteSpace(request.Password) ? null : hasher.Hash(request.Password);   // BCrypt, salé
         await db.Database.ExecuteSqlAsync($"""
             INSERT INTO nexora.document_share (id, company_id, document_id, token, allow_download, password_hash, expires_at, created_by)
             VALUES ({shareId}, {Company}, {id}, {token}, {request.AllowDownload}, {passwordHash}, {request.ExpiresAt}, {tenant.UserId})
@@ -477,8 +478,13 @@ public sealed class SqlGedService(NexoraDbContext db, ITenantContext tenant, IUn
         if (share.RevokedAt is not null) return Error.Forbidden("document_share.revoked", "Lien révoqué.");
         if (share.ExpiresAt <= DateTimeOffset.UtcNow) return Error.Forbidden("document_share.expired", "Lien expiré (§31).");
         if (!share.AllowDownload) return Error.Forbidden("document_share.no_download", "Ce lien est en lecture seule.");
-        if (share.PasswordHash is { } hash && hash != HashPassword(password ?? ""))
-            return Error.Forbidden("document_share.password", "Mot de passe incorrect.");
+        if (share.PasswordHash is { } hash)
+        {
+            if (string.IsNullOrEmpty(password))
+                return Error.Forbidden("document_share.password_required", "Ce lien est protégé par un mot de passe.");
+            if (!PasswordMatches(hash, password))
+                return Error.Forbidden("document_share.password", "Mot de passe incorrect.");
+        }
 
         var content = await db.Database.SqlQuery<SharedContentRow>($"""
             SELECT d.name AS "Name", v.content AS "Content", v.content_type AS "ContentType"
@@ -492,7 +498,16 @@ public sealed class SqlGedService(NexoraDbContext db, ITenantContext tenant, IUn
     private sealed record ShareRow(Guid DocumentId, bool AllowDownload, string? PasswordHash, DateTimeOffset ExpiresAt, DateTimeOffset? RevokedAt);
     private sealed record SharedContentRow(string Name, byte[] Content, string ContentType);
 
-    private static string HashPassword(string password) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(password))).ToLowerInvariant();
+    /// <summary>
+    /// Analyse 2026-10 §6.4 : les nouveaux partages sont hachés en BCrypt (salé, lent). Les partages créés avant
+    /// gardent leur empreinte SHA-256, comparée en temps constant.
+    /// </summary>
+    private bool PasswordMatches(string hash, string password)
+    {
+        if (hash.StartsWith("$2", StringComparison.Ordinal)) return hasher.Verify(password, hash);
+        var legacy = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(password))).ToLowerInvariant();
+        return CryptographicOperations.FixedTimeEquals(Encoding.ASCII.GetBytes(hash), Encoding.ASCII.GetBytes(legacy));
+    }
 
     private static GedDocumentDto ToDto(Row r) => new(
         r.Id, r.EstablishmentId, r.Name, r.DocumentType, r.Category, JsonSerializer.Deserialize<List<string>>(r.Tags) ?? [],

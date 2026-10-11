@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.RateLimiting;
 using Asp.Versioning;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -86,6 +87,7 @@ public sealed class DocumentsController(IDocumentService documents, IDocumentQue
 
     // --- Vérification publique (§27-28) -----------------------------
 
+    [EnableRateLimiting("public")]
     [HttpGet("verify/{code}")]
     [AllowAnonymous]
     public async Task<IActionResult> Verify(string code, CancellationToken ct)

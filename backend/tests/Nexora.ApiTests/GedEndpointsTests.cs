@@ -71,6 +71,31 @@ public sealed class GedEndpointsTests(WebApplicationFactory<Program> factory)
         var publicClient = Client();
         var download = await publicClient.GetAsync($"/api/v1/shared/{token}");
         download.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // Analyse 2026-10 §6.4 : lien protégé — page de saisie, mot de passe envoyé par POST, jamais dans l'adresse.
+        var protectedShare = await client.PostAsJsonAsync($"/api/v1/ged-documents/{id}/share",
+            new { expiresAt = DateTimeOffset.UtcNow.AddHours(1), allowDownload = true, password = "Partage!2026" });
+        protectedShare.StatusCode.Should().Be(HttpStatusCode.OK);
+        var protectedToken = (await protectedShare.Content.ReadFromJsonAsync<ShareShape>())!.Token;
+
+        var page = await publicClient.GetAsync($"/api/v1/shared/{protectedToken}?password=Partage!2026");
+        page.StatusCode.Should().Be(HttpStatusCode.OK);
+        page.Content.Headers.ContentType!.MediaType.Should().Be("text/html", "le mot de passe dans l'adresse est ignoré : la page le demande");
+        (await page.Content.ReadAsStringAsync()).Should().Contain("<form method=\"post\">");
+        page.Headers.CacheControl!.NoStore.Should().BeTrue();
+
+        var wrong = await publicClient.PostAsync($"/api/v1/shared/{protectedToken}",
+            new FormUrlEncodedContent([new KeyValuePair<string, string>("password", "mauvais")]));
+        wrong.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await wrong.Content.ReadAsStringAsync()).Should().Contain("Mot de passe incorrect");
+
+        var right = await publicClient.PostAsync($"/api/v1/shared/{protectedToken}",
+            new FormUrlEncodedContent([new KeyValuePair<string, string>("password", "Partage!2026")]));
+        right.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await right.Content.ReadAsByteArrayAsync()).Should().Equal("api-test-content"u8.ToArray());
+
+        var json = await publicClient.PostAsJsonAsync($"/api/v1/shared/{protectedToken}", new { password = "Partage!2026" });
+        json.StatusCode.Should().Be(HttpStatusCode.OK);
     }
 
     private sealed record DocShape(Guid Id);
