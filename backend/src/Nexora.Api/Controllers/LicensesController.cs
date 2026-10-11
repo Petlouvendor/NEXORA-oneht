@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.RateLimiting;
 using Asp.Versioning;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -48,6 +49,7 @@ public sealed class LicensesController(ILicenseService licenses, IPlatformScope 
     public async Task<IActionResult> Revoke(Guid id, [FromBody] RevokeLicenseRequest r, CancellationToken ct) => FromResult(await licenses.RevokeAsync(id, r, ct));
 
     /// <summary>Vérification locale d'un jeton de licence offline (§28). Publique — le client la fait sans session.</summary>
+    [EnableRateLimiting("public")]
     [HttpPost("verify")]
     [AllowAnonymous]
     public async Task<IActionResult> Verify([FromBody] LicenseVerifyRequest r, CancellationToken ct) => Ok(await licenses.VerifyOfflineTokenAsync(r.Token, ct));

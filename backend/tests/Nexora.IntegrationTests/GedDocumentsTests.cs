@@ -37,6 +37,15 @@ public sealed class GedDocumentsTests(FinanceEngineFixture fx)
         await cmd.ExecuteNonQueryAsync();
     }
 
+    private async Task<T?> Scalar<T>(string sql)
+    {
+        await using var c = new NpgsqlConnection(fx.TestConnectionString);
+        await c.OpenAsync();
+        await using var cmd = new NpgsqlCommand(sql, c);
+        var v = await cmd.ExecuteScalarAsync();
+        return v is null or DBNull ? default : (T)v;
+    }
+
     private static string Base64(string text) => Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(text));
 
     // ---- §7, §16, §39 : création, versioning, doublon, OCR ----
@@ -172,6 +181,18 @@ public sealed class GedDocumentsTests(FinanceEngineFixture fx)
         var ok = await ged.GetSharedContentAsync(share.Value.Token, "secret123");
         ok.IsSuccess.Should().BeTrue(ok.Error?.Message);
         System.Text.Encoding.UTF8.GetString(ok.Value!.Content).Should().Be("recu");
+
+        // Analyse 2026-10 §6.4 : empreinte BCrypt (salée) pour un nouveau partage ; lien protégé sans mot de passe
+        // fourni → la page de saisie est proposée.
+        (await Scalar<string>($"SELECT password_hash FROM nexora.document_share WHERE id = '{share.Value.Id}'"))
+            .Should().StartWith("$2");
+        (await ged.GetSharedContentAsync(share.Value.Token, null)).Error!.Code.Should().Be("document_share.password_required");
+
+        // Partage créé avant la correction (empreinte SHA-256 hexadécimale) : il s'ouvre toujours avec le bon mot de passe.
+        var legacy = await ged.ShareAsync(id, new CreateShareRequest(DateTimeOffset.UtcNow.AddHours(1), true, null));
+        await Sql($"UPDATE nexora.document_share SET password_hash = encode(sha256(convert_to('ancien123', 'UTF8')), 'hex') WHERE id = '{legacy.Value!.Id}'");
+        (await ged.GetSharedContentAsync(legacy.Value.Token, "ancien123")).IsSuccess.Should().BeTrue();
+        (await ged.GetSharedContentAsync(legacy.Value.Token, "ancien124")).Error!.Code.Should().Be("document_share.password");
 
         await Sql($"UPDATE nexora.document_share SET expires_at = now() - interval '1 hour' WHERE id = '{share.Value.Id}'");
         (await ged.GetSharedContentAsync(share.Value.Token, "secret123")).Error!.Code.Should().Be("document_share.expired");

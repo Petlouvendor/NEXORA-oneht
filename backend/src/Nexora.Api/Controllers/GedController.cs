@@ -1,3 +1,5 @@
+using Nexora.Domain.Common;
+using Microsoft.AspNetCore.RateLimiting;
 using Asp.Versioning;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -137,13 +139,72 @@ public sealed class GedController(
     [RequirePermission(Permissions.Ged.Manage)]
     public async Task<IActionResult> RevokeShare(Guid shareId, CancellationToken ct) => FromResult(await ged.RevokeShareAsync(shareId, ct));
 
-    /// <summary>Accès public par jeton (§31) — aucune permission NEXORA, seulement le jeton (+ mot de passe si défini).</summary>
+    /// <summary>
+    /// Accès public par jeton (§31) — aucune permission NEXORA, seulement le jeton. Lien protégé : une page demande le
+    /// mot de passe, envoyé ensuite par POST — jamais dans l'adresse, où l'historique du navigateur et les journaux des
+    /// proxys le conserveraient (analyse 2026-10, §6.4). Tentatives limitées par adresse.
+    /// </summary>
     [AllowAnonymous]
+    [EnableRateLimiting("public")]
     [HttpGet("shared/{token}")]
-    public async Task<IActionResult> GetShared(string token, [FromQuery] string? password, CancellationToken ct)
+    public async Task<IActionResult> GetShared(string token, CancellationToken ct)
+        => SharedResult(await ged.GetSharedContentAsync(token, null, ct));
+
+    /// <summary>Mot de passe d'un lien protégé : champ <c>password</c> d'un formulaire (page ci-dessus) ou d'un corps JSON.</summary>
+    [AllowAnonymous]
+    [EnableRateLimiting("public")]
+    [HttpPost("shared/{token}")]
+    public async Task<IActionResult> PostShared(string token, CancellationToken ct)
     {
-        var result = await ged.GetSharedContentAsync(token, password, ct);
-        return result.IsSuccess ? File(result.Value!.Content, result.Value.ContentType, result.Value.DocumentName) : FromResult(result);
+        string? password = null;
+        if (Request.HasFormContentType)
+            password = (await Request.ReadFormAsync(ct))["password"].FirstOrDefault();
+        else if (Request.ContentType?.Contains("json", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            using var body = await System.Text.Json.JsonDocument.ParseAsync(Request.Body, cancellationToken: ct);
+            if (body.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object
+                && body.RootElement.TryGetProperty("password", out var p) && p.ValueKind == System.Text.Json.JsonValueKind.String)
+                password = p.GetString();
+        }
+        return SharedResult(await ged.GetSharedContentAsync(token, password ?? "", ct), passwordSent: true);
+    }
+
+    private IActionResult SharedResult(Result<(byte[] Content, string ContentType, string DocumentName)> result, bool passwordSent = false)
+    {
+        if (result.IsSuccess) return File(result.Value!.Content, result.Value.ContentType, result.Value.DocumentName);
+        return result.Error!.Code switch
+        {
+            "document_share.password_required" => PasswordPage(StatusCodes.Status200OK, null),
+            "document_share.password" when passwordSent => PasswordPage(StatusCodes.Status403Forbidden, "Mot de passe incorrect."),
+            _ => FromResult(result),
+        };
+    }
+
+    /// <summary>Page minimale, sans script : le formulaire repart vers la même adresse en POST.</summary>
+    private ContentResult PasswordPage(int status, string? error)
+    {
+        Response.Headers["Content-Security-Policy"] =
+            "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
+        Response.Headers.CacheControl = "no-store";
+        var message = error is null ? "" : $"<p class=\"err\" role=\"alert\">{System.Net.WebUtility.HtmlEncode(error)}</p>";
+        return new ContentResult
+        {
+            StatusCode = status,
+            ContentType = "text/html; charset=utf-8",
+            Content = $$"""
+                <!doctype html>
+                <html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+                <meta name="robots" content="noindex"><title>Document protégé</title>
+                <style>body{font-family:system-ui,sans-serif;max-width:420px;margin:12vh auto;padding:0 16px;color:#1d2a2e}
+                label{display:block;margin:16px 0 6px}input{width:100%;box-sizing:border-box;padding:10px;font-size:16px}
+                button{margin-top:14px;padding:10px 18px;font-size:16px;background:#007a6a;color:#fff;border:0;border-radius:6px}
+                .err{color:#bb2a45}</style></head>
+                <body><h1>Document protégé</h1><p>Saisissez le mot de passe communiqué avec ce lien.</p>{{message}}
+                <form method="post"><label for="password">Mot de passe</label>
+                <input id="password" name="password" type="password" autocomplete="off" required autofocus>
+                <button type="submit">Ouvrir le document</button></form></body></html>
+                """,
+        };
     }
 
     // --- §11-12, §38 OCR ---------------------------------------------------------------

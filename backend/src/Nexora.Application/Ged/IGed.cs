@@ -53,7 +53,9 @@ public interface IGedService
     Task<Result<DocumentShareDto>> ShareAsync(Guid id, CreateShareRequest request, CancellationToken ct = default);
     Task<Result> RevokeShareAsync(Guid shareId, CancellationToken ct = default);
 
-    /// <summary>Accès public par jeton (§31) — pas d'authentification NEXORA, seulement le jeton (+ mot de passe si défini).</summary>
+    /// <summary>Accès public par jeton (§31) — pas d'authentification NEXORA, seulement le jeton (+ mot de passe si défini).
+    /// Lien protégé sans mot de passe fourni : <c>document_share.password_required</c> ; mot de passe faux :
+    /// <c>document_share.password</c>.</summary>
     Task<Result<(byte[] Content, string ContentType, string DocumentName)>> GetSharedContentAsync(string token, string? password, CancellationToken ct = default);
 }
 

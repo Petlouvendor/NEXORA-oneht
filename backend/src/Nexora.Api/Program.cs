@@ -121,6 +121,12 @@ builder.Services.AddRateLimiter(options =>
     options.AddPolicy("refresh", ctx => RateLimitPartition.GetFixedWindowLimiter(
         ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
         _ => new FixedWindowRateLimiterOptions { PermitLimit = 60, Window = TimeSpan.FromMinutes(1) }));
+    // Points d'accès anonymes adressés par un code (partage GED, vérification de document ou de licence) — analyse
+    // 2026-10 §6.4 : sans limite, un code ou un mot de passe de partage se devine par force brute.
+    var publicPerMinute = Math.Clamp(builder.Configuration.GetValue("Security:PublicRateLimitPerMinute", 30), 1, 1000);
+    options.AddPolicy("public", ctx => RateLimitPartition.GetFixedWindowLimiter(
+        ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = publicPerMinute, Window = TimeSpan.FromMinutes(1) }));
 });
 
 // --- Proxy inverse (finalisation phase 18) : TLS terminé en amont. Sans reprise des en-têtes X-Forwarded-*,

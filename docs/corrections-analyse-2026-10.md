@@ -98,3 +98,22 @@ facturation) enregistrent ainsi ; l'écran ne fait plus qu'afficher le message d
 
 **Tests.** `formDialog.test.tsx` : refus → fenêtre ouverte, motif affiché, saisie conservée ; nouvel essai réussi →
 fenêtre fermée avec les valeurs. Le test E2E « formulaires » attend désormais la vraie fin de l'enregistrement.
+
+## Étape 5 — Partage public de documents et points d'accès anonymes (§6.4)
+
+**Défaut.** Le mot de passe d'un lien de partage GED était haché en SHA-256 sans sel, comparé par `!=` (temps
+variable), transmis dans l'adresse (`?password=`, conservé par l'historique et les journaux des proxys), sans limite
+de tentatives. La vérification publique de document et de licence n'avait pas non plus de limite.
+
+**Correction.**
+- Lien protégé : sans mot de passe, le lien affiche une page minimale (sans script, `no-store`, CSP propre) qui
+  demande le mot de passe et l'envoie en **POST** ; le paramètre `?password=` n'est plus lu. Un client d'API peut
+  envoyer `{ "password": … }` en JSON.
+- Nouveaux partages hachés en BCrypt (salé, lent) ; les partages existants gardent leur empreinte SHA-256, comparée
+  en temps constant — aucun lien déjà envoyé n'est cassé.
+- Politique de débit `public` (30 requêtes par minute et par adresse, `Security:PublicRateLimitPerMinute`) sur le
+  partage GED, la vérification de document et la vérification de licence.
+
+**Tests.** API : page de saisie même avec `?password=` dans l'adresse, mauvais mot de passe → 403, bon mot de passe
+en formulaire ou en JSON → fichier. Intégration : empreinte BCrypt, `password_required`, ancien partage SHA-256
+toujours ouvrable.
