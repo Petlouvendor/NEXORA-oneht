@@ -129,3 +129,20 @@ d'entreprise ; l'analyse l'avait classée à tort parmi les oublis.
 
 **Garde-fou.** `RowLevelSecurityCoverageTests` : toute table qui porte `company_id` a la RLS active et forcée, sauf
 cinq exceptions justifiées (identité, plateforme). Une table d'entreprise oubliée fait échouer la suite.
+
+## Étape 7 — Protection SSRF des webhooks sortants (§6.5)
+
+**Défaut.** L'URL d'un webhook sortant, saisie par un client, n'était contrôlée que sur sa forme : le serveur pouvait
+être amené à appeler la boucle locale, le réseau privé ou les métadonnées du nuage (169.254.169.254).
+
+**Correction.** `WebhookTargetPolicy` :
+- à l'enregistrement : refus des cibles internes (boucle, réseaux privés, lien local, CGNAT, réservées,
+  `*.local`, `*.internal`, identifiants dans l'URL) avec un message clair ;
+- à chaque envoi : l'adresse résolue par le DNS est contrôlée **au moment de la connexion** (un nom public redirigé
+  vers une adresse interne — rebinding — est bloqué), et les redirections ne sont plus suivies ; une cible enregistrée
+  avant la protection est donc bloquée aussi ;
+- installation sur site qui doit notifier son réseau local : `NEXORA_ALLOW_PRIVATE_WEBHOOK_TARGETS=true`
+  (`Integrations:AllowPrivateWebhookTargets`), désactivé par défaut.
+
+**Tests.** `WebhookTargetPolicyTests` (29) : classement des adresses IPv4/IPv6, refus et acceptations d'URL, autorisation
+sur site, blocage à la connexion d'un nom qui se résout vers la boucle locale.

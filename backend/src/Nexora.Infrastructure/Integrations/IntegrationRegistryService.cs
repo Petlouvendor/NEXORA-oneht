@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Configuration;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -294,17 +295,21 @@ public sealed class SqlIntegrationRegistry(
 /// <summary>
 /// Transport HTTP par défaut d'un webhook sortant (§32). Raccourci bac à sable (§42) pour
 /// l'hôte réservé <c>sim.webhook.local</c> : chemin se terminant par <c>/ok</c> → 200, sinon échec.
+/// Protection SSRF (analyse 2026-10 §6.5) : URL contrôlée à nouveau, adresse résolue contrôlée à la connexion,
+/// redirections non suivies — une cible enregistrée avant la protection est donc bloquée aussi.
 /// </summary>
-public sealed class HttpOutboundWebhookDispatcher : IOutboundWebhookDispatcher
+public sealed class HttpOutboundWebhookDispatcher(IConfiguration configuration) : IOutboundWebhookDispatcher
 {
-    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(8) };
+    private readonly bool _allowPrivate = configuration.GetValue("Integrations:AllowPrivateWebhookTargets", false);
+    private HttpClient? _http;
+    private HttpClient Http => _http ??= new HttpClient(WebhookTargetPolicy.CreateHandler(_allowPrivate)) { Timeout = TimeSpan.FromSeconds(8) };
 
     public async Task<(int? StatusCode, string? Error)> SendAsync(string url, string signature, string body, CancellationToken ct = default)
     {
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https"))
-            return (null, "URL cible invalide.");
+        if (WebhookTargetPolicy.Validate(url, _allowPrivate) is { } refusal) return (null, refusal);
+        var uri = new Uri(url.Trim());
 
-        if (string.Equals(uri.Host, "sim.webhook.local", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(uri.Host, WebhookTargetPolicy.SimulationHost, StringComparison.OrdinalIgnoreCase))
         {
             return uri.AbsolutePath.TrimEnd('/').EndsWith("/ok", StringComparison.OrdinalIgnoreCase)
                 ? (200, null)
@@ -320,7 +325,8 @@ public sealed class HttpOutboundWebhookDispatcher : IOutboundWebhookDispatcher
             req.Headers.TryAddWithoutValidation("X-Nexora-Signature", signature);
             req.Headers.TryAddWithoutValidation("User-Agent", "Nexora-One-Webhooks/1");
             using var resp = await Http.SendAsync(req, ct);
-            return ((int)resp.StatusCode, resp.IsSuccessStatusCode ? null : $"HTTP {(int)resp.StatusCode}");
+            return ((int)resp.StatusCode, resp.IsSuccessStatusCode ? null
+                : (int)resp.StatusCode is >= 300 and < 400 ? $"HTTP {(int)resp.StatusCode} : redirection non suivie" : $"HTTP {(int)resp.StatusCode}");
         }
         catch (Exception ex)
         {

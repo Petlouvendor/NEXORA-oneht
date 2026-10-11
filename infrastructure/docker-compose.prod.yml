@@ -81,6 +81,7 @@ services:
       Observability__LogFormat: json
       Observability__OtlpEndpoint: ${NEXORA_OTLP_ENDPOINT:-}
       Security__SessionMaxHours: ${NEXORA_SESSION_MAX_HOURS:-12}
+      Integrations__AllowPrivateWebhookTargets: ${NEXORA_ALLOW_PRIVATE_WEBHOOK_TARGETS:-false}
       Notifications__Smtp__Enabled: ${NEXORA_SMTP_ENABLED:-false}
       Notifications__Smtp__Host: ${NEXORA_SMTP_HOST:-}
       Notifications__Smtp__Port: ${NEXORA_SMTP_PORT:-587}
