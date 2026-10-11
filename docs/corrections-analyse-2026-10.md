@@ -146,3 +146,30 @@ cinq exceptions justifiées (identité, plateforme). Une table d'entreprise oubl
 
 **Tests.** `WebhookTargetPolicyTests` (29) : classement des adresses IPv4/IPv6, refus et acceptations d'URL, autorisation
 sur site, blocage à la connexion d'un nom qui se résout vers la boucle locale.
+
+## Étape 8 — Dépendances et outillage (§6.6, §7)
+
+**Dépendances.** .NET et EF Core 10.0.4 → 10.0.12 (correctifs de sécurité mensuels), mises à jour mineures
+(FluentValidation, BCrypt, ClosedXML, MailKit, OpenTelemetry, Serilog). vitest 3 → 4.1.11 : les trois avis npm
+(tinypool critique, source-map-js élevée, @vitest/mocker modérée) sont corrigés. Résultat : **0 vulnérabilité NuGet,
+0 vulnérabilité npm** (production et développement). Les montées de version majeures (Swashbuckle 10, Serilog 10,
+Asp.Versioning 10, Twilio 8, FluentAssertions 8 dont la licence a changé) et FirebaseAdmin 3.7 (nouvelles API
+d'identifiants FCM, à valider avec un envoi push réel) restent à planifier.
+
+**ESLint.** Installé (`npm run lint`, ajouté à la CI) avec les règles des hooks React (`rules-of-hooks`,
+`exhaustive-deps`) en erreur et le signalement des directives inutiles. Les 282 fichiers sont conformes ; les 13
+directives `eslint-disable` existantes sont toutes justifiées (sinon signalées comme inutiles).
+
+## Étape 9 — Index des clés étrangères et purge des journaux (§5.3, §5.4)
+
+**Index.** Les 690 clés « sans index » de l'analyse se réduisent à 291 en tenant compte des index `(company_id, x)`,
+et l'essentiel vise des données de référence (devise, compte, taxe, utilisateur) jamais parcourues du parent vers
+les enfants. V099 ajoute 45 index partiels ciblés sur les recherches réelles : clôture de caisse (tout ce qui porte
+une session de caisse), trésorerie par compte, traçabilité des lots (rappel), stock par emplacement, liens d'achat
+(compte 4081, rapprochement, retours), contrepassations, recouvrement, historique d'un article. Les jointures les plus
+fréquentes (lignes de vente, lignes d'écriture, mouvements de stock par article) étaient déjà couvertes.
+
+**Purge.** Correction de l'analyse : la purge technique est **déjà automatique** (job quotidien `maintenance.purge`,
+politiques `retention_policy`) ; les jetons de rafraîchissement disparaissent en cascade avec les sessions expirées
+(7 jours). Le journal d'audit reste immuable par conception : sa croissance se traitera par partition le jour où le
+volume le justifiera, pas par purge.
