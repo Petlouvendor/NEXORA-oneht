@@ -117,3 +117,15 @@ de tentatives. La vérification publique de document et de licence n'avait pas n
 **Tests.** API : page de saisie même avec `?password=` dans l'adresse, mauvais mot de passe → 403, bon mot de passe
 en formulaire ou en JSON → fichier. Intégration : empreinte BCrypt, `password_required`, ancien partage SHA-256
 toujours ouvrable.
+
+## Étape 6 — RLS du journal des exports (§5.2)
+
+**Défaut.** `export_log` portait `company_id` sans RLS : chaque lecture filtrait par entreprise, mais une requête future
+sans filtre aurait exposé l'historique d'exports des autres entreprises.
+
+**Correction.** V098 active et force la RLS sur `export_log`. `access_scope` reste sans RLS, **volontairement** (comme
+`user_role` et `app_user`) : ces tables résolvent l'identité et les périmètres à la connexion, avant tout contexte
+d'entreprise ; l'analyse l'avait classée à tort parmi les oublis.
+
+**Garde-fou.** `RowLevelSecurityCoverageTests` : toute table qui porte `company_id` a la RLS active et forcée, sauf
+cinq exceptions justifiées (identité, plateforme). Une table d'entreprise oubliée fait échouer la suite.
