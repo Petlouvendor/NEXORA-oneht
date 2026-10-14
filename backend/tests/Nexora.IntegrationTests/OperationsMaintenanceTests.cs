@@ -263,7 +263,7 @@ public sealed class OperationsMaintenanceTests(FinanceEngineFixture fx)
             INSERT INTO nexora.user_session (id, user_id, expires_at) VALUES ('{activeSession}', '{user}', now() + interval '10 days');
             """);
 
-        var preview = await retention.PreviewAsync(new PurgePreviewRequest("expired_sessions", null, DateTimeOffset.UtcNow));
+        var preview = (await retention.PreviewAsync(new PurgePreviewRequest("expired_sessions", null, DateTimeOffset.UtcNow))).Value!;
         preview.DryRun.Should().BeTrue();
         preview.ObjectCount.Should().BeGreaterThanOrEqualTo(1);
         (await Scalar<long>($"SELECT COUNT(*) FROM nexora.user_session WHERE id = '{expiredSession}'")).Should().Be(1, "l'aperçu n'écrit rien");

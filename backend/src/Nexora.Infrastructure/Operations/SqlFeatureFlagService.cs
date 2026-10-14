@@ -12,8 +12,11 @@ namespace Nexora.Infrastructure.Operations;
 /// spécificité croissante (utilisateur &gt; entreprise &gt; global), avec un <b>kill switch</b> :
 /// une bascule globale explicitement désactivée l'emporte toujours sur un réglage plus spécifique.
 /// </summary>
-public sealed class SqlFeatureFlagService(NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow) : IFeatureFlagService
+public sealed class SqlFeatureFlagService(NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow, IPlatformOperationGuard guard)
+    : IFeatureFlagService
 {
+    private const string Manage = Nexora.Application.Security.Permissions.Operations.Manage;
+
     private sealed record FlagRow(Guid Id, string Key, string Scope, Guid? CompanyId, Guid? UserId,
         bool Enabled, string? Description, DateTimeOffset? ExpiresAt, DateTimeOffset UpdatedAt);
 
@@ -25,9 +28,12 @@ public sealed class SqlFeatureFlagService(NexoraDbContext db, ITenantContext ten
 
     public async Task<IReadOnlyList<FeatureFlagDto>> ListAsync(CancellationToken ct = default)
     {
+        // Hors exploitant de la plateforme : les bascules globales et celles de l'entreprise active seulement (A-031).
+        var platformWide = await guard.RequirePlatformWideAsync(Manage, ct) is null;
         using var _ = tenant.BeginSystemScope();
         var rows = await db.Database.SqlQueryRaw<FlagRow>(Select + " ORDER BY key, scope").ToListAsync(ct);
-        return rows.Select(ToDto).ToList();
+        return rows.Where(r => platformWide || r.Scope == "global" || (r.Scope == "company" && r.CompanyId == tenant.ActiveCompanyId))
+            .Select(ToDto).ToList();
     }
 
     public async Task<Result<FeatureFlagDto>> SaveAsync(SaveFeatureFlagRequest request, CancellationToken ct = default)
@@ -45,6 +51,9 @@ public sealed class SqlFeatureFlagService(NexoraDbContext db, ITenantContext ten
             return Error.Validation("flag.scope_mismatch", "Entreprise fournie pour une portée non-entreprise.");
         if (scope != "user" && request.UserId is not null)
             return Error.Validation("flag.scope_mismatch", "Utilisateur fourni pour une portée non-utilisateur.");
+        // Une bascule de l'entreprise active reste du ressort de sa direction ; toute autre portée agit au-delà (A-031).
+        var ownCompany = scope == "company" && request.CompanyId == tenant.ActiveCompanyId;
+        if (!ownCompany && await guard.RequirePlatformWideAsync(Manage, ct) is { } refused) return refused;
 
         using var _ = tenant.BeginSystemScope();
         var id = Guid.NewGuid();
@@ -67,6 +76,10 @@ public sealed class SqlFeatureFlagService(NexoraDbContext db, ITenantContext ten
     public async Task<Result> DeleteAsync(Guid id, CancellationToken ct = default)
     {
         using var _ = tenant.BeginSystemScope();
+        var target = await db.Database.SqlQueryRaw<FlagRow>(Select + " WHERE id = {0}", id).FirstOrDefaultAsync(ct);
+        if (target is null) return Error.NotFound("flag.not_found", "Bascule introuvable.");
+        var ownCompany = target.Scope == "company" && target.CompanyId == tenant.ActiveCompanyId;
+        if (!ownCompany && await guard.RequirePlatformWideAsync(Manage, ct) is { } refused) return refused;
         var rows = await db.Database.ExecuteSqlAsync($"DELETE FROM nexora.feature_flag WHERE id = {id}", ct);
         if (rows == 0) return Error.NotFound("flag.not_found", "Bascule introuvable.");
         await uow.SaveChangesAsync(ct);

@@ -11,12 +11,19 @@ namespace Nexora.Infrastructure.Operations;
 /// Correction de donnée contrôlée (Phase 41 §44, §51) : jamais d'<c>UPDATE</c> direct — la liste des
 /// couples table/champ corrigeables est fermée et codée en dur (aucune saisie libre d'identifiant
 /// SQL). Demandeur ≠ approbateur (séparation des responsabilités, comme le workflow Phase 11).
-/// Outil d'administration transverse : un titulaire de <c>operations.correct_data</c> voit toutes les
-/// demandes, quelle que soit l'entreprise porteuse — comme le reste de la console d'exploitation
-/// (Phase 37 : déploiements, Go-Live).
+/// Bornée à l'entreprise active (audit 2026-10, A-031) : avant, un titulaire de <c>operations.*</c> — rôle de
+/// direction d'entreprise — voyait les demandes (anciennes et nouvelles valeurs) de toutes les entreprises et
+/// pouvait corriger un client, un fournisseur, un produit ou un utilisateur d'un autre client de la plateforme.
+/// Seul l'exploitant de la plateforme (<see cref="IPlatformOperationGuard"/>) agit au-delà de son entreprise.
 /// </summary>
-public sealed class SqlDataCorrectionService(NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow) : IDataCorrectionService
+public sealed class SqlDataCorrectionService(NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow,
+    IPlatformOperationGuard guard) : IDataCorrectionService
 {
+    private Guid Active => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
+
+    private async Task<bool> PlatformWideAsync(string permission, CancellationToken ct)
+        => await guard.RequirePlatformWideAsync(permission, ct) is null;
+
     private static readonly Dictionary<string, string[]> Allowlist = new()
     {
         ["app_user"] = ["full_name", "username"],
@@ -28,14 +35,14 @@ public sealed class SqlDataCorrectionService(NexoraDbContext db, ITenantContext 
 
     private sealed record RequestRow(Guid Id, string TableName, Guid RecordId, string FieldName, string? OldValue,
         string NewValue, string Reason, string Status, Guid RequestedBy, Guid? ApprovedBy, string? Notes,
-        DateTimeOffset? AppliedAt, DateTimeOffset CreatedAt);
+        DateTimeOffset? AppliedAt, DateTimeOffset CreatedAt, Guid? CompanyId);
     private sealed record CurrentValueRow(Guid? CompanyId, string? Value);
 
     private const string Select = """
         SELECT id AS "Id", table_name AS "TableName", record_id AS "RecordId", field_name AS "FieldName",
                old_value AS "OldValue", new_value AS "NewValue", reason AS "Reason", status AS "Status",
                requested_by AS "RequestedBy", approved_by AS "ApprovedBy", notes AS "Notes",
-               applied_at AS "AppliedAt", created_at AS "CreatedAt"
+               applied_at AS "AppliedAt", created_at AS "CreatedAt", company_id AS "CompanyId"
         FROM nexora.data_correction_request
         """;
 
@@ -54,12 +61,26 @@ public sealed class SqlDataCorrectionService(NexoraDbContext db, ITenantContext 
         var current = await db.Database.SqlQueryRaw<CurrentValueRow>(lookupSql, request.RecordId).FirstOrDefaultAsync(ct);
         if (current is null) return Error.NotFound("correction.record_not_found", "Enregistrement introuvable.");
 
+        // L'enregistrement doit appartenir à l'entreprise active (un utilisateur : en être membre, ou membre de son
+        // groupe) — sinon « introuvable », sans révéler qu'il existe ailleurs.
+        var active = Active;
+        var platformWide = await PlatformWideAsync(Nexora.Application.Security.Permissions.Operations.Manage, ct);
+        var owned = CompanyScopedTables.Contains(table)
+            ? current.CompanyId == active
+            : await db.Database.SqlQuery<bool>($"""
+                SELECT EXISTS(SELECT 1 FROM nexora.user_role ur JOIN nexora.access_scope sc ON sc.id = ur.scope_id
+                              WHERE ur.user_id = {request.RecordId} AND ur.revoked_at IS NULL
+                                AND (sc.company_id = {active}
+                                     OR (sc.group_id IS NOT NULL AND sc.group_id = (SELECT group_id FROM nexora.company WHERE id = {active})))) AS "Value"
+                """).FirstAsync(ct);
+        if (!owned && !platformWide) return Error.NotFound("correction.record_not_found", "Enregistrement introuvable.");
+
         var id = Guid.NewGuid();
         await db.Database.ExecuteSqlAsync($"""
             INSERT INTO nexora.data_correction_request
                 (id, table_name, record_id, field_name, old_value, new_value, reason, requested_by, company_id)
             VALUES ({id}, {table}, {request.RecordId}, {field}, {current.Value}, {request.NewValue}, {request.Reason},
-                    {tenant.UserId}, {current.CompanyId})
+                    {tenant.UserId}, {current.CompanyId ?? active})
             """, ct);
         await uow.SaveChangesAsync(ct);
         return Result.Success((await GetAsync(id, ct))!);
@@ -70,6 +91,8 @@ public sealed class SqlDataCorrectionService(NexoraDbContext db, ITenantContext 
         using var _ = tenant.BeginSystemScope();
         var row = await db.Database.SqlQueryRaw<RequestRow>(Select + " WHERE id = {0}", id).FirstOrDefaultAsync(ct);
         if (row is null) return Error.NotFound("correction.not_found", "Demande introuvable.");
+        if (row.CompanyId != Active && !await PlatformWideAsync(Nexora.Application.Security.Permissions.Operations.CorrectData, ct))
+            return Error.NotFound("correction.not_found", "Demande introuvable.");
         if (row.Status != "requested") return Error.Conflict("correction.already_decided", "Cette demande a déjà été traitée.");
         if (row.RequestedBy == tenant.UserId)
             return Error.Forbidden("correction.four_eyes", "Le demandeur ne peut pas décider de sa propre demande.");
@@ -108,10 +131,14 @@ public sealed class SqlDataCorrectionService(NexoraDbContext db, ITenantContext 
 
     public async Task<IReadOnlyList<DataCorrectionDto>> ListAsync(string? status, CancellationToken ct = default)
     {
+        var active = Active;
+        var platformWide = await PlatformWideAsync(Nexora.Application.Security.Permissions.Operations.View, ct);
         using var _ = tenant.BeginSystemScope();
         var rows = status is null
-            ? await db.Database.SqlQueryRaw<RequestRow>(Select + " ORDER BY created_at DESC LIMIT 200").ToListAsync(ct)
-            : await db.Database.SqlQueryRaw<RequestRow>(Select + " WHERE status = {0} ORDER BY created_at DESC LIMIT 200", status).ToListAsync(ct);
+            ? await db.Database.SqlQueryRaw<RequestRow>(
+                Select + " WHERE ({0} OR company_id = {1}) ORDER BY created_at DESC LIMIT 200", platformWide, active).ToListAsync(ct)
+            : await db.Database.SqlQueryRaw<RequestRow>(
+                Select + " WHERE ({0} OR company_id = {1}) AND status = {2} ORDER BY created_at DESC LIMIT 200", platformWide, active, status).ToListAsync(ct);
         return rows.Select(ToDto).ToList();
     }
 

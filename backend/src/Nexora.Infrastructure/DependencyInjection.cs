@@ -367,6 +367,7 @@ public static class DependencyInjection
             Nexora.Infrastructure.Operations.SqlPlatformMetrics>();
 
         // Administration opérationnelle & maintenance (Phase 41)
+        services.AddScoped<Nexora.Application.Operations.IPlatformOperationGuard, Nexora.Infrastructure.Operations.PlatformOperationGuard>();
         services.AddScoped<Nexora.Application.Operations.IJobRegistry, Nexora.Infrastructure.Operations.SqlJobRegistry>();
         services.AddScoped<Nexora.Application.Operations.IQueueAdminService, Nexora.Infrastructure.Operations.SqlQueueAdminService>();
         services.AddScoped<Nexora.Application.Operations.IOpsDiagnosticsService, Nexora.Infrastructure.Operations.SqlOpsDiagnosticsService>();

@@ -98,6 +98,8 @@ public sealed class SqlJobRegistry(
 
     public async Task<Result<JobRunDto>> RunNowAsync(string key, CancellationToken ct = default)
     {
+        // Un job couvre toutes les entreprises de l'installation (audit 2026-10, A-031).
+        if (await PlatformWideRefusalAsync(Nexora.Application.Security.Permissions.Operations.Manage, ct) is { } refused) return refused;
         using (tenant.BeginSystemScope())
         {
             var exists = await db.Database.SqlQuery<bool>($"""
@@ -120,8 +122,13 @@ public sealed class SqlJobRegistry(
     public async Task<Result> PauseAsync(string key, CancellationToken ct = default) => await SetEnabledAsync(key, false, ct);
     public async Task<Result> ResumeAsync(string key, CancellationToken ct = default) => await SetEnabledAsync(key, true, ct);
 
+    /// <summary>Appel d'un utilisateur seulement (le planificateur ne passe pas par ici) — résolu à la demande.</summary>
+    private Task<Error?> PlatformWideRefusalAsync(string permission, CancellationToken ct)
+        => services.GetRequiredService<IPlatformOperationGuard>().RequirePlatformWideAsync(permission, ct);
+
     private async Task<Result> SetEnabledAsync(string key, bool enabled, CancellationToken ct)
     {
+        if (await PlatformWideRefusalAsync(Nexora.Application.Security.Permissions.Operations.Manage, ct) is { } refused) return refused;
         using var _ = tenant.BeginSystemScope();
         var rows = await db.Database.ExecuteSqlAsync($"""
             UPDATE nexora.job_definition SET enabled = {enabled}, updated_at = now() WHERE key = {key}
