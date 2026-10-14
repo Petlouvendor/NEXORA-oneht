@@ -51,7 +51,10 @@ public sealed class CatalogPricingEngine(NexoraDbContext db, ITenantContext tena
         var basePrice = baseRow?.Amount ?? 0m;
 
         // --- 2. Liste tarifaire / tarif client + palier quantité --------------
-        var scoped = await ResolveAsync(req.ProductId, currencyId.Value, at, qty, req.PriceListId, customerGroupId, ct)
+        // Même règle que l'encaissement (A-013) : liste choisie, sinon celle du groupe du client.
+        var priceListId = req.PriceListId
+            ?? await PriceListResolver.ForCustomerGroupAsync(db, Company, customerGroupId, currencyId.Value, ct);
+        var scoped = await ResolveAsync(req.ProductId, currencyId.Value, at, qty, priceListId, customerGroupId, ct)
                      ?? baseRow;
         var winning = scoped ?? new PriceRow(0m, false, null, 0m, null, null);
         var unit = winning.Amount;
@@ -180,7 +183,7 @@ public sealed class CatalogPricingEngine(NexoraDbContext db, ITenantContext tena
             WHERE product_id = {productId} AND price_type = 'sale' AND currency_id = {currencyId}
               AND quantity_min <= {qty} AND valid_from <= {at}
               AND (valid_to IS NULL OR valid_to > {at})
-              AND (price_list_id = {priceListId}::uuid OR (price_list_id IS NULL AND {priceListId}::uuid IS NULL))
+              AND (price_list_id IS NULL OR price_list_id = {priceListId}::uuid)
               AND (customer_group_id = {customerGroupId}::uuid OR customer_group_id IS NULL)
             ORDER BY (price_list_id IS NOT NULL) DESC,
                      (customer_group_id IS NOT NULL) DESC,

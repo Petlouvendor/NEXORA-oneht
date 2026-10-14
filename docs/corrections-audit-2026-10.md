@@ -162,3 +162,19 @@ d'une ligne est plafonnée à son montant brut. La caisse et l'aperçu du panier
 **Tests.** `CatalogPromotionTests.Fixed_amount_coupon_applies_once_per_cart_spread_over_the_lines` : coupon 50 sur
 100 / 100 / 50 → 20 / 20 / 10 (total 50) ; panier de 25 → remise 25. Non-régression : promotions, prix, caisse,
 paiements, corrections de recette (44 tests).
+
+## Étape 7 — Listes de prix appliquées aux ventes (A-013)
+
+**Défaut.** La tarification des ventes (caisse, aperçu du panier, commandes, devis) filtrait `price_list_id IS NULL` :
+une liste tarifaire (membres, grossistes…) créée dans le catalogue n'était jamais appliquée à une vente réelle. Le
+simulateur, lui, appliquait la liste choisie : il pouvait annoncer un prix que la caisse ne facturait pas.
+
+**Correction.** `PriceListResolver` : la liste **active** rattachée au groupe du client, dans la devise de la vente (ou
+sans devise), la plus haute priorité gagnant. Ses prix priment, les prix de base restent le repli (paliers compris).
+Même règle pour la caisse, l'aperçu, les commandes, les devis et le simulateur (qui garde aussi le choix explicite d'une
+liste). Une liste non rattachée à un groupe (cas de la liste « PRO » de démonstration) ne s'applique toujours pas
+d'elle-même.
+
+**Tests.** `CatalogPromotionTests.Price_list_of_the_customer_group_applies_at_the_pos_and_in_the_simulator` : client
+d'un groupe doté d'une liste à 80 → 80 à la caisse et au simulateur ; sans client → 100. Non-régression : promotions,
+prix, caisse, commandes, documents commerciaux, référentiel (57 tests).
