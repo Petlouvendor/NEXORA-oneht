@@ -565,7 +565,7 @@ public sealed class SqlFiscalYearService(
             if (string.IsNullOrWhiteSpace(r.Note)) return Error.Validation("accounting.force_reason", "Un motif est obligatoire pour forcer.");
         }
 
-        var pnl = await PnlBalancesAsync(periodId, report.EndDate, ct);
+        var pnl = await PnlBalancesAsync((await PeriodAsync(periodId, ct))!.StartDate, report.EndDate, ct);
         if (pnl.Count == 0)
             return Error.Validation("accounting.no_result", "Aucun compte de résultat mouvementé — rien à solder.");
 
@@ -650,12 +650,24 @@ public sealed class SqlFiscalYearService(
             """).FirstAsync(ct);
         if (exists > 0) return Error.Conflict("accounting.opening_exists", "Une écriture d'à-nouveaux existe déjà pour cette période.");
 
-        var balances = await BalanceSheetBalancesAsync(from.EndDate, ct);
-        if (balances.Count == 0) return Error.Validation("accounting.no_balances", "Aucun solde de bilan à reporter.");
-
+        // Grand livre continu (audit 2026-10, A-021) : la balance, le bilan et le report du grand livre cumulent depuis
+        // l'origine, et la clôture a déjà viré le résultat en capitaux propres. Reprendre les soldes de bilan en
+        // à-nouveaux les DOUBLAIT tous (caisse, banque, stock, tiers, capitaux). Les à-nouveaux portent donc seulement
+        // ce qui change d'un exercice à l'autre : le report du résultat clôturé, du compte « résultat de l'exercice »
+        // vers le « report à nouveau ».
         var func = await currency.FunctionalCurrencyAsync(ct);
         var currencyId = await currency.ResolveCurrencyIdAsync(func, ct);
+        var resultAccount = await accounts.ResolveAsync(AccountKeys.CurrentYearEarnings, ct);
         var carryAccount = await accounts.ResolveAsync(AccountKeys.RetainedEarnings, ct);
+        var result = Math.Round(await db.Database.SqlQuery<decimal>($"""
+            SELECT COALESCE(SUM(l.base_credit - l.base_debit), 0) AS "Value"
+            FROM nexora.journal_entry_line l JOIN nexora.journal_entry e ON e.id = l.journal_entry_id
+            WHERE e.company_id = {Company} AND e.status = 'posted' AND l.account_id = {resultAccount}
+              AND e.entry_date <= {from.EndDate}
+            """).FirstAsync(ct), 2);
+        if (result == 0m)
+            return Error.Validation("accounting.no_balances",
+                "Aucun résultat à reporter : clôturez d'abord l'exercice source.");
 
         try
         {
@@ -667,23 +679,15 @@ public sealed class SqlFiscalYearService(
                 {
                     Id = Guid.NewGuid(), CompanyId = Company, JournalId = journalId, AccountingPeriodId = targetPeriodId,
                     EntryNumber = num, EntryDate = target.StartDate, Origin = "opening", SourceType = "opening_balances",
-                    Description = $"À-nouveaux — reprise des soldes de {from.Name}",
+                    Description = $"À-nouveaux — report du résultat de {from.Name}",
                     Status = JournalEntryStatus.Posted, PostedAt = DateTimeOffset.UtcNow, PostedBy = tenant.UserId,
                     CreatedBy = tenant.UserId,
                 };
-                var n = 1;
-                decimal dr = 0m, cr = 0m;
-                foreach (var b in balances)
-                {
-                    if (b.Balance == 0m) continue;
-                    var debit = b.Balance > 0m ? b.Balance : 0m;
-                    var credit = b.Balance < 0m ? -b.Balance : 0m;
-                    entry.Lines.Add(Line(b.AccountId, n++, currencyId, Math.Round(debit, 2), Math.Round(credit, 2), "Report à nouveau"));
-                    dr += debit; cr += credit;
-                }
-                var residual = Math.Round(dr - cr, 2);
-                if (residual > 0m) entry.Lines.Add(Line(carryAccount, n++, currencyId, 0m, residual, "Équilibrage report à nouveau"));
-                else if (residual < 0m) entry.Lines.Add(Line(carryAccount, n++, currencyId, -residual, 0m, "Équilibrage report à nouveau"));
+                var label = result > 0m ? "Report à nouveau du bénéfice" : "Report à nouveau de la perte";
+                var amount = Math.Abs(result);
+                // Bénéfice (solde créditeur) : D résultat de l'exercice / C report à nouveau ; perte : l'inverse.
+                entry.Lines.Add(Line(resultAccount, 1, currencyId, result > 0m ? amount : 0m, result > 0m ? 0m : amount, label));
+                entry.Lines.Add(Line(carryAccount, 2, currencyId, result > 0m ? 0m : amount, result > 0m ? amount : 0m, label));
 
                 await db.JournalEntries.AddAsync(entry, token);
                 await uow.SaveChangesAsync(token);
@@ -717,7 +721,14 @@ public sealed class SqlFiscalYearService(
             SELECT id AS "Value" FROM nexora.journal WHERE company_id = {Company} AND code = {code}
             """).FirstAsync(ct);
 
-    private Task<List<AccBalance>> PnlBalancesAsync(Guid periodId, DateOnly endDate, CancellationToken ct)
+    /// <summary>
+    /// Soldes des comptes de gestion à solder pour l'exercice <paramref name="startDate"/>–<paramref name="endDate"/>.
+    /// Grand livre continu : les écritures de clôture des exercices ANTÉRIEURS (datées avant le début) sont comptées,
+    /// elles ont déjà soldé les produits et charges de ces exercices ; seule la clôture de l'exercice courant est
+    /// exclue. Avant (audit 2026-10, A-020), toutes les clôtures étaient exclues : dès le 2e exercice, les produits et
+    /// charges du 1er étaient soldés une seconde fois.
+    /// </summary>
+    private Task<List<AccBalance>> PnlBalancesAsync(DateOnly startDate, DateOnly endDate, CancellationToken ct)
         => db.Database.SqlQuery<AccBalance>($"""
             SELECT a.id AS "AccountId", a.code AS "Code", a.account_type AS "AccountType",
                    CASE WHEN a.account_type = 'revenue'
@@ -727,25 +738,12 @@ public sealed class SqlFiscalYearService(
             JOIN nexora.journal_entry_line l ON l.account_id = a.id
             JOIN nexora.journal_entry e ON e.id = l.journal_entry_id
             WHERE a.company_id = {Company} AND a.account_type IN ('revenue','expense')
-              AND e.status = 'posted' AND e.origin <> 'closing' AND e.entry_date <= {endDate}
+              AND e.status = 'posted' AND e.entry_date <= {endDate}
+              AND (e.origin <> 'closing' OR e.entry_date < {startDate})
             GROUP BY a.id, a.code, a.account_type
             HAVING CASE WHEN a.account_type = 'revenue'
                         THEN COALESCE(SUM(l.base_credit - l.base_debit),0)
                         ELSE COALESCE(SUM(l.base_debit - l.base_credit),0) END <> 0
-            ORDER BY a.code
-            """).ToListAsync(ct);
-
-    private Task<List<AccBalance>> BalanceSheetBalancesAsync(DateOnly asOf, CancellationToken ct)
-        => db.Database.SqlQuery<AccBalance>($"""
-            SELECT a.id AS "AccountId", a.code AS "Code", a.account_type AS "AccountType",
-                   COALESCE(SUM(l.base_debit - l.base_credit),0) AS "Balance"
-            FROM nexora.account a
-            JOIN nexora.journal_entry_line l ON l.account_id = a.id
-            JOIN nexora.journal_entry e ON e.id = l.journal_entry_id
-            WHERE a.company_id = {Company} AND a.account_type IN ('asset','liability','equity')
-              AND e.status = 'posted' AND e.entry_date <= {asOf}
-            GROUP BY a.id, a.code, a.account_type
-            HAVING COALESCE(SUM(l.base_debit - l.base_credit),0) <> 0
             ORDER BY a.code
             """).ToListAsync(ct);
 
@@ -774,7 +772,7 @@ public sealed class SqlFiscalYearService(
             WHERE company_id = {Company} AND accounting_period_id = {periodId} AND status = 'completed'
             """).FirstAsync(ct);
 
-        var pnl = await PnlBalancesAsync(periodId, period.EndDate, ct);
+        var pnl = await PnlBalancesAsync(period.StartDate, period.EndDate, ct);
         var revenue = Math.Round(pnl.Where(x => x.AccountType == "revenue").Sum(x => x.Balance), 2);
         var expenses = Math.Round(pnl.Where(x => x.AccountType == "expense").Sum(x => x.Balance), 2);
 
