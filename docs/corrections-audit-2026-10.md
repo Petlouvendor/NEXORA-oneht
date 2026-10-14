@@ -16,3 +16,26 @@ construction du contexte (`IOptions<NexoraDbOptions>`), comme le faisait déjà 
 
 **Test.** `TestDatabaseTargetTests` : une fabrique qui déclare une autre base obtient un contexte connecté à cette base
 (aucun accès réseau).
+
+## Étape 1 — Solde des comptes financiers sans perte sous concurrence (A-018, CRITIQUE)
+
+**Défaut.** `AdjustBalanceAsync`, seul écrivain de `financial_account.current_balance`, lisait le compte, ajoutait le
+montant en mémoire puis écrivait la valeur calculée. Deux opérations simultanées sur un même compte (une vente et un
+transfert, que des verrous de numérotation différents ne sérialisent pas) perdaient une mise à jour, sans erreur :
+525 HTG perdus sur 20 opérations lors de l'audit. Le tableau de bord, le cockpit de trésorerie et le contrôle de solde
+des transferts lisent ce solde.
+
+**Correction.** Ajout atomique en base (`current_balance = current_balance + montant`) ; la ligne reste verrouillée
+jusqu'à la fin de la transaction de l'appelant. L'entité éventuellement suivie par le contexte est réalignée pour
+qu'EF ne réécrive pas l'ancien solde.
+
+**Reprise de l'existant.** V100 réaligne les comptes déjà en écart sur la définition du solde (ouverture + somme des
+transactions, qui n'ont jamais été perdues). Aucun écart n'existait sur `nexora` ni `nexora_recette` lors de l'audit.
+
+**Tests.** `TreasuryConcurrencyTests` : 12 ajouts simultanés sur un même compte → solde 12 (l'ancien code donnait **1**,
+vérifié en le rétablissant le temps du test) ; transferts simultanés partageant un compte → solde stocké = ouverture +
+Σ transactions sur les trois comptes. Non-régression : moteur, trésorerie, cockpit, comptes clients, paie, caisse
+(70 tests).
+
+**À faire hors code.** Appliquer V100 sur `nexora` et `nexora_recette` (`Nexora.Api.dll migrate`) : refusé à l'outil
+pendant la correction, en attente de l'accord du propriétaire.
