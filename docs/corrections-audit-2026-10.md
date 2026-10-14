@@ -39,3 +39,30 @@ vérifié en le rétablissant le temps du test) ; transferts simultanés partage
 
 **À faire hors code.** Appliquer V100 sur `nexora` et `nexora_recette` (`Nexora.Api.dll migrate`) : refusé à l'outil
 pendant la correction, en attente de l'accord du propriétaire.
+
+## Étape 2 — Retours : remboursement espèces dans la session de caisse, contrôles sous verrou (A-002 CRITIQUE, A-005)
+
+**Défaut (A-002).** Un retour remboursé en espèces sortait de la trésorerie (écriture et transaction) sans aucun
+mouvement dans la session de caisse : le type `sale_refund` existait dans la base mais n'était jamais écrit. À la
+clôture, l'attendu ignorait le remboursement : faux manquant imputé au caissier, puis l'écart comptabilisé (charge
+6580) faisait baisser la caisse une seconde fois. Constaté lors de l'audit : vente 75, retour 75, clôture comptée 0 →
+écart −75.
+
+**Défauts (A-005).** Quantité retournable contrôlée hors transaction et sans verrou (deux retours simultanés pouvaient
+dépasser la vente) ; verrou `FOR UPDATE` sur la créance pris hors transaction, donc relâché aussitôt ; remboursement
+espèces accepté sans compte (l'écriture créditait le compte d'attente, aucune trésorerie ne bougeait) ; indicateur
+« remis en stock » toujours vrai.
+
+**Correction.**
+- Remboursement espèces : compte de décaissement obligatoire ; s'il s'agit du compte de la caisse de la session, la
+  session doit être ouverte et un mouvement `sale_refund` (montant négatif) est écrit dans la même transaction que le
+  retour. Un remboursement depuis un autre compte (coffre, banque) ne touche pas la session, comme les remboursements
+  d'avoir.
+- Vente verrouillée (`FOR UPDATE`) au début de la transaction ; statut, quantités déjà retournées et reste dû relus
+  sous ce verrou.
+- `Restocked` vrai seulement si un article est réellement revenu en stock.
+
+**Tests.** `SaleReturnCashTests` : vente 300 + retour espèces depuis la session → mouvement −300, clôture au fond de
+caisse sans écart, trésorerie inchangée ; refus sans compte (`pos.refund_account_required`) et depuis une session close
+(`pos.cash_session_closed`) ; deux retours simultanés de 6 sur 10 vendus → un seul accepté ; retour sans remise en stock.
+Non-régression : caisse, paiements, comptes clients, guide fonctionnel, recette, achats (88 tests).
