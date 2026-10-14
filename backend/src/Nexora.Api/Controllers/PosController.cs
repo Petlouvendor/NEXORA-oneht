@@ -112,7 +112,9 @@ public sealed class PosController(
     [RequirePermission(Permissions.Pos.Sell)]
     [Idempotent]
     public async Task<IActionResult> Checkout([FromBody] CheckoutCommand cmd, CancellationToken ct)
-        => FromResult(await sales.CheckoutAsync(cmd, ct));
+        // Vente en ligne : datée par le serveur. Seule la synchronisation d'un appareil enrôlé rejoue une vente
+        // hors ligne à sa date (audit 2026-10, A-003 : vente antidatée, ajoutée à une caisse déjà clôturée).
+        => FromResult(await sales.CheckoutAsync(cmd with { SoldAt = null }, ct));
 
     [HttpPost("park")]
     [RequirePermission(Permissions.Pos.Sell)]

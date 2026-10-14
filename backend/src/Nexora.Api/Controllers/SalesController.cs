@@ -22,7 +22,8 @@ public sealed class SalesController(
     [RequirePermission(Permissions.Pos.Sell)]
     [Idempotent]
     public async Task<IActionResult> Create([FromBody] CheckoutCommand cmd, CancellationToken ct)
-        => FromResult(await sales.CheckoutAsync(cmd, ct));
+        // Datée par le serveur, comme /pos/checkout (audit 2026-10, A-003).
+        => FromResult(await sales.CheckoutAsync(cmd with { SoldAt = null }, ct));
 
     [HttpGet("{id:guid}")]
     [RequirePermission(Permissions.Pos.View)]
