@@ -147,3 +147,18 @@ tableaux de bord, BI, trésorerie (66 tests).
 **À valider par le propriétaire.** Si l'entreprise préfère des exercices **bornés** (états recalculés depuis le début
 de l'exercice, soldes de bilan repris en à-nouveaux comme dans beaucoup de logiciels français), c'est un changement de
 modèle des onze requêtes, à décider explicitement ; la correction présente reste exacte dans le modèle actuel.
+
+## Étape 6 — Coupon à montant fixe appliqué une fois par panier (A-012)
+
+**Défaut.** Le coupon était appliqué dans la boucle des lignes : un coupon « montant » de 50 HTG remisait 50 sur chaque
+ligne sans promotion (constaté : 100 sur deux lignes, 150 sur trois), alors que sa consommation ne comptait qu'un usage.
+La remise coupon échappe au plafond de remise du caissier : perte de marge directe.
+
+**Correction.** Les lignes sont d'abord toutes tarifées (prix, promotion, coupon en pourcentage) ; le coupon à montant
+fixe est ensuite appliqué **une fois**, plafonné au total des lignes éligibles et réparti à leur prorata (l'arrondi va
+à la dernière). Règle de cumul inchangée : le coupon fixe ne s'applique pas à une ligne déjà en promotion. La remise
+d'une ligne est plafonnée à son montant brut. La caisse et l'aperçu du panier utilisent ce même calcul.
+
+**Tests.** `CatalogPromotionTests.Fixed_amount_coupon_applies_once_per_cart_spread_over_the_lines` : coupon 50 sur
+100 / 100 / 50 → 20 / 20 / 10 (total 50) ; panier de 25 → remise 25. Non-régression : promotions, prix, caisse,
+paiements, corrections de recette (44 tests).

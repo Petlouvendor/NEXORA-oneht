@@ -61,7 +61,8 @@ public sealed class SqlSalesPricing(NexoraDbContext db, ITenantContext tenant) :
             }
         }
 
-        var result = new List<PricedLine>();
+        var priced = new List<(CheckoutLine Line, decimal UnitPrice, decimal Gross, decimal Promo, string? PromoLabel,
+            Guid? PromoId, decimal TaxRate, Guid? TaxId, decimal UnitCost, string Name)>();
         foreach (var line in lines)
         {
             var product = await db.Products.AsNoTracking().FirstOrDefaultAsync(p => p.Id == line.ProductId, ct)
@@ -109,13 +110,32 @@ public sealed class SqlSalesPricing(NexoraDbContext db, ITenantContext tenant) :
             }
 
             if (couponPercent > 0m) promoDiscount += Math.Round(gross * couponPercent / 100m, 2);
-            else if (couponAmount > 0m && promoDiscount == 0m) promoDiscount += Math.Min(gross, couponAmount);
-
-            result.Add(new PricedLine(
-                line.ProductId, line.Quantity, unitPrice, Math.Round(line.LineDiscount, 2),
-                promoDiscount, promoLabel, promoId, couponId, taxRate, taxId, unitCost, product.Name));
+            priced.Add((line, unitPrice, gross, Math.Min(promoDiscount, gross), promoLabel, promoId, taxRate, taxId, unitCost, product.Name));
         }
-        return result;
+
+        // Coupon à montant fixe : UNE fois par panier (audit 2026-10, A-012 — il s'appliquait à chaque ligne : 50 HTG
+        // devenaient 100 sur deux lignes, 150 sur trois). Réparti au prorata des lignes sans promotion (le coupon fixe
+        // ne se cumule pas avec une promotion, comme avant), plafonné à leur montant ; l'arrondi va à la dernière.
+        var couponShare = new decimal[priced.Count];
+        if (couponAmount > 0m)
+        {
+            var eligible = Enumerable.Range(0, priced.Count).Where(i => priced[i].Promo == 0m && priced[i].Gross > 0m).ToList();
+            var eligibleGross = eligible.Sum(i => priced[i].Gross);
+            var toSpread = Math.Min(couponAmount, eligibleGross);
+            var spread = 0m;
+            for (var k = 0; k < eligible.Count; k++)
+            {
+                var i = eligible[k];
+                couponShare[i] = k == eligible.Count - 1
+                    ? toSpread - spread
+                    : Math.Round(toSpread * priced[i].Gross / eligibleGross, 2, MidpointRounding.ToEven);
+                spread += couponShare[i];
+            }
+        }
+
+        return priced.Select((x, i) => new PricedLine(
+            x.Line.ProductId, x.Line.Quantity, x.UnitPrice, Math.Round(x.Line.LineDiscount, 2),
+            x.Promo + couponShare[i], x.PromoLabel, x.PromoId, couponId, x.TaxRate, x.TaxId, x.UnitCost, x.Name)).ToList();
     }
 
     private sealed record CouponRow(Guid Id, string DiscountType, decimal DiscountValue);
