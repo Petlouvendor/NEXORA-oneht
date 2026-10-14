@@ -172,6 +172,32 @@ public sealed class CatalogPromotionTests(FinanceEngineFixture fx)
         second.Value!.Total.Should().Be(100m);
     }
 
+    /// <summary>Audit 2026-10, A-012 : un coupon fixe de 50 remisait 50 PAR LIGNE (100 sur deux lignes, 150 sur trois).</summary>
+    [Fact]
+    public async Task Fixed_amount_coupon_applies_once_per_cart_spread_over_the_lines()
+    {
+        var a = await Product(100m);
+        var b = await Product(100m);
+        var c = await Product(50m);
+        await using var s = Scope();
+        var code = $"fix{U()}";
+        (await s.ServiceProvider.GetRequiredService<IPromotionService>().CreateCouponAsync(
+            new CreateCouponRequest(code, "amount", 50m, null, null, null))).IsSuccess.Should().BeTrue();
+
+        var lines = await s.ServiceProvider.GetRequiredService<ISalesPricing>().PriceCartAsync(
+            Officine, null, "HTG", DateTimeOffset.UtcNow,
+            [new CheckoutLine(a, 1m, null, 0m, null), new CheckoutLine(b, 1m, null, 0m, null), new CheckoutLine(c, 1m, null, 0m, null)],
+            code.ToUpperInvariant());
+
+        lines.Sum(l => l.PromotionDiscount).Should().Be(50m, "un coupon de 50 remise 50 sur le panier");
+        lines.Select(l => l.PromotionDiscount).Should().Equal(20m, 20m, 10m);   // au prorata de 100 / 100 / 50
+
+        // Panier plus petit que le coupon : remise plafonnée au panier.
+        var small = await s.ServiceProvider.GetRequiredService<ISalesPricing>().PriceCartAsync(
+            Officine, null, "HTG", DateTimeOffset.UtcNow, [new CheckoutLine(c, 0.5m, null, 0m, null)], code.ToUpperInvariant());
+        small.Single().PromotionDiscount.Should().Be(25m);
+    }
+
     [Fact]
     public async Task Coupon_outside_its_validity_period_is_ignored_at_the_pos()
     {
