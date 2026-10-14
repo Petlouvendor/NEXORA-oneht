@@ -33,6 +33,11 @@ public interface IInventoryOpsStore
     Task AddCountAsync(InventoryCount count, CancellationToken ct = default);
     Task<InventoryCount?> GetCountAsync(Guid id, CancellationToken ct = default);
     Task<decimal> SystemQuantityAsync(Guid productId, Guid locationId, CancellationToken ct = default);
+    /// <summary>Somme des mouvements (hors réservations) enregistrés entre deux instants sur un article à un emplacement.</summary>
+    Task<decimal> MovementsBetweenAsync(Guid productId, Guid locationId, Guid? lotId, DateTimeOffset after, DateTimeOffset upTo,
+        CancellationToken ct = default);
+    /// <summary>Stock par lot à l'emplacement, pour un article suivi par lot (vide sinon).</summary>
+    Task<IReadOnlyList<(Guid LotId, decimal Quantity)>> LotQuantitiesAsync(Guid productId, Guid locationId, CancellationToken ct = default);
     Task<decimal> AverageCostAsync(Guid productId, Guid locationId, CancellationToken ct = default);
     Task AddAdjustmentAsync(StockAdjustment adjustment, CancellationToken ct = default);
     Task SetCountValidatedAsync(Guid countId, Guid? userId, CancellationToken ct = default);
@@ -308,12 +313,26 @@ public sealed class InventoryOperationsService(
         };
         foreach (var pid in products)
         {
+            var unitCost = await store.AverageCostAsync(pid, locationId, ct);
+            // Article suivi par lot : une ligne par lot en stock (audit 2026-10, A-007) — sans lot, l'ajustement
+            // modifiait le stock de l'article sans toucher ses lots, qui divergeaient.
+            var lots = await store.LotQuantitiesAsync(pid, locationId, ct);
+            if (lots.Count > 0)
+            {
+                foreach (var (lotId, quantity) in lots)
+                    count.Lines.Add(new InventoryCountLine
+                    {
+                        Id = Guid.NewGuid(), InventoryCountId = count.Id, CompanyId = Company,
+                        ProductId = pid, LotId = lotId, SystemQuantity = quantity, UnitCost = unitCost,
+                    });
+                continue;
+            }
             count.Lines.Add(new InventoryCountLine
             {
                 Id = Guid.NewGuid(), InventoryCountId = count.Id, CompanyId = Company,
                 ProductId = pid,
                 SystemQuantity = await store.SystemQuantityAsync(pid, locationId, ct),
-                UnitCost = await store.AverageCostAsync(pid, locationId, ct),
+                UnitCost = unitCost,
             });
         }
         await store.AddCountAsync(count, ct);
@@ -350,10 +369,27 @@ public sealed class InventoryOperationsService(
         if (count is null) return Error.NotFound("inventory.count_not_found", "Inventaire introuvable.");
         if (count.Status == "validated") return Error.Conflict("inventory.count_validated", "Inventaire déjà validé.");
         if (count.Status == "cancelled") return Error.Conflict("inventory.count_closed", "Inventaire annulé.");
+        var countedBefore = count.Lines.ToDictionary(l => l.Id, l => l.CountedQuantity);
         var inputError = ApplyCounts(count, counted);
         if (inputError is not null) return inputError;
 
-        var withVariance = count.Lines.Where(l => l.CountedQuantity is { } q && q != l.SystemQuantity).ToList();
+        // Quantité attendue au moment où chaque ligne a été comptée (audit 2026-10, A-007) : la quantité figée à
+        // l'ouverture plus les mouvements enregistrés depuis (ventes, réceptions, transferts pendant le comptage).
+        // Avant, l'écart se calculait sur la seule quantité figée : une vente faite pendant le comptage était
+        // retranchée deux fois (vendue, puis « manquante » à l'inventaire). Une ligne saisie à l'instant compare au
+        // stock courant ; une ligne saisie plus tôt, au stock de l'instant de sa saisie (updated_at de la ligne).
+        var now = clock.UtcNow;
+        var opened = count.StartedAt ?? count.CreatedAt;
+        var expected = new Dictionary<Guid, decimal>();
+        foreach (var line in count.Lines.Where(l => l.CountedQuantity is not null))
+        {
+            var countedAt = countedBefore[line.Id] != line.CountedQuantity ? now : line.UpdatedAt;
+            expected[line.Id] = line.SystemQuantity + (countedAt > opened
+                ? await store.MovementsBetweenAsync(line.ProductId, count.InventoryLocationId, line.LotId, opened, countedAt, ct)
+                : 0m);
+        }
+
+        var withVariance = count.Lines.Where(l => l.CountedQuantity is { } q && q != expected[l.Id]).ToList();
         if (requireJustification && withVariance.Count > 0 && string.IsNullOrWhiteSpace(note))
             return Error.Validation("inventory.justification_required",
                 "Des écarts existent : un commentaire de validation est obligatoire (il est conservé dans l'audit).");
@@ -361,7 +397,10 @@ public sealed class InventoryOperationsService(
 
         return await Guarded(() => uow.ExecuteInTransactionAsync<Result<Guid?>>(async token =>
         {
-            var now = clock.UtcNow;
+            // La quantité système de la ligne devient la quantité attendue : l'écart affiché (colonne générée
+            // compté − système) est exactement l'ajustement passé.
+            foreach (var (lineId, quantity) in expected)
+                count.Lines.First(l => l.Id == lineId).SystemQuantity = quantity;
             var adjustment = new StockAdjustment
             {
                 Id = Guid.NewGuid(),

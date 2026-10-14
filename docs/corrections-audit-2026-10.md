@@ -178,3 +178,23 @@ d'elle-même.
 **Tests.** `CatalogPromotionTests.Price_list_of_the_customer_group_applies_at_the_pos_and_in_the_simulator` : client
 d'un groupe doté d'une liste à 80 → 80 à la caisse et au simulateur ; sans client → 100. Non-régression : promotions,
 prix, caisse, commandes, documents commerciaux, référentiel (57 tests).
+
+## Étape 8 — Inventaire tenu magasin ouvert, et par lot (A-007)
+
+**Défaut.** L'ouverture d'un inventaire fige la quantité système ; la validation postait `compté − quantité figée`.
+Toute vente, réception ou transfert survenus pendant le comptage était donc compté deux fois : une vente de 2 articles
+pendant l'inventaire devenait aussi un « manquant » de 2 (constaté lors de l'audit : figé 411, courant 409). Les lignes
+d'un article suivi par lot étaient créées sans lot : l'ajustement modifiait le stock de l'article sans toucher ses lots.
+
+**Correction.**
+- Écart = compté − **quantité attendue au moment du comptage de la ligne** : quantité figée + mouvements enregistrés
+  entre l'ouverture et la saisie de la ligne (horodatage `updated_at` de la ligne, tenu par la base ; une ligne saisie
+  à la validation compare au stock courant). Aucune nouvelle colonne. La quantité système de la ligne prend cette
+  valeur à la validation : l'écart affiché est exactement l'ajustement passé.
+- Article suivi par lot : une ligne par lot en stock à l'ouverture ; quantités attendues et ajustements par lot ; l'écran
+  d'inventaire affiche le lot et le renvoie à l'enregistrement.
+
+**Tests.** `InventoryCountDuringSalesTests` : vente de 2 pendant le comptage puis 18 comptés → aucun ajustement, stock
+18 (l'ancien calcul donnait 16) ; 19 comptés puis 3 vendus → stock 16 ; article à deux lots → deux lignes, l'écart ne
+touche que le lot compté, stock de l'article = somme des lots. Non-régression : opérations de stock, cycle de vie, lots,
+catalogue (31 tests) ; frontend : typecheck, lint, tests du stock.

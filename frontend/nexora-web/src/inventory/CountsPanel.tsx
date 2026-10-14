@@ -149,7 +149,7 @@ function CountSheet({ countId, onClose, onChanged }: { countId: string; onClose:
       if (!dr || dr.counted.trim() === "") continue;
       const v = num(dr.counted);
       if (v === null || v < 0) return `Quantité invalide pour ${l.productName}.`;
-      out.push({ productId: l.productId, lotId: null, countedQuantity: v, note: dr.note });
+      out.push({ productId: l.productId, lotId: l.lotId ?? null, countedQuantity: v, note: dr.note });
     }
     return out;
   };
@@ -221,7 +221,7 @@ function CountSheet({ countId, onClose, onChanged }: { countId: string; onClose:
                   const variance = counted === null ? null : counted - l.systemQuantity;
                   return (
                     <tr key={l.id}>
-                      <td><code>{l.sku}</code> {l.productName}</td>
+                      <td><code>{l.sku}</code> {l.productName}{l.lotNumber && <> · lot <code>{l.lotNumber}</code></>}</td>
                       <td className="nx-num">{qty(l.systemQuantity, l.unitCode)}</td>
                       <td style={{ minWidth: 110 }}>
                         {open ? (

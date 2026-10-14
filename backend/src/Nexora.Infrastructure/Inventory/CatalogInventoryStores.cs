@@ -471,6 +471,31 @@ public sealed class EfInventoryOpsStore(NexoraDbContext db, ITenantContext tenan
             .Where(s => s.ProductId == productId && s.InventoryLocationId == locationId)
             .Select(s => (decimal?)s.QuantityOnHand).FirstOrDefaultAsync(ct) ?? 0m;
 
+    public async Task<decimal> MovementsBetweenAsync(Guid productId, Guid locationId, Guid? lotId, DateTimeOffset after,
+        DateTimeOffset upTo, CancellationToken ct = default)
+        => await db.Database.SqlQuery<decimal>($"""
+            SELECT COALESCE(SUM(quantity), 0) AS "Value" FROM nexora.stock_movement
+            WHERE company_id = {Company} AND product_id = {productId} AND inventory_location_id = {locationId}
+              AND ({lotId}::uuid IS NULL OR lot_id = {lotId}::uuid)
+              AND movement_type NOT IN ('reservation', 'release')
+              AND created_at > {after} AND created_at <= {upTo}
+            """).FirstAsync(ct);
+
+    private sealed record LotQuantityRow(Guid LotId, decimal Quantity);
+
+    public async Task<IReadOnlyList<(Guid LotId, decimal Quantity)>> LotQuantitiesAsync(Guid productId, Guid locationId,
+        CancellationToken ct = default)
+        => (await db.Database.SqlQuery<LotQuantityRow>($"""
+                SELECT ls.lot_id AS "LotId", ls.quantity_on_hand AS "Quantity"
+                FROM nexora.lot_stock ls
+                JOIN nexora.lot l ON l.id = ls.lot_id
+                JOIN nexora.product p ON p.id = l.product_id AND p.track_lots
+                WHERE ls.company_id = {Company} AND l.product_id = {productId} AND ls.inventory_location_id = {locationId}
+                  AND ls.quantity_on_hand <> 0
+                ORDER BY l.expiration_date NULLS LAST, l.lot_number
+                """).ToListAsync(ct))
+            .Select(r => (r.LotId, r.Quantity)).ToList();
+
     public async Task<decimal> AverageCostAsync(Guid productId, Guid locationId, CancellationToken ct = default)
         => await db.StockBalances.AsNoTracking()
             .Where(s => s.ProductId == productId && s.InventoryLocationId == locationId)
