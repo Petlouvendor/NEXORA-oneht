@@ -66,3 +66,24 @@ espèces accepté sans compte (l'écriture créditait le compte d'attente, aucun
 caisse sans écart, trésorerie inchangée ; refus sans compte (`pos.refund_account_required`) et depuis une session close
 (`pos.cash_session_closed`) ; deux retours simultanés de 6 sur 10 vendus → un seul accepté ; retour sans remise en stock.
 Non-régression : caisse, paiements, comptes clients, guide fonctionnel, recette, achats (88 tests).
+
+## Étape 3 — Date de vente fixée par le serveur (A-003)
+
+**Défaut.** La commande d'encaissement liait `SoldAt` depuis le corps HTTP de `/pos/checkout` et `/sales`. Un
+caissier pouvait antidater une vente ; le contrôle de session acceptait une session **close** quand la date fournie
+précédait sa fermeture (règle prévue pour le rejeu hors ligne). Constaté lors de l'audit : vente acceptée dans une
+session déjà comptée et clôturée, mouvement de caisse ajouté après le comptage.
+
+**Correction.**
+- `/pos/checkout` et `/sales` ignorent la date fournie : la vente est datée par le serveur. L'interface de caisse
+  rejoue ses ventes hors ligne par la synchronisation (`/sync`), seul canal qui garde la date de l'appareil.
+- Date d'une vente rejouée : jamais plus de 5 minutes dans le futur (`pos.sold_at_future`), jamais avant l'ouverture
+  de sa session (`pos.sold_at_outside_session`).
+
+**Tests.** `SaleDateControlTests` : date future refusée ; vente datée avant l'ouverture de sa session refusée ; après
+clôture, une vente datée par le serveur est refusée (`pos.session_closed`). Non-régression : caisse, synchronisation
+hors ligne, caisse hors ligne, commandes, restaurant, terrain, ventes, guide, date métier (97 tests).
+
+**Conséquence de l'étape 2 à connaître.** Une demande de retour d'un caissier approuvée par un manager après la clôture
+de la session du caissier ne peut plus être remboursée depuis ce tiroir clos (`pos.cash_session_closed`) : le manager
+rembourse depuis une session ouverte.

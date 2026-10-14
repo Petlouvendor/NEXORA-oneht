@@ -100,6 +100,9 @@ public sealed class SalesService(
         }
 
         var soldAt = cmd.SoldAt ?? clock.UtcNow;
+        // Une vente hors ligne rejouée garde sa date, jamais une date à venir (horloge de l'appareil : 5 min de marge).
+        if (cmd.SoldAt is { } claimed && claimed > clock.UtcNow.AddMinutes(5))
+            return Error.Validation("pos.sold_at_future", "La date de la vente est dans le futur : vérifiez l'horloge de l'appareil.");
         var granted = guardClientPricing ? await permissions.CurrentPermissionsAsync(tenant, ct) : [];
         if (guardClientPricing)
         {
@@ -607,6 +610,10 @@ public sealed class SalesService(
             return Error.NotFound("pos.session_not_found", "Session de caisse introuvable.");
         if (session.UserId != tenant.UserId && !granted.Contains(Security.Permissions.Pos.ManageSessions))
             return Error.Forbidden("pos.session_not_owned", "Cette session de caisse n'est pas la vôtre.");
+        // Une vente ne précède jamais l'ouverture de sa session (date d'une vente hors ligne rejouée).
+        if (soldAt < session.OpenedAt)
+            return Error.Conflict("pos.sold_at_outside_session",
+                "La date de la vente précède l'ouverture de la session de caisse.");
         // « closing » = caisse comptée, en attente de validation d'écart : plus aucune vente.
         var replayedOffline = session.ClosedAt is { } closedAt && soldAt <= closedAt;
         if (session.Status != "open" && !replayedOffline)
