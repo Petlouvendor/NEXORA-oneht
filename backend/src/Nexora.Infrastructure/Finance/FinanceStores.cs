@@ -98,9 +98,26 @@ public sealed class EfFinancialAccountStore(NexoraDbContext db) : IFinancialAcco
         return transaction;
     }
 
+    /// <summary>
+    /// Ajout atomique au solde (audit 2026-10, A-018). Avant : lecture du compte, ajout en mémoire puis écriture de
+    /// la valeur calculée — deux opérations simultanées sur le même compte (ventes et transferts) écrasaient l'une
+    /// l'autre (525 HTG perdus sur 20 opérations). Désormais <c>current_balance = current_balance + delta</c> en base :
+    /// la ligne reste verrouillée jusqu'à la fin de la transaction de l'appelant et aucune mise à jour n'est perdue.
+    /// </summary>
     public async Task AdjustBalanceAsync(Guid financialAccountId, decimal delta, CancellationToken ct = default)
     {
-        var account = await db.FinancialAccounts.FirstAsync(a => a.Id == financialAccountId, ct);
-        account.CurrentBalance += delta;
+        var updated = await db.FinancialAccounts.Where(a => a.Id == financialAccountId)
+            .ExecuteUpdateAsync(u => u.SetProperty(a => a.CurrentBalance, a => a.CurrentBalance + delta), ct);
+        if (updated == 0)
+            throw new InvalidOperationException($"Compte financier {financialAccountId} introuvable.");
+
+        // Entité déjà suivie par le contexte : l'aligner (valeur courante ET originale) pour qu'EF ne réécrive pas
+        // l'ancien solde à l'enregistrement.
+        if (db.FinancialAccounts.Local.FirstOrDefault(a => a.Id == financialAccountId) is { } tracked)
+        {
+            var p = db.Entry(tracked).Property(a => a.CurrentBalance);
+            p.CurrentValue += delta;
+            p.OriginalValue = p.CurrentValue;
+        }
     }
 }
