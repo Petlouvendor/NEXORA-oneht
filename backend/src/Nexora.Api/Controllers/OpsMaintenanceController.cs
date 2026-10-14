@@ -25,7 +25,8 @@ public sealed class OpsMaintenanceController(
     IMaintenanceService maintenance,
     IRetentionPurgeService retention,
     IDataCorrectionService corrections,
-    IMemoryCache cache) : ApiControllerBase
+    IMemoryCache cache,
+    IPlatformOperationGuard guard) : ApiControllerBase
 {
     // --- §7-9 Jobs planifiés ------------------------------------------------
 
@@ -90,8 +91,11 @@ public sealed class OpsMaintenanceController(
 
     [HttpPost("cache/invalidate")]
     [RequirePermission(Permissions.Operations.Manage)]
-    public IActionResult InvalidateCache()
+    public async Task<IActionResult> InvalidateCache(CancellationToken ct)
     {
+        // Cache de toute l'installation (rejeux d'idempotence de toutes les entreprises) — audit 2026-10, A-031.
+        if (await guard.RequirePlatformWideAsync(Permissions.Operations.Manage, ct) is { } refused)
+            return FromResult(Nexora.Domain.Common.Result.Failure(refused));
         if (cache is MemoryCache mc) mc.Compact(1.0);   // purge du seul cache technique en mémoire (clés d'API, idempotence)
         return NoContent();
     }
@@ -141,7 +145,7 @@ public sealed class OpsMaintenanceController(
     [HttpPost("purge/preview")]
     [RequirePermission(Permissions.Operations.Manage)]
     public async Task<IActionResult> PreviewPurge([FromBody] PurgePreviewRequest request, CancellationToken ct)
-        => Ok(await retention.PreviewAsync(request, ct));
+        => FromResult(await retention.PreviewAsync(request, ct));
 
     [HttpPost("purge/execute")]
     [RequireStepUp(StepUpPurposes.Deletion)]

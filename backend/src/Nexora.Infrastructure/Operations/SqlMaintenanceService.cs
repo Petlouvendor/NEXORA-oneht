@@ -15,7 +15,8 @@ namespace Nexora.Infrastructure.Operations;
 /// <c>in_progress</c> à la fois (index unique partiel §24) — c'est elle que consulte
 /// <see cref="Nexora.Api.Middleware.MaintenanceModeMiddleware"/> pour dégrader l'API.
 /// </summary>
-public sealed class SqlMaintenanceService(NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow) : IMaintenanceService
+public sealed class SqlMaintenanceService(NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow, IPlatformOperationGuard guard)
+    : IMaintenanceService
 {
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
 
@@ -52,6 +53,8 @@ public sealed class SqlMaintenanceService(NexoraDbContext db, ITenantContext ten
     {
         if (request.DurationMinutes <= 0) return Error.Validation("maintenance.duration", "Durée invalide.");
         if (string.IsNullOrWhiteSpace(request.Impact)) return Error.Validation("maintenance.impact", "Impact requis.");
+        // Une fenêtre en cours suspend les écritures de TOUTES les entreprises (audit 2026-10, A-031).
+        if (await guard.RequirePlatformWideAsync(Nexora.Application.Security.Permissions.Operations.Manage, ct) is { } refused) return refused;
 
         using var _ = tenant.BeginSystemScope();
         var id = Guid.NewGuid();
@@ -72,6 +75,7 @@ public sealed class SqlMaintenanceService(NexoraDbContext db, ITenantContext ten
     {
         var target = request.Status.Trim().ToLowerInvariant();
         if (!Transitions.ContainsKey(target)) return Error.Validation("maintenance.status", "Statut invalide.");
+        if (await guard.RequirePlatformWideAsync(Nexora.Application.Security.Permissions.Operations.Manage, ct) is { } refused) return refused;
 
         using var _ = tenant.BeginSystemScope();
         var current = await db.Database.SqlQueryRaw<WindowRow>(Select + " WHERE id = {0}", id).FirstOrDefaultAsync(ct);

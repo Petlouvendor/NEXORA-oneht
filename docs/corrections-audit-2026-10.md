@@ -87,3 +87,35 @@ hors ligne, caisse hors ligne, commandes, restaurant, terrain, ventes, guide, da
 **Conséquence de l'étape 2 à connaître.** Une demande de retour d'un caissier approuvée par un manager après la clôture
 de la session du caissier ne peut plus être remboursée depuis ce tiroir clos (`pos.cash_session_closed`) : le manager
 rembourse depuis une session ouverte.
+
+## Étape 4 — Console d'exploitation : isolation entre clients de la plateforme (A-031, CRITIQUE en SaaS)
+
+**Défaut.** La console `/ops/*` agit sur toute l'installation (portée système, ou tables sans entreprise), mais ses
+permissions `operations.*` sont portées par des rôles d'entreprise (`owner_direction`, et `manager` pour la lecture).
+Sur une plateforme qui héberge plusieurs clients : un responsable lisait les demandes de correction de données de tous
+les clients (téléphones, e-mails, identifiants fiscaux) ; un directeur pouvait corriger un client, un fournisseur, un
+produit ou un utilisateur d'un autre client, ouvrir une maintenance qui suspend les écritures (caisse comprise) de
+toute la plateforme, suspendre les tâches planifiées, purger, vider le cache.
+
+**Correction (règle retenue).** `IPlatformOperationGuard` : une opération de portée plateforme exige la permission à
+la portée PLATEFORME (exploitant), **sauf** quand l'installation n'héberge qu'un seul client (toutes les entreprises
+actives appartiennent au groupe de l'entreprise active) — sur site, la direction reste l'exploitant de sa propre
+installation et ne perd rien.
+- Gardés : fenêtres de maintenance (planification, transitions), tâches planifiées (exécution manuelle, pause,
+  reprise), bascules globales ou d'une autre entreprise, politiques de rétention et purges au-delà des notifications
+  de l'entreprise active (aperçu compris), journal des déploiements et retours arrière, vidage du cache. Le
+  planificateur n'est pas concerné.
+- Corrections de données : toujours bornées à l'entreprise active — liste, demande (l'enregistrement doit lui
+  appartenir ; un utilisateur doit en être membre ou membre de son groupe), décision. Sinon « introuvable », sans
+  révéler l'existence de l'enregistrement.
+- Bascules, politiques et historiques de purge : listes réduites à l'entreprise active et aux éléments globaux.
+
+**Tests.** `OperationsConsoleIsolationTests` : avec un second client hébergé, un directeur est refusé
+(`operations.platform_only`) sur la maintenance, les tâches, la purge globale, une bascule globale et un déploiement ;
+il garde sa bascule d'entreprise ; il ne voit pas, ne demande pas et ne décide pas une correction de l'autre client.
+Le test a aussi révélé une première version mal placée de la garde (sur la validation de mise en service, propre à
+l'entreprise), corrigée avant validation. Non-régression : exploitation et maintenance, préparation à la mise en
+service, planificateur, mise en production.
+
+**Échecs connus, hors code.** 4 tests de mise en production échouent tant que V100 n'est pas appliquée à la base modèle
+`nexora` (« migration en attente ») — voir « À faire hors code » de l'étape 1.

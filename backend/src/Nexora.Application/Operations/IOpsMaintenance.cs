@@ -4,6 +4,16 @@ using Nexora.Domain.Common;
 namespace Nexora.Application.Operations;
 
 /// <summary>
+/// Garde des opérations d'exploitation de portée plateforme (audit 2026-10, A-031) : maintenance, tâches
+/// planifiées, bascules globales, purge technique, déploiements, cache. Rend <c>null</c> si l'appelant peut agir
+/// sur toute l'installation, sinon le refus à renvoyer.
+/// </summary>
+public interface IPlatformOperationGuard
+{
+    Task<Error?> RequirePlatformWideAsync(string permission, CancellationToken ct = default);
+}
+
+/// <summary>
 /// Registre des jobs planifiés (Phase 41 §7-9, §51). Le <see cref="Nexora.Infrastructure
 /// .Scheduling.SchedulerRunner"/> consulte <see cref="IsEnabledAsync"/> avant d'exécuter chaque
 /// job et journalise chaque passage via <see cref="StartRunAsync"/>/<see cref="FinishRunAsync"/> —
@@ -92,7 +102,7 @@ public interface IRetentionPurgeService
 {
     Task<IReadOnlyList<RetentionPolicyDto>> ListPoliciesAsync(CancellationToken ct = default);
     Task<Result<RetentionPolicyDto>> SavePolicyAsync(SaveRetentionPolicyRequest request, CancellationToken ct = default);
-    Task<PurgeRunDto> PreviewAsync(PurgePreviewRequest request, CancellationToken ct = default);
+    Task<Result<PurgeRunDto>> PreviewAsync(PurgePreviewRequest request, CancellationToken ct = default);
     Task<Result<PurgeRunDto>> ExecuteAsync(PurgePreviewRequest request, CancellationToken ct = default);
     Task<IReadOnlyList<PurgeRunDto>> HistoryAsync(CancellationToken ct = default);
 

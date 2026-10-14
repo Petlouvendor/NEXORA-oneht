@@ -31,7 +31,8 @@ public sealed class SqlOperationsService(
     IDataQualityService dataQuality,
     MigrationStatusProbe migrationProbe,
     Microsoft.Extensions.Configuration.IConfiguration configuration,
-    RuntimeEnvironment runtime) : IOperationsService
+    RuntimeEnvironment runtime,
+    IPlatformOperationGuard guard) : IOperationsService
 {
     private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
@@ -285,6 +286,8 @@ public sealed class SqlOperationsService(
 
     public async Task<Result<DeploymentDto>> RecordDeploymentAsync(RecordDeploymentRequest request, CancellationToken ct = default)
     {
+        // Journal des déploiements de l'installation entière (table plateforme) — audit 2026-10, A-031.
+        if (await guard.RequirePlatformWideAsync(Nexora.Application.Security.Permissions.Operations.Manage, ct) is { } refused) return refused;
         if (string.IsNullOrWhiteSpace(request.Version) || request.Version.Trim().Length > 100)
             return Error.Validation("operations.version", "Version invalide (1–100 caractères).");
         var env = request.Environment?.Trim().ToLowerInvariant() ?? "production";
@@ -306,6 +309,7 @@ public sealed class SqlOperationsService(
     public async Task<Result<DeploymentDto>> RollBackAsync(Guid deploymentId, RollbackRequest request, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(request.Reason)) return Error.Validation("operations.reason", "Motif de rollback requis.");
+        if (await guard.RequirePlatformWideAsync(Nexora.Application.Security.Permissions.Operations.Manage, ct) is { } refused) return refused;
 
         var orig = await db.Database.SqlQuery<DeploymentRow>($"""
             SELECT id AS "Id", version AS "Version", environment AS "Environment", status AS "Status",
