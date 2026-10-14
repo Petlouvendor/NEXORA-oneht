@@ -41,6 +41,9 @@ public sealed class SqlSalesPricing(NexoraDbContext db, ITenantContext tenant) :
         Guid? customerGroupId = customerId is null ? null : await db.Database
             .SqlQuery<Guid?>($"""SELECT customer_group_id AS "Value" FROM nexora.customer WHERE id = {customerId}""")
             .FirstOrDefaultAsync(ct);
+        // Liste tarifaire du groupe du client (A-013) : ses prix priment, les prix de base restent le repli.
+        var priceListId = await Nexora.Infrastructure.Catalog.PriceListResolver.ForCustomerGroupAsync(
+            db, Company, customerGroupId, currencyId, ct);
 
         Guid? couponId = null;
         decimal couponPercent = 0m, couponAmount = 0m;
@@ -74,9 +77,9 @@ public sealed class SqlSalesPricing(NexoraDbContext db, ITenantContext tenant) :
                     WHERE product_id = {line.ProductId} AND price_type = 'sale' AND currency_id = {currencyId}
                       AND quantity_min <= {line.Quantity} AND valid_from <= {at}
                       AND (valid_to IS NULL OR valid_to > {at})
-                      AND price_list_id IS NULL
+                      AND (price_list_id IS NULL OR price_list_id = {priceListId}::uuid)
                       AND (customer_group_id IS NULL OR customer_group_id = {customerGroupId})
-                    ORDER BY (customer_group_id IS NOT NULL) DESC, quantity_min DESC, valid_from DESC
+                    ORDER BY (price_list_id IS NOT NULL) DESC, (customer_group_id IS NOT NULL) DESC, quantity_min DESC, valid_from DESC
                     LIMIT 1
                     """).FirstOrDefaultAsync(ct)
                 : null;
