@@ -119,3 +119,31 @@ service, planificateur, mise en production.
 
 **Échecs connus, hors code.** 4 tests de mise en production échouent tant que V100 n'est pas appliquée à la base modèle
 `nexora` (« migration en attente ») — voir « À faire hors code » de l'étape 1.
+
+## Étape 5 — Clôture d'exercice et à-nouveaux (A-020 ÉLEVÉ, A-021 CRITIQUE)
+
+**Modèle comptable constaté (et conservé).** NEXORA tient un **grand livre continu** : la balance, le bilan et le report
+du grand livre cumulent toutes les écritures depuis l'origine ; la clôture d'un exercice solde ses produits et charges
+vers le compte « résultat de l'exercice » (écriture du journal CL). Les onze requêtes qui agrègent le grand livre
+reposent sur ce modèle ; il n'est pas changé.
+
+**Défaut A-020.** Le résultat à solder sommait tous les produits et charges depuis l'origine en excluant **toutes** les
+écritures de clôture. Dès le 2e exercice, les produits et charges du 1er, déjà soldés, l'étaient une seconde fois
+(vérifié : exercice 2017 annoncé à 14 000 au lieu de 4 000) ; les comptes de gestion devenaient faux après clôture.
+**Correction :** seule la clôture de l'exercice en cours est exclue ; celles des exercices antérieurs sont comptées.
+
+**Défaut A-021.** La génération des à-nouveaux reprenait tous les soldes de bilan au premier jour du nouvel exercice ;
+comme les états cumulent déjà depuis l'origine, caisse, banque, stock, clients, fournisseurs et capitaux étaient tous
+**doublés**, sans alerte (l'écriture restant équilibrée). **Correction (dans le modèle continu) :** les à-nouveaux
+portent seulement ce qui change d'un exercice à l'autre : le report du résultat clôturé (D résultat de l'exercice /
+C report à nouveau pour un bénéfice, l'inverse pour une perte). Sans clôture préalable : « aucun résultat à reporter ».
+Aucune écriture d'à-nouveaux ni de clôture n'existait dans `nexora` ni `nexora_recette` : pas de reprise de données.
+
+**Tests.** `GeneralAccountingTests` : deux exercices clôturés successivement → le second ne solde que son résultat,
+produits à zéro, bilan équilibré ; à-nouveaux → deux lignes, bilan et caisse identiques avant et après. Les deux tests
+échouent sur l'ancien code (vérifié). Non-régression : comptabilité, moteur, confiance des indicateurs, consolidation,
+tableaux de bord, BI, trésorerie (66 tests).
+
+**À valider par le propriétaire.** Si l'entreprise préfère des exercices **bornés** (états recalculés depuis le début
+de l'exercice, soldes de bilan repris en à-nouveaux comme dans beaucoup de logiciels français), c'est un changement de
+modèle des onze requêtes, à décider explicitement ; la correction présente reste exacte dans le modèle actuel.
