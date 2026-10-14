@@ -326,6 +326,12 @@ public sealed class EfSalesReturnStore(NexoraDbContext db, ITenantContext tenant
     public Task<Sale?> GetSaleWithLinesAsync(Guid saleId, CancellationToken ct = default)
         => db.Sales.AsNoTracking().Include(s => s.Lines).FirstOrDefaultAsync(s => s.Id == saleId, ct);
 
+    public async Task LockSaleAsync(Guid saleId, CancellationToken ct = default)
+        => await db.Database.SqlQuery<Guid>($"""
+            SELECT id AS "Value" FROM nexora.sale WHERE id = {saleId} AND company_id = {SalesHelpers.Company(tenant)}
+            FOR UPDATE
+            """).ToListAsync(ct);
+
     public Task<Guid?> ReceivableForSaleAsync(Guid saleId, CancellationToken ct = default)
         => db.Receivables.AsNoTracking().Where(r => r.SaleId == saleId).Select(r => (Guid?)r.Id).FirstOrDefaultAsync(ct);
 

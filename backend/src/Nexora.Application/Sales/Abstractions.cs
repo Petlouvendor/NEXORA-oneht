@@ -135,6 +135,8 @@ public interface ISalesReturnStore
     Task<Guid?> FindReturnByOperationAsync(Guid operationUuid, CancellationToken ct = default);
     Task AddReturnAsync(Domain.Sales.SaleReturn ret, CancellationToken ct = default);
     Task<Domain.Sales.Sale?> GetSaleWithLinesAsync(Guid saleId, CancellationToken ct = default);
+    /// <summary>Verrouille la vente jusqu'à la fin de la transaction : deux retours d'une même vente passent l'un après l'autre.</summary>
+    Task LockSaleAsync(Guid saleId, CancellationToken ct = default);
     Task<Guid?> ReceivableForSaleAsync(Guid saleId, CancellationToken ct = default);
     /// <summary>Crédit né de la vente et son reste dû (0 si soldé, radié ou annulé) — module clients §11.</summary>
     Task<SaleReceivableBalance?> ReceivableBalanceForSaleAsync(Guid saleId, CancellationToken ct = default);
