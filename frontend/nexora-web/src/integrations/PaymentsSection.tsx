@@ -119,6 +119,9 @@ export function PaymentsSection({ onChanged }: { onChanged: () => void }) {
                       }}>Simuler : refusé</Button>
                     </>}
                     {can.refund && hasPermission("pos.refund") && <Button size="sm" variant="ghost" disabled={busy} onClick={() => setRefunding(i)}>Rembourser</Button>}
+                    {can.refundManual && hasPermission("pos.refund") && <Button size="sm" variant="ghost" disabled={busy}
+                      onClick={() => toast.push("Le fournisseur ne propose pas de remboursement par API : remboursez le client depuis son portail, "
+                        + "puis annulez le versement dans le compte du client (Clients → versements).", "info")}>Comment rembourser ?</Button>}
                   </span>);
               } },
             ]}

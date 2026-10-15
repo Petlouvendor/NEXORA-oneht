@@ -299,6 +299,9 @@ export function intentActions(i: Pick<PaymentIntent, "mode" | "status">, environ
   return {
     verify: i.mode === "real" && open,
     simulate: i.mode === "simulation" && open && environment !== "production",
-    refund: i.status === "confirmed",
+    // Aucun fournisseur réel (MonCash, carte) ne rembourse par API : le serveur le refuse toujours. Un paiement réel se
+    // rembourse depuis le portail du fournisseur, puis on annule le versement (audit 2026-10, plan priorité 6).
+    refund: i.mode === "simulation" && i.status === "confirmed",
+    refundManual: i.mode === "real" && i.status === "confirmed",
   };
 }

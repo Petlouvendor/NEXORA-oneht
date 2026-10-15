@@ -224,13 +224,19 @@ export function FeatureFlagsSection({ canManage }: { canManage: boolean }) {
           <button className="nx-btn nx-btn--ghost" style={{ padding: "4px 12px", fontSize: 13 }} disabled={flags.busy}
                   onClick={async () => {
                     const key = await prompt.ask({ title: "Nouvelle bascule globale", label: "Clé de la bascule", required: true, minLength: 2,
-                      hint: "Ex. caisse.nouveau_ticket — 2 à 100 caractères. Créée activée ; « Désactiver » sert de coupe-circuit.",
+                      hint: "Ex. caisse.nouveau_ticket — 2 à 100 caractères. Créée activée. Aucun écran ne la consulte encore.",
                       confirmLabel: "Créer", onSubmit: (k) => saveFeatureFlag({ key: k, scope: "global", enabled: true }) });
                     if (key) flags.load();
                   }}>
             Nouvelle bascule globale
           </button>
         )}
+      </div>
+      {/* Audit 2026-10, A-031 : aucune fonctionnalité ne lit encore ces bascules — le dire plutôt que laisser croire
+          qu'un « Désactiver » coupe quelque chose. */}
+      <div style={{ fontSize: 13, color: "var(--nx-text-2)" }}>
+        Registre préparatoire : aucune fonctionnalité de l'application ne consulte encore ces bascules. Les créer, les
+        activer ou les désactiver ne change rien au fonctionnement tant qu'une fonctionnalité n'y est pas reliée.
       </div>
       {flags.error && <div className="nx-error-text">{flags.error}</div>}
       {prompt.dialog}
