@@ -38,6 +38,9 @@ public sealed record RecordPaymentRequest(
     decimal Amount, string Currency, Guid TenderFinancialAccountId,
     IReadOnlyList<AllocationInput> Allocations, string? Reference);
 
+public sealed record RecordTreasuryOpeningRequest(
+    Guid OperationUuid, DateTimeOffset OccurredAt, Guid FinancialAccountId, decimal Amount, string Currency);
+
 public sealed record RecordTransferRequest(
     Guid OperationUuid, DateTimeOffset OccurredAt,
     Guid FromFinancialAccountId, Guid ToFinancialAccountId, decimal Amount, string Currency);

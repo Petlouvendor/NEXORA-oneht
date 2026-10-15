@@ -286,3 +286,43 @@ pendant l'audit — sessions, parcours complet, exploitation — ne se reproduis
 
 **Procédure.** `CREATE DATABASE nexora_api_it TEMPLATE nexora;` → `Nexora.Api.dll migrate` sur ce clone →
 `NEXORA_API_TEST_DB=nexora_api_it dotnet test tests/Nexora.ApiTests` → `DROP DATABASE nexora_api_it;`.
+
+## Étape 13 — Caisse et trésorerie reliées aux livres, rapports, moteur (A-019, A-023, A-022, A-004, A-008)
+
+**A-019 — apports, sorties, prélèvements de caisse.** Ils n'écrivaient qu'un mouvement de session : ni écriture, ni
+trésorerie. La commande exige désormais le compte de contrepartie (coffre, banque, autre caisse) ; un transfert de
+trésorerie comptabilisé et le mouvement de session sont écrits dans la même transaction (refus de l'un = annulation
+des deux), rejouable par identifiant d'opération. Point d'accès non utilisé par l'interface.
+
+**A-023 — solde d'ouverture.** `POST /api/v1/financial-accounts/{id}/opening-balance` et bouton « Saisir le solde
+d'ouverture » dans la fiche d'un compte sans mouvement : transaction de trésorerie (type `opening`) et écriture
+D trésorerie / C report à nouveau (l'inverse pour un découvert bancaire). Une seule fois, avant toute opération ; jamais
+négatif sur une caisse ; idempotent. Les soldes d'ouverture déjà présents dans les jeux de démonstration et de recette
+(colonne `opening_balance` sans écriture) ne sont pas repris automatiquement.
+
+**A-022 — reste dû.** Balances âgées, prévision de trésorerie, cockpit et alertes recalculaient
+`original − payé` : les avoirs fournisseurs étaient ignorés. Ils lisent la colonne générée `remaining_amount`
+(identique côté clients, nette des avoirs côté fournisseurs). 14 requêtes.
+
+**A-004 — moteur financier.** Transactions de trésorerie datées de l'opération (et non de l'instant du traitement :
+une vente hors ligne rejouée tombait en trésorerie à une autre date que son écriture). Un doublon simultané d'une même
+opération est rejoué au lieu de finir en erreur — l'unicité refusait la seconde écriture, signalée par l'unité de
+travail comme « échec de génération » (vérifié par le test). Une affectation de paiement exige la devise de la créance
+ou de la dette.
+
+**A-008 — « cette semaine ».** Le lundi suivant était pris pour début le dimanche (période vide) ; une période
+personnalisée saisie à l'envers est remise dans l'ordre.
+
+**Tiers.** Le message de collision de numéro affichait le numéro demandé (vide quand il est généré) ; il affiche le numéro
+réellement tenté, et seule la contrainte de numéro est traduite en « numéro existant ».
+
+**Tests.** `CashAndLedgerConsistencyTests` (caisse dédiée au test) : prélèvement → trésorerie, écriture unique, rejeu,
+clôture sans écart ; solde d'ouverture → trésorerie et écriture équilibrée, une seule fois, refus après mouvement et en
+négatif sur une caisse ; balance âgée nette d'un avoir (800 au lieu de 1 000) ; paiement rejoué en parallèle → une
+écriture, trésorerie datée de l'opération ; devise différente refusée. `FilterPeriodTests` (unitaires) : les sept jours
+de la semaine et la période inversée. Suite d'intégration complète : 516/520 (les 4 échecs : V100 en attente).
+
+**Observation ouverte.** Sur 8 passages complets récents, 2 ont vu échouer toutes les créations de clients de
+`CustomerAccountTests` (« numéro client existe déjà »), jamais reproduit isolément ni dans les 6 autres passages.
+Le verrou de numérotation, la RLS de la table et l'unicité du journal d'audit ont été vérifiés ; la cause n'est pas
+établie. Le message instrumenté (numéro tenté, contrainte exacte) permettra de la caractériser si elle se reproduit.

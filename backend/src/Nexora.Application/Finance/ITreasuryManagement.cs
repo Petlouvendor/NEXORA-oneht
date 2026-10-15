@@ -18,6 +18,9 @@ public interface ITreasuryManagementService
     Task<IReadOnlyList<LedgerAccountOptionDto>> LedgerOptionsAsync(string accountType, CancellationToken ct = default);
     Task<FinanceLookupsDto> LookupsAsync(CancellationToken ct = default);
     Task<Result<Contracts.Finance.PostingResultResponse>> TransferAsync(TreasuryTransferRequest request, CancellationToken ct = default);
+    /// <summary>Solde d'ouverture d'un compte sans mouvement : trésorerie + écriture contre le report à nouveau.</summary>
+    Task<Result<Contracts.Finance.PostingResultResponse>> RecordOpeningBalanceAsync(Guid accountId, TreasuryOpeningBalanceRequest request,
+        CancellationToken ct = default);
     Task<Result<Contracts.Finance.PostingResultResponse>> ChargeAsync(TreasuryChargeRequest request, CancellationToken ct = default);
 }
 

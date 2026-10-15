@@ -48,7 +48,7 @@ public sealed class SqlAlertCenter(
                 $"{expiring.Count} lot(s) expirent sous 60 jours.", "reports/stock/expiry", expiring.Count));
 
         var overdueAr = await One($"""
-            SELECT COUNT(*)::int AS "Count", COALESCE(SUM(original_amount - paid_amount),0) AS "Amount"
+            SELECT COUNT(*)::int AS "Count", COALESCE(SUM(remaining_amount),0) AS "Amount"
             FROM nexora.customer_receivable
             WHERE company_id = {Company} AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE')
               AND due_date IS NOT NULL AND due_date < {today}
@@ -58,7 +58,7 @@ public sealed class SqlAlertCenter(
                 $"{overdueAr.Count} créance(s) échue(s) — {overdueAr.Amount:0.##}.", "reports/aging/receivables", overdueAr.Count));
 
         var overdueAp = await One($"""
-            SELECT COUNT(*)::int AS "Count", COALESCE(SUM(original_amount - paid_amount),0) AS "Amount"
+            SELECT COUNT(*)::int AS "Count", COALESCE(SUM(remaining_amount),0) AS "Amount"
             FROM nexora.supplier_payable
             WHERE company_id = {Company} AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE')
               AND due_date IS NOT NULL AND due_date < {today}

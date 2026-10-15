@@ -103,6 +103,15 @@ public sealed record FinancialTransferRecorded(
     Guid FromFinancialAccountId, Guid ToFinancialAccountId, Money Amount)
     : FinancialEvent(CompanyId, OperationUuid, OccurredAt);
 
+/// <summary>
+/// Solde d'ouverture d'un compte de trésorerie mis en service (audit 2026-10, A-023) : l'argent déjà présent en caisse
+/// ou en banque entre en trésorerie ET en comptabilité, contre le report à nouveau. Un découvert bancaire d'ouverture
+/// est un montant négatif.
+/// </summary>
+public sealed record TreasuryOpeningBalanceRecorded(
+    Guid CompanyId, Guid OperationUuid, DateTimeOffset OccurredAt, Guid FinancialAccountId, Money Amount)
+    : FinancialEvent(CompanyId, OperationUuid, OccurredAt);
+
 /// <summary>Frais bancaires (§8).</summary>
 public sealed record BankChargeRecorded(
     Guid CompanyId, Guid OperationUuid, DateTimeOffset OccurredAt,

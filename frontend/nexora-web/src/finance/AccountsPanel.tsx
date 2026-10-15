@@ -3,10 +3,10 @@ import { useAuth } from "@/auth/AuthContext";
 import { useToast } from "@/shared/Toast";
 import { useAsync } from "@/shared/useAsync";
 import { newOperationId, num, useSubmit } from "@/shared/forms";
-import { dateTime, money } from "@/shared/format";
+import { dateTime, money, todayIso } from "@/shared/format";
 import { Badge, Button, Card, ConfirmDialog, DataTable, Drawer, Field, Modal, SectionLabel, Select, TextInput } from "@/shared/ui";
 import {
-  ACCOUNT_TYPE, accountMovements, createAccount, financeLookups, ledgerOptions, listManagedAccounts, recordCharge, setAccountStatus,
+  ACCOUNT_TYPE, accountMovements, createAccount, financeLookups, ledgerOptions, listManagedAccounts, recordCharge, recordOpeningBalance, setAccountStatus,
   transferFunds, updateAccount, type ManagedAccount,
 } from "@/finance/treasuryApi";
 
@@ -117,6 +117,7 @@ function AccountDrawer({ account, onClose, onEdit, onChanged }: {
   const [to, setTo] = useState("");
   const movements = useAsync(() => (account ? accountMovements(account.id, from || undefined, to || undefined) : Promise.resolve([])), [account?.id, from, to]);
   const [statusDialog, setStatusDialog] = useState<"inactive" | "active" | "closed" | null>(null);
+  const [opening, setOpening] = useState(false);
   const { error, submit } = useSubmit();
   if (!account) return null;
 
@@ -132,8 +133,13 @@ function AccountDrawer({ account, onClose, onEdit, onChanged }: {
             {account.status === "active" && <Button size="sm" variant="ghost" onClick={() => setStatusDialog("inactive")}>Désactiver</Button>}
             {account.status === "inactive" && <Button size="sm" variant="ghost" onClick={() => setStatusDialog("active")}>Réactiver</Button>}
             {account.status !== "closed" && <Button size="sm" variant="ghost" onClick={() => setStatusDialog("closed")}>Clôturer</Button>}
+            {account.status === "active" && account.transactionCount === 0 && (
+              <Button size="sm" onClick={() => setOpening(true)}>Saisir le solde d'ouverture</Button>
+            )}
           </div>
         )}
+        {opening && <OpeningBalanceDialog account={account} onClose={() => setOpening(false)}
+                                          onDone={() => { setOpening(false); toast.success("Solde d'ouverture enregistré et comptabilisé."); onChanged(); }} />}
         <SectionLabel>Mouvements</SectionLabel>
         <div style={{ display: "flex", gap: 8 }}>
           <Field label="Du"><TextInput type="date" value={from} onChange={(e) => setFrom(e.target.value)} /></Field>
@@ -251,6 +257,44 @@ function ChargeDialog({ accounts, onClose, onDone }: { accounts: ManagedAccount[
           <TextInput value={description} maxLength={200} placeholder="Ex. frais de tenue de compte — septembre" onChange={(e) => setDescription(e.target.value)} />
         </Field>
         <button type="submit" hidden />
+      </form>
+    </Modal>
+  );
+}
+
+/** Solde d'ouverture : l'argent déjà en caisse ou en banque à la mise en service, contre le report à nouveau. */
+function OpeningBalanceDialog({ account, onClose, onDone }: { account: ManagedAccount; onClose: () => void; onDone: () => void }) {
+  const [amount, setAmount] = useState("");
+  const [date, setDate] = useState(todayIso());
+  const [note, setNote] = useState("");
+  const [operationUuid] = useState(newOperationId);
+  const { busy, error, fieldErrors, submit, fail } = useSubmit({ "treasury.amount": "amount", "treasury.opening_date": "date" });
+
+  async function save(e?: FormEvent) {
+    e?.preventDefault();
+    const value = num(amount);
+    if (value === null || value === 0) return fail("amount", "Montant différent de zéro.");
+    const ok = await submit(async () => {
+      await recordOpeningBalance(account.id, { operationUuid, amount: value, date: date === todayIso() ? null : date, note: note.trim() || null });
+      return true;
+    });
+    if (ok) onDone();
+  }
+
+  return (
+    <Modal title={`Solde d'ouverture — ${account.name}`} onClose={onClose}
+      footer={<><Button variant="ghost" onClick={onClose}>Annuler</Button><Button disabled={busy} onClick={() => save()}>Enregistrer</Button></>}>
+      <form onSubmit={save} style={{ display: "grid", gap: 10, minWidth: "min(420px, 90vw)" }}>
+        {error && <div role="alert" className="nx-error-text">{error}</div>}
+        <p style={{ margin: 0, fontSize: 13, color: "var(--nx-text-2)" }}>
+          Montant présent sur ce compte à sa mise en service. Il entre en trésorerie et en comptabilité (contre le report à
+          nouveau). Saisissable une seule fois, avant toute opération ; un découvert bancaire se saisit en négatif.
+        </p>
+        <Field label={`Montant (${account.currency})`} required error={fieldErrors.amount}>
+          <TextInput inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} />
+        </Field>
+        <Field label="Date" error={fieldErrors.date}><TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field>
+        <Field label="Note"><TextInput value={note} maxLength={200} onChange={(e) => setNote(e.target.value)} /></Field>
       </form>
     </Modal>
   );

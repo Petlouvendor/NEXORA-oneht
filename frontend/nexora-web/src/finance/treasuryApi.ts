@@ -176,3 +176,7 @@ export interface ExchangeRate {
 export const listExchangeRates = () => apiFetch<ExchangeRate[]>("/exchange-rates");
 export const recordExchangeRate = (body: { baseCurrency: string; quoteCurrency: string; rate: number; effectiveAt: string | null }) =>
   apiFetch<ExchangeRate>("/exchange-rates", json("POST", body));
+
+/** Solde d'ouverture d'un compte encore sans mouvement : trésorerie et comptabilité (audit 2026-10, A-023). */
+export const recordOpeningBalance = (id: string, body: { operationUuid: string; amount: number; date: string | null; note: string | null }) =>
+  apiFetch<PostingResult>(`/financial-accounts/${id}/opening-balance`, json("POST", body, body.operationUuid));
