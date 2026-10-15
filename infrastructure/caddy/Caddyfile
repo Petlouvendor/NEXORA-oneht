@@ -27,7 +27,8 @@
 
 	# Sondes et métriques internes : jamais exposées sur Internet (l'orchestrateur et Prometheus interrogent l'API
 	# directement sur le réseau interne). /api/v1/metrics est anonyme côté API : sans ce blocage, il serait public.
-	@internal path /health /health/* /api/v1/health /api/v1/ready /api/v1/metrics
+	# Toutes les variantes de chemin servies par l'API (casse, version « v1.0 », barre finale) : audit 2026-10, A-024.
+	@internal path_regexp internal (?i)^/(health|api/v[^/]+/(health|ready|metrics))(/.*)?$
 	handle @internal {
 		respond 404
 	}

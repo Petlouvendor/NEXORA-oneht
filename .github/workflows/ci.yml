@@ -74,7 +74,13 @@ jobs:
           Database__ConnectionString: "Host=localhost;Port=5432;Database=nexora;Username=postgres;Password=postgres"
         run: dotnet backend/src/Nexora.Api/bin/Release/net10.0/Nexora.Api.dll migrate --status
       - name: Scan de vulnérabilités des dépendances (§28)
-        run: dotnet list backend/Nexora.sln package --vulnerable --include-transitive
+        # Bloquant (audit 2026-10, A-028) : la commande rend 0 même quand elle liste des paquets vulnérables.
+        run: |
+          out=$(dotnet list backend/Nexora.sln package --vulnerable --include-transitive)
+          echo "$out"
+          if echo "$out" | grep -q "has the following vulnerable packages"; then
+            echo "::error::Dépendance vulnérable détectée"; exit 1
+          fi
 
   # --- Frontend : build & typecheck ---
   frontend:

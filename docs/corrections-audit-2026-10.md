@@ -374,3 +374,32 @@ côté serveur (`ScaleLabel`) et côté caisse (`scaleLabel.ts`). Les étiquette
 synchronisait : vérifié en remettant l'ancien `SyncServices`) ; extourne d'une écriture de vente refusée ; carton de 12 →
 12 ; étiquette de 1 250 g → 1,25 et le code lu renvoyé. `ScaleLabelTests` (unitaires) et `scaleLabel.test.ts`,
 `offlineStore.test.ts` (clé fausse, poids nul, code ordinaire refusés).
+
+## Étape 16 — Connexion, MFA, métriques, CI, documentation (A-011, A-024, A-028, A-027, A-025)
+
+**A-011 — authentification.** (1) Pour un e-mail inconnu ou un compte inactif, la connexion répondait sans vérifier de
+mot de passe : le temps de réponse révélait si le compte existe. Une empreinte factice est désormais vérifiée, au même
+coût. (2) La réinitialisation de la MFA d'un autre utilisateur exigeait la permission « quelque part » et une entreprise
+commune : un directeur d'une entreprise, simple caissier d'une autre, pouvait réinitialiser la MFA des caissiers de la
+seconde. La permission doit être détenue dans une entreprise (ou un groupe) partagée avec la cible, ou au niveau
+plateforme. (3) **Non corrigé : le rejeu d'un code TOTP dans sa fenêtre de validité.** Il faut conserver le dernier pas
+de temps accepté par utilisateur, donc une migration ; laissé pour une étape dédiée.
+
+**A-024 — métriques.** `/api/v1/metrics` était anonyme et seul le chemin exact était bloqué par Caddy :
+`/api/v1.0/metrics` ou `/api/v1/metrics/` passaient. L'API ne sert plus la page qu'à une adresse interne (après
+résolution des en-têtes du proxy) ou sur présentation du jeton `Metrics:Token` (`Authorization: Bearer …`, 16 caractères
+au moins) ; sinon 404. Caddy bloque toutes les variantes (`path_regexp`, insensible à la casse, toute version, barre
+finale). Expression vérifiée sur une liste de chemins ; **la configuration Caddy n'a pas été chargée** (Docker arrêté).
+
+**A-028 — CI.** `dotnet list package --vulnerable` rend 0 même quand il liste des paquets vulnérables : l'étape échoue
+désormais si la sortie en signale. **Non exécuté** (pas d'exécution GitHub Actions en local).
+
+**A-027.** `ModulePlaceholder.tsx`, jamais importé, supprimé.
+
+**A-025.** Le rapport `NEXORA-ONE-FINAL-READINESS-REPORT.md` porte en tête un avertissement : plusieurs « Prêt pour la
+production » ont été infirmés par l'audit, deux réserves sont obsolètes, et le suivi à jour est le présent document.
+
+**Tests.** `LoginHandlerTests.Unknown_user_costs_a_password_check_like_a_known_one` ;
+`MfaAuthenticationTests.Reset_permission_held_in_another_company_does_not_reach_a_shared_company` ;
+`OperationsEndpointsTests` : adresse publique → 404 pour trois écritures du chemin, 200 avec le jeton. Les trois échouent
+sur l'ancien code (vérifié en remettant chaque fichier d'origine).
