@@ -14,16 +14,19 @@ l'étape 18.
 jetable, avant le dernier correctif de la recherche caisse, qui ne touche pas l'API testée) ; frontend 279/279, typage et
 lint sans erreur.
 
-**En attente d'une décision ou d'un accord :**
+**Décisions prises (2026-10-15, voir « Décisions d'exploitation » en fin de document)** : un client par installation
+(A-031) ; taux de change communs à l'installation (A-017) ; écran des bascules retiré pour la version 1 ; reprise des
+soldes d'ouverture par la commande `reprise-ouvertures` (étape 20).
 
-- **Migrations V100, V101, V102 non appliquées** aux bases partagées `nexora` (développement, modèle des tests) et
-  `nexora_recette`. Commande, base par base : `Nexora.Api.dll migrate` avec la chaîne de connexion de la base. Tant
-  qu'elles ne le sont pas, les tests qui en dépendent échouent sur `nexora`.
-- A-021 : modèle d'à-nouveaux retenu (grand livre continu, à-nouveaux limités au résultat) à confirmer.
-- A-031 : règle d'exploitation de la plateforme (un client par installation, ou plusieurs) ; bascules de fonctionnalité
-  à relier à des fonctionnalités.
-- A-017 : taux de change globaux à la plateforme (choix actuel) ou par entreprise.
-- Soldes d'ouverture déjà présents dans les jeux de démonstration et de recette : non repris en comptabilité.
+**En attente :**
+
+- **Migrations V100, V101, V102 et reprise des soldes d'ouverture** sur les bases partagées `nexora` (développement,
+  modèle des tests) et `nexora_recette` : accord donné, sauvegardes faites et vérifiées
+  (`C:\Users\Rener\nexora-sauvegardes\2026-10-15-avant-V100`), mais l'exécution est bloquée par le garde-fou de
+  l'assistant ; procédure à lancer à la main, à l'étape 20. V100 ne modifiera aucun solde (aucun compte en écart relevé).
+- A-021 : modèle d'à-nouveaux retenu (grand livre continu, à-nouveaux limités au résultat) à confirmer par le comptable.
+- Données de recette : 77 ventes par carte en gourdes de la Pharmacie ont été encaissées sur le compte Unibank en
+  dollars (+71 690,15 « USD » en trésorerie, absents du grand livre en USD) — étape 20.
 - **Non vérifié faute d'environnement :** configuration Caddy (Docker arrêté), job CI du scan de dépendances (pas
   d'exécution GitHub Actions locale), suite E2E, test de charge.
 - Observation ouverte : collisions intermittentes de numéros clients dans `CustomerAccountTests` (étape 13).
@@ -492,3 +495,60 @@ quand la suite complète tourne en parallèle — « Test timed out in 5000ms »
 
 **Tests.** `paymentsApi.test.ts` : actions d'un paiement réel confirmé (marche à suivre, pas de bouton voué au refus).
 Suite frontend : 279/279.
+
+## Étape 20 — Reprise des soldes d'ouverture, devise des mouvements de trésorerie
+
+**Reprise des soldes d'ouverture (A-023, données existantes).** Les comptes créés avant l'étape 13 portent leur solde
+d'ouverture dans la colonne `opening_balance`, comptée en trésorerie mais sans écriture : le grand livre est en écart du
+même montant. Commande `Nexora.Api.dll reprise-ouvertures` : sans option, elle n'écrit rien et liste les comptes ; avec
+`--appliquer`, pour chaque compte, par le moteur financier et dans une seule transaction : transaction de trésorerie
+« opening » datée juste avant le premier mouvement, écriture D trésorerie / C report à nouveau, puis colonne remise à
+zéro. Le solde affiché ne change pas ; une relance ne refait rien (identifiant d'opération stable par compte).
+Relevé du 2026-10-15 : 3 comptes dans `nexora` (Pharmacie), 6 dans `nexora_recette` (Pharmacie et Supermarché).
+
+Essai sur une copie jetable de `nexora_recette` migrée en V102 : 6 comptes repris, soldes affichés identiques au
+centime, écarts trésorerie / grand livre de 45 000, 60 000 et 865 000 HTG ramenés à zéro, relance sans effet.
+
+**Devise des mouvements de trésorerie (défaut trouvé pendant l'essai).** Le moteur ajoutait le montant d'un mouvement au
+solde du compte sans vérifier sa devise : des frais, une dépense, une paie ou un transfert en HTG sur un compte en USD
+changeaient le solde en dollars du même chiffre, alors que l'écriture était en gourdes. La caisse refusait déjà ce cas
+pour une vente, mais pas les autres chemins. Le moteur refuse désormais tout mouvement dont la devise n'est pas celle
+du compte (16 chemins). Dans la recette, 77 ventes par carte en gourdes de la Pharmacie, enregistrées avant le contrôle
+de la caisse, ont ainsi gonflé le compte Unibank en USD de 71 690,15 : ces données ne sont pas corrigées
+automatiquement (il n'existe pas de compte bancaire en gourdes pour la Pharmacie vers lequel les reporter). L'outil de
+génération de la recette envoie désormais les cartes en gourdes sur un compte en gourdes ; régénérer la recette, ou
+décider d'une correction manuelle.
+
+**Tests.** `OpeningBalanceRecoveryTests` : simulation sans écriture ; reprise → solde affiché inchangé, colonne à zéro,
+transaction « opening » avant le premier mouvement, écriture équilibrée ; relance vide.
+`BusinessGuardrailsTests.A_sale_in_gourdes_cannot_be_tendered_to_a_dollar_account` : frais en HTG sur le compte USD
+refusés, solde inchangé (l'ancien moteur les acceptait : vérifié). Suites : unitaires 103/103, intégration 532/532, API
+200/200, frontend 279/279.
+
+**Procédure pour les bases partagées** (à lancer à la main ; sauvegardes déjà faites) :
+
+```powershell
+cd backend
+foreach ($d in "nexora", "nexora_recette") {
+  $env:Database__ConnectionString = "Host=localhost;Port=5432;Database=$d;Username=postgres;Password=<mot de passe>"
+  dotnet src/Nexora.Api/bin/Debug/net10.0/Nexora.Api.dll migrate
+  dotnet src/Nexora.Api/bin/Debug/net10.0/Nexora.Api.dll reprise-ouvertures             # simulation
+  dotnet src/Nexora.Api/bin/Debug/net10.0/Nexora.Api.dll reprise-ouvertures --appliquer
+}
+```
+
+Retour arrière : `pg_restore --clean -d <base> C:\Users\Rener\nexora-sauvegardes\2026-10-15-avant-V100\<base>.dump`.
+
+## Décisions d'exploitation (2026-10-15)
+
+- **Un client par installation (A-031).** Chaque client — un groupe et ses entreprises — a sa propre installation et sa
+  propre base. Les éléments communs à une installation (taux de change, maintenance, tâches planifiées, purge, portée
+  système de la base) ne sont donc jamais partagés entre clients. Plusieurs clients par installation demanderaient un
+  chantier dédié : taux par client, rôle d'opérateur de plateforme distinct, revue des tables globales.
+- **Taux de change communs à l'installation (A-017)** : avec un client par installation, ce sont les taux du client,
+  appliqués à toutes ses entreprises. À revoir seulement avec le point précédent.
+- **Bascules de fonctionnalité** : l'onglet « Bascules » de la console d'exploitation est retiré pour la version 1 (aucune
+  fonctionnalité ne les lit). Le registre et l'API restent en place ; candidats si des coupe-circuits deviennent utiles :
+  paiements en ligne réels, envois SMS / e-mail, ventes hors ligne.
+- **À-nouveaux (A-021)** : modèle actuel conservé (grand livre continu, report du seul résultat), à faire confirmer par
+  le comptable ; s'il faut un journal d'à-nouveaux détaillé, le produire comme état imprimable, sans écritures.

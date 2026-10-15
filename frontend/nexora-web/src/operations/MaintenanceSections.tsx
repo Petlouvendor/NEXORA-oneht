@@ -4,13 +4,13 @@ import { usePrompt } from "@/shared/PromptDialog";
 import { TopLayer } from "@/shared/TopLayer";
 import { Button, ConfirmDialog, Field, Modal, Select, TextInput } from "@/shared/ui";
 import {
-  databaseMaintenance, deadLetters, decideDataCorrection, deleteDeadLetter, deleteFeatureFlag,
-  diagnostics, executePurge, invalidateCache, listDataCorrections, listFeatureFlags, listJobs,
+  databaseMaintenance, deadLetters, decideDataCorrection, deleteDeadLetter,
+  diagnostics, executePurge, invalidateCache, listDataCorrections, listJobs,
   listMaintenanceWindows, listRetentionPolicies, pauseJob, previewPurge, purgeHistory, queueStats,
-  replayDeadLetter, requestDataCorrection, resumeJob, runJobNow, saveFeatureFlag, scheduleMaintenance,
+  replayDeadLetter, requestDataCorrection, resumeJob, runJobNow, scheduleMaintenance,
   storageStats, transitionMaintenance,
   type DataCorrection, type DeadLetterItem, type DiagnosticCheck,
-  type FeatureFlag, type JobStatus, type MaintenanceWindow, type PurgeRun, type QueueStats,
+  type JobStatus, type MaintenanceWindow, type PurgeRun, type QueueStats,
   type RetentionPolicy,
 } from "@/operations/operationsApi";
 
@@ -211,66 +211,6 @@ export function DiagnosticsSection({ canManage }: { canManage: boolean }) {
   );
 }
 
-// --- §27 : bascules de fonctionnalité ---------------------------------------
-
-export function FeatureFlagsSection({ canManage }: { canManage: boolean }) {
-  const flags = useAsync(listFeatureFlags);
-  const prompt = usePrompt();
-  return (
-    <section className="nx-card" style={{ display: "grid", gap: 8 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <div style={label}>Bascules de fonctionnalité (§27)</div>
-        {canManage && (
-          <button className="nx-btn nx-btn--ghost" style={{ padding: "4px 12px", fontSize: 13 }} disabled={flags.busy}
-                  onClick={async () => {
-                    const key = await prompt.ask({ title: "Nouvelle bascule globale", label: "Clé de la bascule", required: true, minLength: 2,
-                      hint: "Ex. caisse.nouveau_ticket — 2 à 100 caractères. Créée activée. Aucun écran ne la consulte encore.",
-                      confirmLabel: "Créer", onSubmit: (k) => saveFeatureFlag({ key: k, scope: "global", enabled: true }) });
-                    if (key) flags.load();
-                  }}>
-            Nouvelle bascule globale
-          </button>
-        )}
-      </div>
-      {/* Audit 2026-10, A-031 : aucune fonctionnalité ne lit encore ces bascules — le dire plutôt que laisser croire
-          qu'un « Désactiver » coupe quelque chose. */}
-      <div style={{ fontSize: 13, color: "var(--nx-text-2)" }}>
-        Registre préparatoire : aucune fonctionnalité de l'application ne consulte encore ces bascules. Les créer, les
-        activer ou les désactiver ne change rien au fonctionnement tant qu'une fonctionnalité n'y est pas reliée.
-      </div>
-      {flags.error && <div className="nx-error-text">{flags.error}</div>}
-      {prompt.dialog}
-      <div style={{ overflowX: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
-          <thead><tr>{["Clé", "Portée", "État", "Expire", canManage ? "" : undefined].filter(Boolean).map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
-          <tbody>
-            {(flags.data ?? []).map((f: FeatureFlag) => (
-              <tr key={f.id} style={{ borderTop: "1px solid var(--nx-surface-2)" }}>
-                <td style={td}>{f.key}</td>
-                <td style={{ ...td, color: "var(--nx-text-2)" }}>{f.scope}</td>
-                <td style={{ ...td, color: f.enabled ? "var(--nx-success)" : "var(--nx-error)" }}>{f.enabled ? "activée" : "désactivée (kill switch)"}</td>
-                <td style={td}>{f.expiresAt ? rel(f.expiresAt) : "—"}</td>
-                {canManage && (
-                  <td style={td}>
-                    <div style={{ display: "flex", gap: 4 }}>
-                      <button className="nx-btn nx-btn--ghost" style={{ padding: "1px 8px", fontSize: 12 }} disabled={flags.busy}
-                              onClick={() => void flags.run(() => saveFeatureFlag({ key: f.key, scope: f.scope, companyId: f.companyId, userId: f.userId, enabled: !f.enabled }))}>
-                        {f.enabled ? "Désactiver" : "Activer"}
-                      </button>
-                      <button className="nx-btn nx-btn--ghost" style={{ padding: "1px 8px", fontSize: 12, color: "var(--nx-error)" }} disabled={flags.busy}
-                              onClick={() => void flags.run(() => deleteFeatureFlag(f.id))}>Supprimer</button>
-                    </div>
-                  </td>
-                )}
-              </tr>
-            ))}
-            {(flags.data ?? []).length === 0 && <tr><td style={{ ...td, color: "var(--nx-text-2)" }} colSpan={5}>Aucune bascule.</td></tr>}
-          </tbody>
-        </table>
-      </div>
-    </section>
-  );
-}
 
 // --- §23-24 : maintenance planifiée -----------------------------------------
 

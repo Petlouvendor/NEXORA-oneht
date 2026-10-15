@@ -17,7 +17,7 @@ import {
   type SystemStatus,
 } from "@/operations/operationsApi";
 import {
-  DataCorrectionsSection, DiagnosticsSection, FeatureFlagsSection, JobsSection,
+  DataCorrectionsSection, DiagnosticsSection, JobsSection,
   MaintenanceWindowsSection, QueuesSection, RetentionSection,
 } from "@/operations/MaintenanceSections";
 import { ProductionSection } from "@/operations/ProductionSection";
@@ -88,7 +88,6 @@ export function OperationsPage() {
           { id: "jobs", label: "Jobs" },
           { id: "queues", label: "Files & dead-letter" },
           { id: "diagnostics", label: "Diagnostics" },
-          { id: "flags", label: "Bascules" },
           { id: "maintenance", label: "Maintenance planifiée" },
           { id: "retention", label: "Rétention & purge" },
           { id: "corrections", label: "Corrections" },
@@ -101,7 +100,6 @@ export function OperationsPage() {
       {tab === "jobs" && <JobsSection canManage={canManage} />}
       {tab === "queues" && <QueuesSection canManage={canManage} />}
       {tab === "diagnostics" && <DiagnosticsSection canManage={canManage} />}
-      {tab === "flags" && <FeatureFlagsSection canManage={canManage} />}
       {tab === "maintenance" && <MaintenanceWindowsSection canManage={canManage} />}
       {tab === "retention" && <RetentionSection canManage={canManage} />}
       {tab === "corrections" && <DataCorrectionsSection canManage={canManage} canDecide={canDecide} />}
