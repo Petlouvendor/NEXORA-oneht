@@ -248,3 +248,23 @@ visible dans la portée). Suite d'intégration complète : 511/515 (les 4 échec
 (protection contre l'oubli d'un filtre, pas contre une injection — aucune n'a été trouvée) ; `app_user`, `user_role`,
 `access_scope` restent sans RLS, volontairement (résolution de l'identité à la connexion). Une séparation par rôle
 PostgreSQL dédié aux tâches système demanderait migration et revue de chaque portée système.
+
+## Étape 11 — Comptes, sessions et règlement de vente (A-010, A-032, A-014)
+
+**A-010.** La garde « on n'accorde que ce qu'on détient » ne protégeait que l'attribution. Désormais, suspendre ou
+verrouiller un compte, ou lui retirer une affectation, est refusé (`identity.escalation`) si ce compte détient — dans
+une entreprise, un groupe ou la plateforme partagés avec l'appelant — une permission que l'appelant n'a pas. Le retrait
+d'une affectation invalide aussi le cache de session de la cible (droits relus dès la requête suivante).
+
+**A-032.** Révoquer une session d'un autre utilisateur ne touche plus rien : ses jetons de rafraîchissement étaient
+auparavant révoqués quand même (déconnexion forcée d'autrui par l'identifiant de session).
+
+**A-014.** `POST /api/v1/sales/{id}/payments` passe par le service des comptes clients : permission
+`credit.receive_payment` (au lieu de `pos.sell`), session de caisse ouverte, devise du compte, mouvement de caisse
+pour des espèces. Le corps accepte en plus `paymentMethodId` et `cashSessionId`. Point d'accès non utilisé par
+l'interface.
+
+**Tests.** `AccountAuthorityTests` : un administrateur des utilisateurs moins habilité ne peut ni suspendre la
+direction ni lui retirer son rôle ; la direction peut suspendre cet administrateur ; révoquer la session d'autrui →
+« introuvable », jetons intacts. Non-régression : identité, audit de sécurité, gouvernance, consolidation, comptes
+clients, administration (63 tests).

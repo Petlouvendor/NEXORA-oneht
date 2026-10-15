@@ -501,12 +501,14 @@ public sealed class SqlSessionSecurityService(NexoraDbContext db, IUnitOfWork uo
             WHERE id = {sessionId} AND user_id = {UserId} AND revoked_at IS NULL
             RETURNING token_id AS "Value"
             """).ToListAsync(ct);
+        // Session d'un autre utilisateur (ou déjà révoquée) : rien d'autre ne bouge. Avant (audit 2026-10, A-032), ses
+        // jetons de rafraîchissement étaient révoqués quand même — déconnexion forcée d'autrui par son identifiant.
+        if (tokenIds.Count == 0) return Error.NotFound("security.session", "Session introuvable ou déjà révoquée.");
         foreach (var t in tokenIds) if (t is { } tid) sessionCache.Invalidate(tid);
         await db.Database.ExecuteSqlAsync($"""
             UPDATE nexora.auth_refresh_token SET revoked_at = now() WHERE session_id = {sessionId} AND revoked_at IS NULL
             """, ct);
-        var n = tokenIds.Count;
-        return n == 0 ? Error.NotFound("security.session", "Session introuvable ou déjà révoquée.") : Result.Success();
+        return Result.Success();
     }
 
     public async Task<Result> RevokeAllAsync(RevokeSessionRequest request, CancellationToken ct = default)
