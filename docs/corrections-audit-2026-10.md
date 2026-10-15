@@ -280,8 +280,9 @@ leur configuration — une première version qui les redirigeait aussi par varia
 configuration écrite par l'assistant d'installation (détecté par `SetupWizardTests`, retiré).
 
 **Vérification.** Suite d'API lancée sur un clone jetable de `nexora` (mis à jour, puis supprimé) : 11 sessions créées
-dans le clone, **aucune** dans `nexora`. Résultat : 195/195 (les échecs relevés pendant l'audit — sessions, parcours
-complet, exploitation — ne se reproduisent plus).
+dans le clone, **aucune** dans `nexora`. Résultat : 194/195 ; le seul échec était `SetupWizardTests`, dû à la première
+version décrite ci-dessus, et passe une fois celle-ci retirée (relancé seul, avec la sonde de santé). Les échecs relevés
+pendant l'audit — sessions, parcours complet, exploitation — ne se reproduisent plus.
 
 **Procédure.** `CREATE DATABASE nexora_api_it TEMPLATE nexora;` → `Nexora.Api.dll migrate` sur ce clone →
 `NEXORA_API_TEST_DB=nexora_api_it dotnet test tests/Nexora.ApiTests` → `DROP DATABASE nexora_api_it;`.
