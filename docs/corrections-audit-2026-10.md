@@ -4,6 +4,30 @@
 > Pour l'équipe technique et la personne qui validera la recette. Identifiants : ceux de
 > `audit-nexora-one/09-anomalies-et-priorites.md`.
 
+## Bilan (2026-10-15)
+
+**Fait.** Étapes 0 à 19, toutes fusionnées dans `develop` : toutes les anomalies du registre sont corrigées, sauf
+A-026 (aucun changement nécessaire : la paie arrondit une seule fois, avant comptabilisation). P-001 est traité à
+l'étape 18.
+
+**Résultats** (modèle jetable migré jusqu'en V102) : unitaires 103/103 ; intégration 530/530 ; API 200/200 (sur un clone
+jetable, avant le dernier correctif de la recherche caisse, qui ne touche pas l'API testée) ; frontend 279/279, typage et
+lint sans erreur.
+
+**En attente d'une décision ou d'un accord :**
+
+- **Migrations V100, V101, V102 non appliquées** aux bases partagées `nexora` (développement, modèle des tests) et
+  `nexora_recette`. Commande, base par base : `Nexora.Api.dll migrate` avec la chaîne de connexion de la base. Tant
+  qu'elles ne le sont pas, les tests qui en dépendent échouent sur `nexora`.
+- A-021 : modèle d'à-nouveaux retenu (grand livre continu, à-nouveaux limités au résultat) à confirmer.
+- A-031 : règle d'exploitation de la plateforme (un client par installation, ou plusieurs) ; bascules de fonctionnalité
+  à relier à des fonctionnalités.
+- A-017 : taux de change globaux à la plateforme (choix actuel) ou par entreprise.
+- Soldes d'ouverture déjà présents dans les jeux de démonstration et de recette : non repris en comptabilité.
+- **Non vérifié faute d'environnement :** configuration Caddy (Docker arrêté), job CI du scan de dépendances (pas
+  d'exécution GitHub Actions locale), suite E2E, test de charge.
+- Observation ouverte : collisions intermittentes de numéros clients dans `CustomerAccountTests` (étape 13).
+
 ## Étape 0 — Compilation et isolation des tests d'API (A-001, T-002)
 
 **A-001.** La copie de travail retirait la référence `Nexora.Api` du projet `Nexora.ApiTests` (modification non
