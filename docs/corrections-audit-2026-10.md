@@ -198,3 +198,29 @@ d'un article suivi par lot étaient créées sans lot : l'ajustement modifiait l
 18 (l'ancien calcul donnait 16) ; 19 comptés puis 3 vendus → stock 16 ; article à deux lots → deux lignes, l'écart ne
 touche que le lot compté, stock de l'article = somme des lots. Non-régression : opérations de stock, cycle de vie, lots,
 catalogue (31 tests) ; frontend : typecheck, lint, tests du stock.
+
+## Étape 9 — Saisie des taux de change (A-017)
+
+**Défaut.** La table `exchange_rate` était lue partout (comptes et ventes en devise, consolidation, contrôle de crédit
+multidevise), mais aucune fonction ni aucun écran ne permettait d'y écrire : le multidevise ne fonctionnait qu'avec
+les deux taux du jeu de démonstration. Sur une installation neuve, le contrôle de crédit répondait « saisissez le taux
+du jour » sans offrir de moyen de le faire.
+
+**Correction.**
+- `GET/POST /api/v1/exchange-rates` (lecture `finance.view`, saisie `finance.update`) et onglet « Taux de change » du
+  cockpit Finance. Convention : 1 devise de base = taux × devise cotée ; le taux inverse reste dérivé.
+- Un taux n'est jamais modifié ni supprimé (les écritures passées gardent le leur) : on en saisit un nouveau, daté.
+  Date du jour : en vigueur immédiatement ; autre date : midi UTC, qui reste ce jour-là dans tous les fuseaux.
+- La table est commune à toute l'installation : la saisie passe par la garde de l'étape 4 (direction sur une
+  installation d'un seul client, exploitant sur une plateforme partagée). Aucune migration.
+
+**Tests.** `ExchangeRateManagementTests` : taux saisi utilisé par la conversion (et son inverse), doublon refusé,
+devises identiques et taux nul refusés ; avec un autre client hébergé, un directeur d'entreprise est refusé
+(`operations.platform_only`).
+
+**Fixture de test.** Plusieurs tests laissent des entreprises indépendantes dans la base de test partagée : elle héberge
+donc plusieurs « clients », et la garde de l'étape 4 refusait selon l'ordre d'exécution. La fixture donne à
+l'utilisateur de test « direction » un rôle d'exploitant de portée plateforme limité à `operations.*` et
+`finance.update` ; les tests de refus utilisent un directeur d'entreprise ordinaire (`NewCompanyDirectorAsync`).
+Non-régression : taux, exploitation, consolidation, continuité, intelligence, identité, administration, catalogue des
+permissions, couverture RLS (71 tests) ; frontend : typecheck, lint.
