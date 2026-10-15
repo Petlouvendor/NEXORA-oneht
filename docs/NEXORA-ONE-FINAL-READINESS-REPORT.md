@@ -1,5 +1,12 @@
 # NEXORA ONE — FINAL READINESS REPORT
 
+> **Avertissement (2026-10-15).** L'audit technique intégral du 2026-10-13 (`audit-nexora-one/`) a infirmé plusieurs
+> « Prêt pour la production : Oui » de ce rapport (caisse : retours et clôture ; stock : inventaires ; comptabilité :
+> clôture et à-nouveaux) et en a rendu deux réserves obsolètes (SSRF des webhooks corrigée, 4081 en place). Les
+> corrections sont suivies dans `docs/corrections-audit-2026-10.md` ; la matrice à jour est
+> `audit-nexora-one/04-matrice-fonctionnalites.md` complétée par ce suivi. Ne pas décider d'une mise en service sur la
+> seule base du présent document.
+
 > Rapport final du plan maître « Finalisation complète du produit » (§59), à l'issue des phases 0 à 20.
 > Date : 2026-10-07. Branche de référence : `develop`. Pour la direction et l'équipe qui mettra Nexora One en service.
 

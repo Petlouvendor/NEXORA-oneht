@@ -18,6 +18,9 @@ public sealed class LoginHandler(
     IDateTimeProvider clock,
     ILogger<LoginHandler> logger)
 {
+    /// <summary>Empreinte factice (calculée une fois) vérifiée pour un compte inconnu.</summary>
+    private static string? DummyHash;
+
     public async Task<Result<AuthTokenResponse>> HandleAsync(
         LoginRequest request, string? ipAddress = null, CancellationToken ct = default)
     {
@@ -28,6 +31,9 @@ public sealed class LoginHandler(
 
         if (user is null || !user.IsActive || string.IsNullOrEmpty(user.PasswordHash))
         {
+            // Même coût qu'un vrai contrôle de mot de passe : le temps de réponse ne révèle plus si le compte existe
+            // (audit 2026-10, A-011).
+            _ = hasher.Verify(request.Password, DummyHash ??= hasher.Hash(Guid.NewGuid().ToString("N")));
             logger.LogInformation("Échec de connexion pour {Email} (compte inconnu/inactif)", request.Email);
             NexoraMetrics.RecordLogin("invalid");
             return invalid;

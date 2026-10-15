@@ -151,9 +151,13 @@ public sealed class SqlMfaService(
             return Error.Forbidden("security.forbidden", "Permission « security.reset_mfa » requise.");
 
         var target = await permissions.LoadProfileAsync(userId, ct);
-        var sharesCompany = caller.CompanyIds.Intersect(target.CompanyIds).Any();
-        var sharesGroup = caller.GroupIds.Intersect(target.GroupIds).Any();
-        if (!sharesCompany && !sharesGroup)
+        // La permission doit être détenue là où la cible travaille — une entreprise ou un groupe partagés —, pas
+        // seulement « quelque part » (audit 2026-10, A-011).
+        const string reset = "security.reset_mfa";
+        var allowed = (caller.PlatformPermissions?.Contains(reset) ?? false)
+            || caller.CompanyIds.Intersect(target.CompanyIds).Any(c => caller.HasPermission(reset, c))
+            || caller.GroupIds.Intersect(target.GroupIds).Any(g => caller.GroupPermissionsFor(g).Contains(reset));
+        if (!allowed)
             return Error.Forbidden("security.out_of_scope", "Utilisateur hors de votre périmètre (§39).");
 
         await ClearMfaAsync(userId, ct);

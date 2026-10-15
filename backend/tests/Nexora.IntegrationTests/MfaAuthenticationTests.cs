@@ -234,6 +234,37 @@ public sealed class MfaAuthenticationTests(FinanceEngineFixture fx)
             .Error!.Code.Should().Be("security.self_reset");
     }
 
+    // ---- Audit 2026-10, A-011 : la permission doit être détenue là où la cible travaille ----
+    [Fact]
+    public async Task Reset_permission_held_in_another_company_does_not_reach_a_shared_company()
+    {
+        var other = await Scalar<Guid>($"SELECT id FROM nexora.company WHERE id <> '{Company}' ORDER BY id LIMIT 1");
+        other.Should().NotBeEmpty("le jeu de test doit compter une seconde entreprise");
+        var caller = await NewUser("pw-caller");
+        var target = await NewUser("pw-target-scope");
+        // Directeur dans l'autre entreprise, simple caissier dans la Pharmacie ABC — comme la cible.
+        await Sql($"""
+            INSERT INTO nexora.access_scope (scope_type, company_id)
+            SELECT 'COMPANY', '{other}' WHERE NOT EXISTS (
+                SELECT 1 FROM nexora.access_scope WHERE scope_type = 'COMPANY' AND company_id = '{other}');
+            INSERT INTO nexora.user_role (user_id, role_id, scope_id)
+            SELECT '{caller}', r.id, sc.id FROM nexora.role r, nexora.access_scope sc
+            WHERE r.name = 'owner_direction' AND r.system_role AND sc.scope_type = 'COMPANY' AND sc.company_id = '{other}'
+            LIMIT 1;
+            INSERT INTO nexora.user_role (user_id, role_id, scope_id)
+            SELECT u.id, ur.role_id, ur.scope_id FROM nexora.user_role ur
+            JOIN nexora.role r ON r.id = ur.role_id AND r.name = 'cashier'
+            CROSS JOIN (VALUES ('{caller}'::uuid), ('{target}'::uuid)) AS u(id)
+            WHERE ur.user_id = '{Cashier}'
+            ON CONFLICT DO NOTHING;
+            """);
+
+        await using var s = Scope();
+        AsUser(s.ServiceProvider, caller);
+        (await s.ServiceProvider.GetRequiredService<IMfaService>().ResetForUserAsync(target))
+            .Error!.Code.Should().Be("security.out_of_scope", "l'ancien contrôle se contentait d'une entreprise commune");
+    }
+
     // ---- §37 : la politique d'entreprise signale la MFA comme requise pour un rôle sensible ----
     [Fact]
     public async Task Company_policy_flags_mfa_as_required_for_a_configured_role()
