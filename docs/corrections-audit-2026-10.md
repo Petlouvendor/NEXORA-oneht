@@ -375,6 +375,12 @@ synchronisait : vérifié en remettant l'ancien `SyncServices`) ; extourne d'une
 12 ; étiquette de 1 250 g → 1,25 et le code lu renvoyé. `ScaleLabelTests` (unitaires) et `scaleLabel.test.ts`,
 `offlineStore.test.ts` (clé fausse, poids nul, code ordinaire refusés).
 
+**Régression trouvée par la suite complète, corrigée.** La recherche d'articles de la caisse partage le type
+`PosProductDto` mais ne renvoyait pas la nouvelle colonne `PackSize` : EF refusait la requête (« The required column
+'PackSize' was not present »), si bien que la recherche en caisse échouait. Détectée par
+`GuideFonctionnelTests.Pos_search_returns_a_short_relevant_list_of_sellable_products_only`, absent des tests ciblés de
+l'étape ; la recherche renvoie désormais `PackSize = 1` (un article choisi dans la liste s'ajoute à l'unité).
+
 ## Étape 16 — Connexion, MFA, métriques, CI, documentation (A-011, A-024, A-028, A-027, A-025)
 
 **A-011 — authentification.** (1) Pour un e-mail inconnu ou un compte inactif, la connexion répondait sans vérifier de

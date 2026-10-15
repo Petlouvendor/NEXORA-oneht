@@ -679,7 +679,8 @@ public sealed class SqlPosCatalogQueries(
                         WHEN rr.reorder_point IS NOT NULL AND sb.available <= rr.reorder_point THEN 'low'
                         ELSE 'in_stock' END AS "Availability",
                    COALESCE((SELECT tx.rate FROM nexora.tax tx WHERE tx.id = p.default_tax_id), 0) AS "TaxRate",
-                   COALESCE(dp.tax_included, false) AS "PriceIncludesTax"
+                   COALESCE(dp.tax_included, false) AS "PriceIncludesTax",
+                   1::numeric AS "PackSize"   -- un article choisi dans la liste s'ajoute à l'unité
             FROM nexora.product p
             JOIN nexora.company co ON co.id = p.company_id
             CROSS JOIN LATERAL (SELECT nexora.search_norm({term}) AS n) q
