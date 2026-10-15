@@ -63,6 +63,7 @@ public static class DependencyInjection
         services.AddScoped<ITenantContext>(sp => sp.GetRequiredService<TenantContext>());
 
         services.AddScoped<RlsConnectionInterceptor>();
+        services.AddScoped<RlsCommandInterceptor>();
         services.AddScoped<IBranchScopeResolver, Nexora.Infrastructure.Identity.SqlBranchScopeResolver>();
 
         // Chaîne réelle via configuration / secret manager (§18). Valeur de repli inerte
@@ -83,7 +84,7 @@ public static class DependencyInjection
                 npgsql.CommandTimeout(current.CommandTimeoutSeconds);
                 npgsql.MigrationsHistoryTable("__ef_migrations_history_unused", "nexora");
             });
-            options.AddInterceptors(sp.GetRequiredService<RlsConnectionInterceptor>());
+            options.AddInterceptors(sp.GetRequiredService<RlsConnectionInterceptor>(), sp.GetRequiredService<RlsCommandInterceptor>());
         });
 
         // Assistant d'installation (résumé fonctionnel §20) — SetupState est enregistré par l'hôte.

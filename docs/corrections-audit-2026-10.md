@@ -224,3 +224,27 @@ l'utilisateur de test « direction » un rôle d'exploitant de portée plateform
 `finance.update` ; les tests de refus utilisent un directeur d'entreprise ordinaire (`NewCompanyDirectorAsync`).
 Non-régression : taux, exploitation, consolidation, continuité, intelligence, identité, administration, catalogue des
 permissions, couverture RLS (71 tests) ; frontend : typecheck, lint.
+
+## Étape 10 — Portée système effective dans une transaction (A-009)
+
+**Défaut.** Le contexte RLS (entreprises, groupes, utilisateur, levée de RLS) n'était posé qu'à l'ouverture de la
+connexion. Dans une transaction, la connexion reste ouverte : une portée système ouverte à l'intérieur était sans
+effet, et une transaction ouverte dans une portée système en gardait la levée de RLS après sa fin. Exemple constaté :
+la réinitialisation de la MFA d'un utilisateur par un administrateur ne supprimait pas ses codes de secours (0 ligne
+supprimée, sans erreur) — ils restaient utilisables.
+
+**Correction.** `ITenantContext.SystemScopeChanged` est levé quand la portée système commence ou se termine (passage
+0↔1). L'intercepteur de connexion marque alors le contexte de la connexion ouverte comme périmé ;
+`RlsCommandInterceptor` le réapplique juste **avant la commande suivante**. Une première version réappliquait
+immédiatement : elle entrait en collision avec une requête encore en cours quand la portée se termine avant la fin de
+la requête (`using (BeginSystemScope()) return …Async()` sans `await`) — détecté par les tests MFA, corrigé.
+
+**Tests.** `RlsSystemScopeTests`, avec le rôle applicatif réel `nexora_app` : réinitialisation MFA par la direction →
+codes de secours supprimés ; dans une transaction, un client d'une autre entreprise est invisible, visible dans la
+portée système, de nouveau invisible après. Les deux échouent sur l'ancien code (vérifié : 2 codes restants ; 0 ligne
+visible dans la portée). Suite d'intégration complète : 511/515 (les 4 échecs sont ceux de V100 en attente).
+
+**Reste, décision d'architecture.** La levée de RLS reste une variable de session que le rôle applicatif peut poser
+(protection contre l'oubli d'un filtre, pas contre une injection — aucune n'a été trouvée) ; `app_user`, `user_role`,
+`access_scope` restent sans RLS, volontairement (résolution de l'identité à la connexion). Une séparation par rôle
+PostgreSQL dédié aux tâches système demanderait migration et revue de chaque portée système.
