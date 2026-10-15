@@ -38,6 +38,13 @@ public sealed class FinancialAccountsController(ITreasuryQueries queries, ITreas
     public async Task<IActionResult> Status(Guid id, [FromBody] FinancialAccountStatusRequest r, CancellationToken ct)
         => FromResult(await treasury.SetAccountStatusAsync(id, r, ct));
 
+    /// <summary>Solde d'ouverture d'un compte encore sans mouvement (audit 2026-10, A-023) : trésorerie et comptabilité.</summary>
+    [HttpPost("{id:guid}/opening-balance")]
+    [RequirePermission(Permissions.Finance.Update)]
+    [Idempotent]
+    public async Task<IActionResult> OpeningBalance(Guid id, [FromBody] TreasuryOpeningBalanceRequest r, CancellationToken ct)
+        => FromResult(await treasury.RecordOpeningBalanceAsync(id, r, ct));
+
     [HttpGet("{id:guid}/transactions")]
     [RequirePermission(Permissions.Finance.View)]
     public async Task<IActionResult> Transactions(Guid id, [FromQuery] DateOnly? from, [FromQuery] DateOnly? to,

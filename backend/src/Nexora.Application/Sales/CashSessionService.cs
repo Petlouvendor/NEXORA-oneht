@@ -21,7 +21,8 @@ public sealed class CashSessionService(
     IPosApprovalNotifier notifier,
     IUnitOfWork uow,
     ITenantContext tenant,
-    IDateTimeProvider clock)
+    IDateTimeProvider clock,
+    ITreasuryManagementService treasury)
 {
     private Guid Company => tenant.ActiveCompanyId
         ?? throw TenantErrors.ActiveCompanyRequired();
@@ -71,16 +72,44 @@ public sealed class CashSessionService(
         // cash_movement_amount_chk : un mouvement de caisse n'est jamais nul.
         if (cmd.Amount == 0m)
             return Error.Validation("pos.movement_amount", "Le montant doit être différent de zéro.");
-        var signed = cmd.MovementType == "payin" ? Math.Abs(cmd.Amount) : -Math.Abs(cmd.Amount);
-        await store.AddMovementAsync(new CashMovement
+        // Audit 2026-10, A-019 : le mouvement ne touchait que la session — ni écriture, ni trésorerie. Une sortie vers
+        // le coffre ou la banque laissait le compte « caisse » et le grand livre surévalués, un apport n'y entrait
+        // jamais. Désormais : transfert de trésorerie comptabilisé entre la caisse de la session et la contrepartie,
+        // dans la même transaction que le mouvement de session.
+        if (cmd.CounterpartFinancialAccountId is not { } counterpart)
+            return Error.Validation("pos.counterpart_required",
+                "Indiquez d'où vient l'apport ou où va la sortie (coffre, banque, autre caisse).");
+        var register = (await store.GetRegisterAsync(session.CashRegisterId, ct))!;
+        if (register.FinancialAccountId is not { } drawer)
+            return Error.Validation("pos.register_account_missing", "La caisse n'est rattachée à aucun compte de trésorerie.");
+        var amount = Math.Abs(cmd.Amount);
+        var signed = cmd.MovementType == "payin" ? amount : -amount;
+        var operation = cmd.OperationUuid ?? Guid.NewGuid();
+        var label = cmd.MovementType switch { "payin" => "Apport en caisse", "pickup" => "Prélèvement de caisse", _ => "Sortie de caisse" };
+
+        try
         {
-            Id = Guid.NewGuid(), CompanyId = Company, CashSessionId = cmd.SessionId,
-            MovementType = cmd.MovementType, Amount = signed,
-            CurrencyId = (await store.GetRegisterAsync(session.CashRegisterId, ct))!.CurrencyId,
-            Note = cmd.Note, OccurredAt = clock.UtcNow, UserId = tenant.UserId, CreatedAt = clock.UtcNow,
-        }, ct);
-        await uow.SaveChangesAsync(ct);
-        return Result.Success();
+            return await uow.ExecuteInTransactionAsync<Result>(async token =>
+            {
+                var moved = await treasury.TransferAsync(new TreasuryTransferRequest(operation,
+                    cmd.MovementType == "payin" ? counterpart : drawer, cmd.MovementType == "payin" ? drawer : counterpart,
+                    amount, string.IsNullOrWhiteSpace(cmd.Note) ? label : $"{label} — {cmd.Note.Trim()}"), token);
+                if (!moved.IsSuccess) throw new CashMovementRefused(moved.Error!);
+                if (moved.Value!.WasReplay) return Result.Success();   // même opération déjà enregistrée
+                await store.AddMovementAsync(new CashMovement
+                {
+                    Id = Guid.NewGuid(), CompanyId = Company, CashSessionId = cmd.SessionId,
+                    MovementType = cmd.MovementType, Amount = signed, CurrencyId = register.CurrencyId,
+                    ReferenceType = "financial_transfer", Note = cmd.Note, OccurredAt = clock.UtcNow, UserId = tenant.UserId,
+                    SourceOperationUuid = operation, CreatedAt = clock.UtcNow,
+                }, token);
+                return Result.Success();
+            }, ct);
+        }
+        catch (CashMovementRefused stopped)
+        {
+            return stopped.Error;
+        }
     }
 
     /// <summary>
@@ -196,4 +225,10 @@ public sealed class CashSessionService(
             return null;   // réglage absent : pas de validation d'écart
         }
     }
+}
+
+/// <summary>Refus du transfert de trésorerie : annule la transaction du mouvement de caisse.</summary>
+internal sealed class CashMovementRefused(Error error) : Exception(error.Message)
+{
+    public Error Error { get; } = error;
 }

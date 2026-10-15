@@ -132,14 +132,14 @@ public sealed class SqlFinancialReports(
             .SumAsync(a => a.CurrentBalance, ct);
 
         var inflows = await db.Database.SqlQuery<DueRow>($"""
-            SELECT COALESCE(due_date, {to}) AS "DueDate", SUM(original_amount - paid_amount) AS "Amount"
+            SELECT COALESCE(due_date, {to}) AS "DueDate", SUM(remaining_amount) AS "Amount"
             FROM nexora.customer_receivable
             WHERE company_id = {Company} AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE')
             GROUP BY COALESCE(due_date, {to})
             """).ToListAsync(ct);
 
         var outflows = await db.Database.SqlQuery<DueRow>($"""
-            SELECT COALESCE(due_date, {to}) AS "DueDate", SUM(original_amount - paid_amount) AS "Amount"
+            SELECT COALESCE(due_date, {to}) AS "DueDate", SUM(remaining_amount) AS "Amount"
             FROM nexora.supplier_payable
             WHERE company_id = {Company} AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE')
             GROUP BY COALESCE(due_date, {to})
@@ -192,12 +192,12 @@ public sealed class SqlFinancialReports(
 
         var sql =
             "SELECT p.name AS \"Party\", " +
-            "(r.original_amount - r.paid_amount) AS \"Remaining\", " +
+            "r.remaining_amount AS \"Remaining\", " +
             "GREATEST(0, ({0}::date - COALESCE(r.due_date, r.issue_date)))::int AS \"DaysOverdue\" " +
             $"FROM nexora.{table} r " +
             $"JOIN nexora.{partyTable} p ON p.id = r.{partyFk} " +
             "WHERE r.company_id = {1} AND r.status IN ('OPEN','PARTIALLY_PAID','OVERDUE') " +
-            "AND (r.original_amount - r.paid_amount) > 0";
+            "AND r.remaining_amount > 0";
         var raw = await db.Database.SqlQueryRaw<AgedRawRow>(sql, asOf, Company).ToListAsync(ct);
 
         static string Bucket(int d) => d <= 0 ? "Courant" : d <= 30 ? "1-30 j" : d <= 60 ? "31-60 j" : d <= 90 ? "61-90 j" : "> 90 j";

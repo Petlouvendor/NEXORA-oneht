@@ -27,11 +27,14 @@ public static class FilterPeriod
 {
     public static (DateOnly From, DateOnly To) Resolve(ReportFilter f, DateOnly today)
     {
-        if (f.From is { } from && f.To is { } to) return (from, to);
+        // Période personnalisée saisie à l'envers : remise dans l'ordre plutôt qu'une période vide.
+        if (f.From is { } from && f.To is { } to) return from <= to ? (from, to) : (to, from);
         return (f.Preset ?? "month") switch
         {
             "today" => (today, today),
-            "week" => (today.AddDays(-(int)today.DayOfWeek + 1), today),
+            // Lundi de la semaine en cours. L'ancien calcul (−jour + 1) donnait le lundi SUIVANT le dimanche : la
+            // période « cette semaine » était vide chaque dimanche (audit 2026-10, A-008).
+            "week" => (today.AddDays(-(((int)today.DayOfWeek + 6) % 7)), today),
             "year" => (new DateOnly(today.Year, 1, 1), today),
             "month" or _ => (new DateOnly(today.Year, today.Month, 1), today),
         };

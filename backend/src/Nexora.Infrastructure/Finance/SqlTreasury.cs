@@ -84,18 +84,18 @@ public sealed class SqlTreasuryQueries(
 
     private Task<decimal> ReceivablesDueByAsync(DateOnly by, CancellationToken ct) =>
         db.Database.SqlQuery<decimal>($"""
-            SELECT COALESCE(SUM(original_amount - paid_amount), 0) AS "Value"
+            SELECT COALESCE(SUM(remaining_amount), 0) AS "Value"
             FROM nexora.customer_receivable
             WHERE company_id = {Company} AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE','IN_DISPUTE')
-              AND (original_amount - paid_amount) > 0 AND (due_date IS NULL OR due_date <= {by})
+              AND remaining_amount > 0 AND (due_date IS NULL OR due_date <= {by})
             """).FirstAsync(ct);
 
     private Task<decimal> PayablesDueByAsync(DateOnly by, CancellationToken ct) =>
         db.Database.SqlQuery<decimal>($"""
-            SELECT COALESCE(SUM(original_amount - paid_amount), 0) AS "Value"
+            SELECT COALESCE(SUM(remaining_amount), 0) AS "Value"
             FROM nexora.supplier_payable
             WHERE company_id = {Company} AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE')
-              AND (original_amount - paid_amount) > 0 AND (due_date IS NULL OR due_date <= {by})
+              AND remaining_amount > 0 AND (due_date IS NULL OR due_date <= {by})
             """).FirstAsync(ct);
 
     private Task<decimal> UnpaidExpensesAsync(CancellationToken ct) =>
@@ -211,16 +211,16 @@ public sealed class SqlTreasuryQueries(
             .Sum(a => Math.Round(a.BaseBalance, 2));
 
         var recs = await db.Database.SqlQuery<DueRow>($"""
-            SELECT due_date AS "DueDate", (original_amount - paid_amount) AS "Amount"
+            SELECT due_date AS "DueDate", remaining_amount AS "Amount"
             FROM nexora.customer_receivable
             WHERE company_id = {Company} AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE','IN_DISPUTE')
-              AND (original_amount - paid_amount) > 0
+              AND remaining_amount > 0
             """).ToListAsync(ct);
         var pays = await db.Database.SqlQuery<DueRow>($"""
-            SELECT due_date AS "DueDate", (original_amount - paid_amount) AS "Amount"
+            SELECT due_date AS "DueDate", remaining_amount AS "Amount"
             FROM nexora.supplier_payable
             WHERE company_id = {Company} AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE')
-              AND (original_amount - paid_amount) > 0
+              AND remaining_amount > 0
             """).ToListAsync(ct);
         var unpaidExpenses = await UnpaidExpensesAsync(ct);
 
@@ -416,12 +416,12 @@ public sealed class SqlFinancialCloseService(NexoraDbContext db, ITenantContext 
             """).FirstAsync(ct);
 
         var rec = await db.Database.SqlQuery<CountTotal>($"""
-            SELECT COUNT(*)::int AS "Count", COALESCE(SUM(original_amount - paid_amount), 0) AS "Total"
+            SELECT COUNT(*)::int AS "Count", COALESCE(SUM(remaining_amount), 0) AS "Total"
             FROM nexora.customer_receivable
             WHERE company_id = {Company} AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE') AND due_date < {today}
             """).FirstAsync(ct);
         var pay = await db.Database.SqlQuery<CountTotal>($"""
-            SELECT COUNT(*)::int AS "Count", COALESCE(SUM(original_amount - paid_amount), 0) AS "Total"
+            SELECT COUNT(*)::int AS "Count", COALESCE(SUM(remaining_amount), 0) AS "Total"
             FROM nexora.supplier_payable
             WHERE company_id = {Company} AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE') AND due_date < {today}
             """).FirstAsync(ct);

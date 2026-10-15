@@ -210,6 +210,34 @@ public sealed class SqlTreasuryManagementService(
         return posted;
     }
 
+    /// <summary>
+    /// Solde d'ouverture (audit 2026-10, A-023). Un compte était toujours créé à zéro et aucune fonction ne permettait
+    /// d'enregistrer l'argent déjà en caisse ou en banque à la mise en service : trésorerie et grand livre partaient
+    /// d'un écart égal à ce montant. Seulement sur un compte sans mouvement ; idempotent par identifiant d'opération.
+    /// </summary>
+    public async Task<Result<PostingResultResponse>> RecordOpeningBalanceAsync(Guid accountId, TreasuryOpeningBalanceRequest r,
+        CancellationToken ct = default)
+    {
+        if (r.Amount == 0m) return Error.Validation("treasury.amount", "Le solde d'ouverture doit être différent de zéro.");
+        var account = await AccountAsync(accountId, ct);
+        if (account is null) return Error.NotFound("treasury.account_not_found", "Compte introuvable.");
+        if (account.Status != "active") return Error.Conflict("treasury.account_inactive", "Le compte doit être actif.");
+        var replay = await IsReplayAsync(r.OperationUuid, ct);
+        if (account.Movements > 0 && !replay)
+            return Error.Conflict("treasury.opening_after_movements",
+                "Le compte a déjà des mouvements : le solde d'ouverture se saisit avant toute opération.");
+        if (r.Amount < 0m && NoOverdraft.Contains(account.AccountType))
+            return Error.Validation("treasury.amount", "Une caisse ou un porte-monnaie ne s'ouvre pas en négatif.");
+        var at = r.Date is { } d ? BusinessDate.Noon(d) : clock.UtcNow;
+        if (at > clock.UtcNow) return Error.Validation("treasury.opening_date", "La date d'ouverture ne peut pas être future.");
+
+        var amount = Math.Round(r.Amount, 2, MidpointRounding.ToEven);
+        var posted = await ops.RecordTreasuryOpeningAsync(new RecordTreasuryOpeningRequest(r.OperationUuid, at, account.Id, amount, account.Currency), ct);
+        if (posted.IsSuccess)
+            await DescribeAsync(r.OperationUuid, string.IsNullOrWhiteSpace(r.Note) ? "Solde d'ouverture" : $"Solde d'ouverture — {r.Note.Trim()}", ct);
+        return posted;
+    }
+
     public async Task<Result<PostingResultResponse>> ChargeAsync(TreasuryChargeRequest r, CancellationToken ct = default)
     {
         if (r.Amount <= 0m) return Error.Validation("treasury.amount", "Le montant doit être positif.");

@@ -30,6 +30,7 @@ public sealed class PostingRuleSet : IPostingRuleSet
             ExpenseRecorded e => await Expense(e, ctx, ct),
             CashCountRecorded e => await CashCount(e, ctx, ct),
             FinancialTransferRecorded e => await Transfer(e, ctx, ct),
+            TreasuryOpeningBalanceRecorded e => await TreasuryOpening(e, ctx, ct),
             BankChargeRecorded e => await BankCharge(e, ctx, ct),
             ReceivableWrittenOff e => await ReceivableWriteOff(e, ctx, ct),
             InventoryWriteOffRecorded e => await InventoryWriteOff(e, ctx, ct),
@@ -247,6 +248,28 @@ public sealed class PostingRuleSet : IPostingRuleSet
         var (amountBase, rateId) = await ctx.ToFunctional(e.Amount, e.OccurredAt, ct);
         d.Debit(await ctx.TenderAccount(e.ToFinancialAccountId, ct), e.Amount, amountBase, rateId);
         d.Credit(await ctx.TenderAccount(e.FromFinancialAccountId, ct), e.Amount, amountBase, rateId);
+        return d;
+    }
+
+    /// <summary>Solde d'ouverture : D trésorerie / C report à nouveau (l'inverse pour un découvert).</summary>
+    private static async Task<JournalEntryDraft> TreasuryOpening(TreasuryOpeningBalanceRecorded e, PostingContext ctx, CancellationToken ct)
+    {
+        var d = new JournalEntryDraft("OD", ctx.DateOf(e.OccurredAt), ctx.FunctionalCurrency,
+            "treasury_opening", e.FinancialAccountId, "Solde d'ouverture de trésorerie");
+        var amount = e.Amount.Abs();
+        var (amountBase, rateId) = await ctx.ToFunctional(amount, e.OccurredAt, ct);
+        var treasury = await ctx.TenderAccount(e.FinancialAccountId, ct);
+        var carried = await ctx.Account(AccountKeys.RetainedEarnings, ct);
+        if (e.Amount.IsPositive)
+        {
+            d.Debit(treasury, amount, amountBase, rateId);
+            d.Credit(carried, amount, amountBase, rateId);
+        }
+        else
+        {
+            d.Debit(carried, amount, amountBase, rateId);
+            d.Credit(treasury, amount, amountBase, rateId);
+        }
         return d;
     }
 

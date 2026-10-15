@@ -21,6 +21,7 @@ public interface IFinanceOperations
     Task<Result<PostingResultResponse>> RecordCustomerPaymentAsync(RecordPaymentRequest r, CancellationToken ct = default);
     Task<Result<PostingResultResponse>> RecordSupplierPaymentAsync(RecordPaymentRequest r, CancellationToken ct = default);
     Task<Result<PostingResultResponse>> RecordTransferAsync(RecordTransferRequest r, CancellationToken ct = default);
+    Task<Result<PostingResultResponse>> RecordTreasuryOpeningAsync(RecordTreasuryOpeningRequest r, CancellationToken ct = default);
     Task<Result<PostingResultResponse>> RecordBankChargeAsync(RecordBankChargeRequest r, CancellationToken ct = default);
     Task<Result<PostingResultResponse>> RecordCashCountAsync(RecordCashCountRequest r, CancellationToken ct = default);
     Task<Result<PostingResultResponse>> RecordSupplierReturnAsync(RecordSupplierReturnRequest r, CancellationToken ct = default);
@@ -130,6 +131,10 @@ public sealed class FinanceOperations(
     public Task<Result<PostingResultResponse>> RecordTransferAsync(RecordTransferRequest r, CancellationToken ct) =>
         Run(new FinancialTransferRecorded(Company, r.OperationUuid, r.OccurredAt,
             r.FromFinancialAccountId, r.ToFinancialAccountId, new Money(r.Amount, r.Currency)) { UserId = tenant.UserId }, ct);
+
+    public Task<Result<PostingResultResponse>> RecordTreasuryOpeningAsync(RecordTreasuryOpeningRequest r, CancellationToken ct) =>
+        Run(new TreasuryOpeningBalanceRecorded(Company, r.OperationUuid, r.OccurredAt, r.FinancialAccountId,
+            new Money(r.Amount, r.Currency)) { UserId = tenant.UserId }, ct);
 
     public Task<Result<PostingResultResponse>> RecordBankChargeAsync(RecordBankChargeRequest r, CancellationToken ct) =>
         Run(new BankChargeRecorded(Company, r.OperationUuid, r.OccurredAt,
