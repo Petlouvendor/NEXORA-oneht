@@ -64,7 +64,46 @@ public sealed class FinanceEngineFixture : IAsyncLifetime
         }.ConnectionString;
         TestConnectionString = testConn;
 
+        // Exploitant de la plateforme (audit 2026-10, A-031) : plusieurs tests créent des entreprises indépendantes
+        // dans cette base partagée — l'installation y héberge donc plusieurs clients, et les opérations de portée
+        // plateforme (maintenance, tâches, taux de change…) y sont réservées à l'exploitant. L'utilisateur de test
+        // « direction » reçoit ce rôle, limité aux permissions d'exploitation ; les tests de refus utilisent un
+        // directeur d'entreprise ordinaire.
+        await using (var test = new NpgsqlConnection(testConn))
+        {
+            await test.OpenAsync();
+            await Exec(test, $"""
+                INSERT INTO nexora.role (id, company_id, name, description, system_role, status)
+                VALUES ('{PlatformOperatorRole}', NULL, 'platform_test_operator', 'Exploitant de plateforme (tests)', false, 'active');
+                INSERT INTO nexora.role_permission (role_id, permission_id)
+                SELECT '{PlatformOperatorRole}', id FROM nexora.permission
+                WHERE code IN ('operations.view', 'operations.manage', 'operations.correct_data', 'finance.update');
+                INSERT INTO nexora.access_scope (id, scope_type) VALUES ('{PlatformOperatorScope}', 'PLATFORM');
+                INSERT INTO nexora.user_role (user_id, role_id, scope_id) VALUES ('{UserId}', '{PlatformOperatorRole}', '{PlatformOperatorScope}');
+                """);
+        }
+
         Provider = BuildProvider(testConn);
+    }
+
+    private static readonly Guid PlatformOperatorRole = Guid.Parse("dce00000-0000-0000-0000-00000000f0a1");
+    private static readonly Guid PlatformOperatorScope = Guid.Parse("dce00000-0000-0000-0000-00000000f0a2");
+
+    /// <summary>Directeur d'entreprise ordinaire (rôle owner_direction sur la seule entreprise), sans portée plateforme.</summary>
+    public async Task<Guid> NewCompanyDirectorAsync(Guid companyId)
+    {
+        var id = Guid.NewGuid();
+        await using var c = new NpgsqlConnection(TestConnectionString);
+        await c.OpenAsync();
+        await Exec(c, $"""
+            INSERT INTO nexora.app_user (id, email, password_hash, full_name, status)
+            VALUES ('{id}', 'dir-{id:N}@test.demo', crypt('x', gen_salt('bf', 4)), 'Directeur d''entreprise', 'active');
+            INSERT INTO nexora.user_role (user_id, role_id, scope_id)
+            SELECT '{id}', r.id, sc.id FROM nexora.role r, nexora.access_scope sc
+            WHERE r.name = 'owner_direction' AND r.system_role AND sc.scope_type = 'COMPANY' AND sc.company_id = '{companyId}'
+            LIMIT 1;
+            """);
+        return id;
     }
 
     /// <summary>

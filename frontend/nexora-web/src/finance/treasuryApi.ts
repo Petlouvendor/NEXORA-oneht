@@ -167,3 +167,12 @@ export function parseStatementCsv(text: string): { lines: StatementImport["lines
   });
   return { lines, errors };
 }
+
+// --- Taux de change (audit 2026-10, A-017) ---
+/** 1 `baseCurrency` = `rate` `quoteCurrency`, à partir de `effectiveAt`. Un taux ne se modifie pas : on en saisit un nouveau. */
+export interface ExchangeRate {
+  id: string; baseCurrency: string; quoteCurrency: string; rate: number; effectiveAt: string; source: string; createdAt: string;
+}
+export const listExchangeRates = () => apiFetch<ExchangeRate[]>("/exchange-rates");
+export const recordExchangeRate = (body: { baseCurrency: string; quoteCurrency: string; rate: number; effectiveAt: string | null }) =>
+  apiFetch<ExchangeRate>("/exchange-rates", json("POST", body));

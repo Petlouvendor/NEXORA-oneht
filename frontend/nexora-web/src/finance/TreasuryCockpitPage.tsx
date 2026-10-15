@@ -18,6 +18,7 @@ import {
 import { AccountsPanel } from "@/finance/AccountsPanel";
 import { ExpensesPanel } from "@/finance/ExpensesPanel";
 import { ReconciliationPanel } from "@/finance/ReconciliationPanel";
+import { ExchangeRatesPanel } from "@/finance/ExchangeRatesPanel";
 import { ACCOUNT_TYPE } from "@/finance/treasuryApi";
 
 const SUSPENSE_KIND: Record<string, string> = {
@@ -104,6 +105,7 @@ export function TreasuryCockpitPage() {
             { id: "accounts", label: "Comptes" },
             { id: "expenses", label: "Dépenses" },
             { id: "reconciliation", label: "Rapprochement bancaire" },
+            { id: "rates", label: "Taux de change" },
             { id: "forecast", label: "Prévision" },
             { id: "suspense", label: `Suspens (${suspense.filter((s) => s.status === "open").length})` },
             { id: "close", label: "Clôture" },
@@ -119,6 +121,7 @@ export function TreasuryCockpitPage() {
       {tab === "accounts" && <AccountsPanel onChanged={load} />}
       {tab === "expenses" && <ExpensesPanel onChanged={load} />}
       {tab === "reconciliation" && <ReconciliationPanel />}
+      {tab === "rates" && <ExchangeRatesPanel />}
       {tab === "forecast" && (
         <Card>
           {forecast ? (

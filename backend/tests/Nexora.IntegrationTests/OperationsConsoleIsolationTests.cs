@@ -51,7 +51,8 @@ public sealed class OperationsConsoleIsolationTests(FinanceEngineFixture fx)
             """);
         try
         {
-            await using var s = Scope();
+            // Directeur d'entreprise ordinaire (l'utilisateur de test « direction » est exploitant de la plateforme).
+            await using var s = Scope(await fx.NewCompanyDirectorAsync(Company));
             var sp = s.ServiceProvider;
 
             // Opérations de portée plateforme : refusées.
