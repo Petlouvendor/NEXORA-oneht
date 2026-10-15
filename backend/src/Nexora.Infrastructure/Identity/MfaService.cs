@@ -94,7 +94,7 @@ public sealed class SqlMfaService(
         if (user.MfaEnabled) return Error.Conflict("mfa.already_enabled", "La MFA est déjà activée.");
         if (string.IsNullOrWhiteSpace(user.MfaPendingSecret))
             return Error.Validation("mfa.no_enrollment", "Aucun enrôlement en cours — recommencez.");
-        if (!Totp.Verify(user.MfaPendingSecret, request.Code, clock.UtcNow))
+        if (Totp.MatchStep(user.MfaPendingSecret, request.Code, clock.UtcNow) is not { } step)
             return Error.Validation("mfa.invalid_code", "Code invalide. Vérifiez l'heure de votre appareil.");
 
         var plain = Enumerable.Range(0, RecoveryCodeCount).Select(_ => GenerateRecoveryCode()).ToList();
@@ -105,7 +105,7 @@ public sealed class SqlMfaService(
             await db.Database.ExecuteSqlAsync($"""
                 UPDATE nexora.app_user
                 SET mfa_enabled = true, mfa_secret = mfa_pending_secret, mfa_pending_secret = NULL,
-                    mfa_enrolled_at = now(), updated_at = now()
+                    mfa_enrolled_at = now(), mfa_last_step = {step}, updated_at = now()
                 WHERE id = {CurrentUser}
                 """, token);
             await db.Database.ExecuteSqlAsync($"DELETE FROM nexora.mfa_recovery_code WHERE user_id = {CurrentUser}", token);
@@ -245,12 +245,21 @@ public sealed class SqlMfaService(
 
     // ----------------------------------------------------------------- Helpers
 
-    /// <summary>Valide un code : d'abord TOTP, sinon un code de récupération à usage unique.</summary>
+    /// <summary>
+    /// Valide un code : d'abord TOTP, sinon un code de récupération à usage unique. Un code TOTP n'est accepté qu'une
+    /// fois : son pas de temps doit suivre le dernier accepté (audit 2026-10, A-011 ; avant, il restait rejouable
+    /// pendant toute sa fenêtre de validité, jusqu'à 90 s). La mise à jour conditionnelle départage deux usages
+    /// simultanés du même code.
+    /// </summary>
     private async Task<bool> VerifyCodeAsync(Guid userId, string? secret, string code, CancellationToken ct)
     {
-        if (!string.IsNullOrWhiteSpace(secret) && Totp.Verify(secret, code, clock.UtcNow)) return true;
-
         using var _ = tenant.BeginSystemScope();
+        if (!string.IsNullOrWhiteSpace(secret) && Totp.MatchStep(secret, code, clock.UtcNow) is { } step)
+            return await db.Database.ExecuteSqlAsync($"""
+                UPDATE nexora.app_user SET mfa_last_step = {step}
+                WHERE id = {userId} AND (mfa_last_step IS NULL OR mfa_last_step < {step})
+                """, ct) > 0;
+
         var consumed = await db.Database.ExecuteSqlAsync($"""
             UPDATE nexora.mfa_recovery_code SET used_at = now()
             WHERE user_id = {userId} AND code_hash = {Sha256(NormalizeRecovery(code))} AND used_at IS NULL
@@ -265,7 +274,8 @@ public sealed class SqlMfaService(
             using var _ = tenant.BeginSystemScope();
             await db.Database.ExecuteSqlAsync($"""
                 UPDATE nexora.app_user
-                SET mfa_enabled = false, mfa_secret = NULL, mfa_pending_secret = NULL, mfa_enrolled_at = NULL, updated_at = now()
+                SET mfa_enabled = false, mfa_secret = NULL, mfa_pending_secret = NULL, mfa_enrolled_at = NULL,
+                    mfa_last_step = NULL, updated_at = now()
                 WHERE id = {userId}
                 """, token);
             await db.Database.ExecuteSqlAsync($"DELETE FROM nexora.mfa_recovery_code WHERE user_id = {userId}", token);
