@@ -4,15 +4,18 @@ namespace Nexora.RecetteSeed;
 internal sealed record Co(
     string Key, Guid Id, string Name, Guid Location, Guid Reserve,
     Guid Cash, Guid Bank, Guid Momo, Guid Register, Guid CashMethod, Guid CardMethod,
-    Guid DefaultUnit, Guid TaxExempt, Guid TaxVat, string Prefix)
+    Guid DefaultUnit, Guid TaxExempt, Guid TaxVat, string Prefix, bool BankInUsd = false)
 {
+    /// <summary>Compte qui reçoit les cartes en gourdes : la banque si elle est en HTG, sinon aucun (pas de carte).</summary>
+    public Guid? HtgCardAccount => BankInUsd ? null : Bank;
+
     public static readonly Co Pharmacy = new(
         "pharma", G("0000-0000000000c1"), "Pharmacie ABC",
         Location: G("0000-00000000a003"), Reserve: G("0000-00000000a004"),
         Cash: G("0000-00000000a051"), Bank: G("0000-00000000a052"), Momo: G("0000-00000000a053"),
         Register: G("0000-00000000a061"), CashMethod: G("0000-00000000a081"), CardMethod: G("0000-00000000a082"),
         DefaultUnit: G("0000-00000000a011"), TaxExempt: G("0000-00000000a021"), TaxVat: G("0000-00000000a022"),
-        Prefix: "PH");
+        Prefix: "PH", BankInUsd: true);   // Compte Unibank en USD
 
     public static readonly Co Supermarket = new(
         "super", G("0000-0000000000c3"), "Supermarché ABC",

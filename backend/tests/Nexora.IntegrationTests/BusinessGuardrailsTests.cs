@@ -74,6 +74,31 @@ public sealed class BusinessGuardrailsTests(FinanceEngineFixture fx)
     }
 
     [Fact]
+    public async Task A_sale_in_gourdes_cannot_be_tendered_to_a_dollar_account()
+    {
+        // Compte Unibank de la Pharmacie : tenu en USD. Avant, 1 000 HTG y devenaient 1 000 USD (écriture en HTG).
+        var usdBank = Guid.Parse("dce00000-0000-0000-0000-00000000a052");
+        await using var s = Scope();
+        var db = s.ServiceProvider.GetRequiredService<NexoraDbContext>();
+        var product = await Stocked(s.ServiceProvider, 40m, 5m);
+        var before = await db.FinancialAccounts.AsNoTracking().Where(a => a.Id == usdBank).Select(a => a.CurrentBalance).SingleAsync();
+
+        var sale = await s.ServiceProvider.GetRequiredService<SalesService>().CheckoutAsync(new CheckoutCommand(
+            Guid.NewGuid(), Officine, null, null, null, null, "HTG", [new CheckoutLine(product, 1m, null, 0m, null)],
+            [new TenderInput(usdBank, null, 40m, "CB")], 40m, null, null, null, null));
+
+        sale.IsSuccess.Should().BeFalse("la caisse le refusait déjà");
+
+        // Le moteur lui-même, par un chemin sans contrôle en amont (frais bancaires) : avant, 40 HTG devenaient 40 USD.
+        var charge = await s.ServiceProvider.GetRequiredService<Nexora.Application.Finance.IFinanceOperations>().RecordBankChargeAsync(
+            new Nexora.Contracts.Finance.RecordBankChargeRequest(Guid.NewGuid(), DateTimeOffset.UtcNow, usdBank, 40m, "HTG", "Frais"));
+        charge.IsSuccess.Should().BeFalse("l'ancien moteur retirait 40 du solde en dollars");
+        charge.Error!.Message.Should().Contain("n'est pas tenu en HTG");
+        (await db.FinancialAccounts.AsNoTracking().Where(a => a.Id == usdBank).Select(a => a.CurrentBalance).SingleAsync())
+            .Should().Be(before);
+    }
+
+    [Fact]
     public async Task The_accounting_screen_cannot_reverse_an_entry_born_from_a_sale()
     {
         await using var s = Scope();
