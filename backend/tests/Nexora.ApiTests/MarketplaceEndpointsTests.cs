@@ -14,8 +14,7 @@ namespace Nexora.ApiTests;
 public sealed class MarketplaceEndpointsTests(WebApplicationFactory<Program> factory)
     : IClassFixture<WebApplicationFactory<Program>>
 {
-    private const string DevConnString =
-        "Host=localhost;Port=5432;Database=nexora;Username=nexora_app;Password=nexora_app_dev;Search Path=nexora,public;Include Error Detail=true";
+    private static readonly string DevConnString = ApiTestDatabase.App;
 
     private HttpClient Client() => factory.WithWebHostBuilder(b =>
         b.ConfigureAppConfiguration((_, cfg) => cfg.AddInMemoryCollection(
