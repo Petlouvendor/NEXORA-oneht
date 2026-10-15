@@ -102,4 +102,34 @@ public sealed class RlsSystemScopeTests(FinanceEngineFixture fx)
         during.Should().Be(1, "la portée système ouverte dans la transaction lève la RLS");
         after.Should().Be(0, "la RLS revient dès la fin de la portée, même transaction");
     }
+
+    /// <summary>
+    /// Audit 2026-10, A-029 et A-030 (V101) : la base refuse elle-même de modifier un rôle système partagé par toutes
+    /// les entreprises, d'écrire dans le journal d'audit d'une autre entreprise, et au rôle applicatif d'écrire dans le
+    /// registre des migrations.
+    /// </summary>
+    [Fact]
+    public async Task The_database_refuses_writes_on_shared_roles_foreign_audit_and_the_migration_registry()
+    {
+        await using var appRole = fx.CreateAppRoleProvider();
+        await using var s = appRole.CreateAsyncScope();
+        As(s.ServiceProvider, Direction, Pharmacie);
+        var db = s.ServiceProvider.GetRequiredService<NexoraDbContext>();
+
+        (await db.Database.ExecuteSqlAsync($"UPDATE nexora.role SET description = 'piraté' WHERE system_role AND name = 'cashier'"))
+            .Should().Be(0, "un rôle système n'est pas modifiable par une session d'entreprise");
+        (await db.Database.ExecuteSqlAsync($"""
+            DELETE FROM nexora.role_permission WHERE role_id = (SELECT id FROM nexora.role WHERE system_role AND name = 'cashier')
+            """)).Should().Be(0, "ni ses permissions");
+
+        var foreignAudit = async () => await db.Database.ExecuteSqlAsync($"""
+            INSERT INTO nexora.audit_log (company_id, action, entity_type) VALUES ({Restaurant}, 'INSERT', 'test')
+            """);
+        await foreignAudit.Should().ThrowAsync<Exception>("on n'écrit pas dans le journal d'une autre entreprise");
+
+        var registry = async () => await db.Database.ExecuteSqlAsync($"""
+            INSERT INTO nexora.schema_migration (version, filename, checksum) VALUES ('V998', 'V998__x.sql', 'x')
+            """);
+        await registry.Should().ThrowAsync<Exception>("le registre des migrations n'est écrit que par le compte propriétaire");
+    }
 }

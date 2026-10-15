@@ -326,3 +326,23 @@ de la semaine et la période inversée. Suite d'intégration complète : 516/520
 `CustomerAccountTests` (« numéro client existe déjà »), jamais reproduit isolément ni dans les 6 autres passages.
 Le verrou de numérotation, la RLS de la table et l'unicité du journal d'audit ont été vérifiés ; la cause n'est pas
 établie. Le message instrumenté (numéro tenté, contrainte exacte) permettra de la caractériser si elle se reproduit.
+
+## Étape 14 — Politiques d'écriture et moindre privilège en base (A-029, A-030)
+
+**Défauts.** La politique de `role` laissait aussi écrire les lignes globales (rôles système partagés par toutes les
+entreprises) ; `role_permission` n'avait pas de RLS ; `audit_log` acceptait toute insertion (`WITH CHECK true`). Le rôle
+applicatif pouvait écrire dans le registre des migrations et modifier ou supprimer le journal d'audit (bloqué par un
+déclencheur seulement).
+
+**Correction : migration V101.** `role` : lecture des rôles système et des rôles de ses entreprises, écriture de ces
+derniers seulement ; `role_permission` : RLS forcée, mêmes règles à travers le rôle ; `audit_log` : insertion bornée aux
+entreprises du contexte (ou sans entreprise) ; `REVOKE` des écritures sur `schema_migration` et des modifications et
+suppressions sur `audit_log` pour `nexora_app` (les rôles créés par l'assistant d'installation en héritent). La portée
+système garde tous les droits.
+
+**Outil de test.** `NEXORA_IT_TEMPLATE` : la fixture d'intégration peut cloner une autre base modèle que `nexora` — un
+clone jetable auquel on a appliqué les migrations en attente — pour les tester sans toucher à la base de développement.
+
+**Tests.** `RlsSystemScopeTests.The_database_refuses_writes_on_shared_roles_foreign_audit_and_the_migration_registry`,
+avec le rôle applicatif réel. Suite d'intégration complète sur un modèle jetable migré (V100 + V101) : **522/522**, y
+compris les tests de mise en production, qui n'échouaient que parce que la base modèle `nexora` n'est pas migrée.

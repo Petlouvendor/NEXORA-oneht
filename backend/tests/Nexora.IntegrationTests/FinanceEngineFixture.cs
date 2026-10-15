@@ -16,7 +16,13 @@ namespace Nexora.IntegrationTests;
 /// </summary>
 public sealed class FinanceEngineFixture : IAsyncLifetime
 {
-    private const string SourceDb = "nexora";
+    /// <summary>
+    /// Base modèle clonée par la fixture : <c>nexora</c> par défaut ; <c>NEXORA_IT_TEMPLATE</c> désigne un autre modèle —
+    /// par exemple un clone jetable auquel on a appliqué une migration en attente, pour la tester sans toucher à la
+    /// base de développement (audit 2026-10).
+    /// </summary>
+    private static readonly string SourceDb =
+        Environment.GetEnvironmentVariable("NEXORA_IT_TEMPLATE") is { Length: > 0 } template ? template : "nexora";
     private readonly string _testDb = $"nexora_fin_it_{DateTime.UtcNow:HHmmss}";
 
     public ServiceProvider Provider { get; private set; } = default!;
