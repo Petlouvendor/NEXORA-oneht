@@ -310,10 +310,11 @@ function SaleScreen({ limits, session, onSessionChanged, profile, onProfile }: {
       return;
     }
     if (p.availability === "out") toast.push(`« ${p.name} » est indiqué en rupture : le serveur confirmera le stock.`, "warning");
+    const units = p.packSize && p.packSize > 0 ? p.packSize : 1;   // code de carton : son contenu entier
     setCart((c) => {
       const i = c.findIndex((l) => l.productId === p.productId);
-      if (i >= 0) return c.map((l, idx) => (idx === i ? { ...l, quantity: l.quantity + 1 } : l));
-      return [...c, { productId: p.productId, name: p.name, quantity: 1, unitPrice: unitPriceExcludingTax(p), discount: 0, taxRate: p.taxRate ?? 0 }];
+      if (i >= 0) return c.map((l, idx) => (idx === i ? { ...l, quantity: l.quantity + units } : l));
+      return [...c, { productId: p.productId, name: p.name, quantity: units, unitPrice: unitPriceExcludingTax(p), discount: 0, taxRate: p.taxRate ?? 0 }];
     });
   }
   const updateLine = (i: number, patch: Partial<CartLine>) =>

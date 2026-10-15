@@ -346,3 +346,31 @@ clone jetable auquel on a appliqué les migrations en attente — pour les teste
 **Tests.** `RlsSystemScopeTests.The_database_refuses_writes_on_shared_roles_foreign_audit_and_the_migration_registry`,
 avec le rôle applicatif réel. Suite d'intégration complète sur un modèle jetable migré (V100 + V101) : **522/522**, y
 compris les tests de mise en production, qui n'échouaient que parce que la base modèle `nexora` n'est pas migrée.
+
+## Étape 15 — Extourne, crédit hors ligne, codes de carton et de balance (A-006, A-016, A-015)
+
+**A-006 — extourne depuis l'écran Comptabilité.** Contrepasser l'écriture d'une vente, d'un paiement ou d'une facture
+n'inversait que le grand livre : créance, trésorerie et stock restaient tels quels, et les sous-registres ne
+correspondaient plus aux comptes. `IReversalService.ReverseUserEntryAsync` (point d'accès de l'écran) n'accepte plus que
+les écritures d'origine `manual` ou `adjustment` ; les autres répondent `accounting.reverse_business_entry` (« annulez
+l'opération elle-même »). L'écran masque le bouton pour ces écritures et l'explique. Les annulations métier (retour,
+annulation de facture…) gardent l'extourne interne.
+
+**A-016 — crédit hors ligne.** À la synchronisation, le crédit d'une vente hors ligne était estimé sur le seul prix
+forcé : 0 dans le cas courant (la caisse ne force aucun prix), si bien que l'interdiction du crédit hors ligne et son
+plafond ne s'appliquaient jamais. L'estimation passe par la tarification du serveur, la même que l'encaissement (listes
+de prix, promotions, coupon, taxes) ; un article inconnu garde l'ancienne estimation, la vente étant de toute façon
+refusée à l'encaissement.
+
+**A-015 — lecture caisse.** Un code-barres de carton (`pack_size` 12) ajoutait 1 unité ; les étiquettes de balance
+n'étaient pas décodées. La lecture renvoie la quantité à ajouter (`PackSize`), en ligne comme hors ligne (le profil hors
+ligne transporte les codes de carton et les préfixes balance). Étiquettes de balance : convention GS1 des codes à usage
+interne — EAN-13 commençant par 2, les 7 premiers chiffres désignent l'article (code-barres de l'article marqué
+`is_weight_embedded`), les 5 suivants le poids en grammes, puis la clé de contrôle (vérifiée). Le même décodeur existe
+côté serveur (`ScaleLabel`) et côté caisse (`scaleLabel.ts`). Les étiquettes à **prix** intégré ne sont pas traitées
+(aucun paramètre ne dit quel format la balance imprime).
+
+**Tests.** `BusinessGuardrailsTests` : vente hors ligne à crédit sans prix forcé → `CONFLICT` (l'ancien code la
+synchronisait : vérifié en remettant l'ancien `SyncServices`) ; extourne d'une écriture de vente refusée ; carton de 12 →
+12 ; étiquette de 1 250 g → 1,25 et le code lu renvoyé. `ScaleLabelTests` (unitaires) et `scaleLabel.test.ts`,
+`offlineStore.test.ts` (clé fausse, poids nul, code ordinaire refusés).

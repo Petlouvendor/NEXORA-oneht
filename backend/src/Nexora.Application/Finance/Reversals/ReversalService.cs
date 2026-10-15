@@ -10,6 +10,14 @@ public interface IReversalService
 {
     /// <summary>Extourne d'une écriture validée (Phase 4 §28) : lien source → correction, motif exigé.</summary>
     Task<Result<Guid>> ReverseAsync(Guid journalEntryId, string reason, DateOnly? reversalDate = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// Extourne demandée par un utilisateur (écran Comptabilité) : seulement une écriture manuelle ou d'ajustement
+    /// (audit 2026-10, A-006). Une écriture née d'une opération (vente, paiement, dépense, facture…) se corrige en
+    /// annulant l'opération, qui remet aussi d'aplomb créances, trésorerie et stock ; l'extourne seule ne corrigeait
+    /// que le grand livre et laissait les sous-registres faux.
+    /// </summary>
+    Task<Result<Guid>> ReverseUserEntryAsync(Guid journalEntryId, string reason, DateOnly? reversalDate = null, CancellationToken ct = default);
 }
 
 public sealed class ReversalService(
@@ -20,6 +28,18 @@ public sealed class ReversalService(
     ITenantContext tenant,
     ILogger<ReversalService> logger, IBusinessCalendar calendar) : IReversalService
 {
+    public async Task<Result<Guid>> ReverseUserEntryAsync(
+        Guid journalEntryId, string reason, DateOnly? reversalDate = null, CancellationToken ct = default)
+    {
+        var source = await journalStore.GetWithLinesAsync(journalEntryId, ct);
+        if (source is null) return Error.NotFound("accounting.entry_not_found", "Écriture introuvable.");
+        if (source.Origin is not ("manual" or "adjustment"))
+            return Error.Conflict("accounting.reverse_business_entry",
+                "Cette écriture provient d'une opération (vente, paiement, dépense, facture…) : annulez l'opération elle-même, "
+                + "qui corrige aussi créances, trésorerie et stock.");
+        return await ReverseAsync(journalEntryId, reason, reversalDate, ct);
+    }
+
     public async Task<Result<Guid>> ReverseAsync(
         Guid journalEntryId, string reason, DateOnly? reversalDate = null, CancellationToken ct = default)
     {

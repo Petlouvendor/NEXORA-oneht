@@ -2,6 +2,7 @@ import { apiFetch } from "@/core/apiClient";
 import { secureGet, secureSet, secureStoreAvailable } from "@/shared/secureStore";
 import type { CurrentSession, PosProduct } from "@/pos/posApi";
 import type { TenderMethodOption } from "@/pos/tenders";
+import { decodeScaleLabel } from "@/pos/scaleLabel";
 
 /**
  * Caisse hors ligne (finalisation, phase 6). Tant que le réseau est là, la caisse télécharge son profil hors
@@ -14,6 +15,10 @@ export interface OfflineCatalogItem {
   productId: string; name: string; sku: string; barcode: string | null; codes: string[]; searchText: string;
   salePrice: number | null; currency: string | null; availability: PosProduct["availability"];
   taxRate?: number; priceIncludesTax?: boolean;
+  /** Codes de conditionnement « code=quantité » (carton de 12 → 12). */
+  packCodes?: string[] | null;
+  /** Préfixes d'étiquettes de balance (poids intégré). */
+  weightCodes?: string[] | null;
 }
 export interface OfflinePolicy {
   allowOfflineSales: boolean; allowOfflineCredit: boolean; offlineCreditLimit: number; allowOfflineDiscount: boolean;
@@ -117,7 +122,16 @@ export function searchOffline(catalog: OfflineCatalogItem[], term: string, max =
 export function scanOffline(catalog: OfflineCatalogItem[], code: string): PosProduct | null {
   const c = code.trim();
   const hit = catalog.find((i) => i.codes.includes(c) || i.sku.toLowerCase() === c.toLowerCase());
-  return hit ? toProduct(hit) : null;
+  if (!hit) {
+    // Étiquette de balance : article désigné par le préfixe, quantité = poids lu.
+    const label = decodeScaleLabel(c);
+    const weighed = label && catalog.find((i) => (i.weightCodes ?? []).includes(label.prefix));
+    return weighed ? { ...toProduct(weighed), barcode: c, packSize: label.kilograms } : null;
+  }
+  // Code de carton : la caisse ajoute son contenu entier, comme en ligne (audit 2026-10, A-015).
+  const pack = (hit.packCodes ?? []).map((e) => e.split("=")).find(([code]) => code === c);
+  const packSize = pack ? Number(pack[1]) : NaN;
+  return { ...toProduct(hit), packSize: packSize > 0 ? packSize : 1 };
 }
 
 export interface OfflineSaleFacts {
