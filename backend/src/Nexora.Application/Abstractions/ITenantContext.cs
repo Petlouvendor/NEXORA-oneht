@@ -42,4 +42,12 @@ public interface ITenantContext
 
     /// <summary>Ouvre une portée système (bypass RLS) pour les requêtes d'infrastructure (IAM, sync).</summary>
     IDisposable BeginSystemScope();
+
+    /// <summary>
+    /// Levé quand la portée système commence ou se termine (audit 2026-10, A-009). Le contexte RLS n'était posé qu'à
+    /// l'ouverture de la connexion : dans une transaction (connexion déjà ouverte), une portée système était sans
+    /// effet, et une transaction ouverte dans une portée système en gardait la levée de RLS après sa fin. La connexion
+    /// ouverte réapplique désormais son contexte à chaque changement.
+    /// </summary>
+    event Action? SystemScopeChanged;
 }

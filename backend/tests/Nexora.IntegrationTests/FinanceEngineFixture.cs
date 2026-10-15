@@ -174,9 +174,11 @@ internal sealed class TestTenantContext : ITenantContext
     public IReadOnlyCollection<Guid> CompanyIds => _companies;
     public IReadOnlyCollection<Guid> GroupIds => _groups;
     public Guid? ActiveCompanyId { get; private set; }
-    public bool BypassRls { get; private set; }
+    private int _systemDepth;
+    public bool BypassRls => _systemDepth > 0;
     public IReadOnlyCollection<string>? ApiScopes { get; private set; }
     public IReadOnlyCollection<Guid>? EstablishmentIds { get; private set; }
+    public event Action? SystemScopeChanged;
 
     public void SetEstablishments(IEnumerable<Guid>? establishmentIds)
         => EstablishmentIds = establishmentIds?.Distinct().ToArray();
@@ -191,12 +193,18 @@ internal sealed class TestTenantContext : ITenantContext
     }
     public IDisposable BeginSystemScope()
     {
-        BypassRls = true;
+        if (++_systemDepth == 1) SystemScopeChanged?.Invoke();
         return new Reset(this);
     }
     private sealed class Reset(TestTenantContext o) : IDisposable
     {
-        public void Dispose() => o.BypassRls = false;
+        private bool _done;
+        public void Dispose()
+        {
+            if (_done) return;
+            _done = true;
+            if (--o._systemDepth == 0) o.SystemScopeChanged?.Invoke();
+        }
     }
 }
 
