@@ -295,7 +295,7 @@ public sealed class SqlEmployeeService(
         if (text.Contains("employee_contract_no_overlap", StringComparison.Ordinal)) return "Ce contrat chevauche un autre contrat de l'employé.";
         if (text.Contains("employee_user_uk", StringComparison.Ordinal)) return "Cet utilisateur est déjà rattaché à un autre dossier employé.";
         if (text.Contains("_fk", StringComparison.Ordinal)) return "Département, responsable ou établissement introuvable dans l'entreprise.";
-        return text;
+        return pg is null ? ex.Message : Persistence.DatabaseErrors.ClientMessage(pg);
     }
 
     public async Task<Result<EmployeeDto>> UpdateAsync(Guid employeeId, SaveEmployeeRequest r, CancellationToken ct = default)
@@ -636,7 +636,7 @@ public sealed class SqlEmployeeService(
         }
         catch (PostgresException ex) when (ex.SqlState == "23514")
         {
-            return Error.Conflict("payroll.period_locked", ex.MessageText);
+            return Error.Conflict("payroll.period_locked", Persistence.DatabaseErrors.ClientMessage(ex));
         }
         logger.LogInformation("Salaire de {Employee} modifié au {Date}", employeeId, r.EffectiveDate);
         return Result.Success(ToDto(await SalaryQuery(employeeId).Where(s => s.Id == id).FirstAsync(ct)));

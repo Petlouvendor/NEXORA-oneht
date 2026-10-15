@@ -33,7 +33,7 @@ public sealed class MaintenanceModeMiddleware(RequestDelegate next)
 
         if (tenant.UserId is { } userId)
         {
-            var profile = await permissions.LoadProfileAsync(userId, context.RequestAborted);
+            var profile = await Security.RequestPermissionProfile.GetAsync(context, permissions, userId, context.RequestAborted);
             if (profile.HasPermission(Permissions.Operations.Manage, tenant.ActiveCompanyId))
             {
                 await next(context);

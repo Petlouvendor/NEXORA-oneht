@@ -421,3 +421,25 @@ application.
 **Tests.** `MfaAuthenticationTests.A_totp_code_already_accepted_is_refused_on_a_new_challenge` : le code de l'enrôlement
 est refusé à la connexion (l'ancien code l'acceptait : vérifié), le code suivant passe une fois, pas deux. Les tests qui
 réutilisaient le code de l'enrôlement utilisent le pas suivant.
+
+## Étape 18 — Messages de la base, profil de permissions, dépendance inutile (priorité 8, P-001)
+
+**Messages PostgreSQL bruts.** L'unité de travail transmettait au client le texte de PostgreSQL : une violation
+d'unicité ou de clé étrangère affichait noms de tables, de contraintes et valeurs (« duplicate key value violates unique
+constraint … »). `DatabaseErrors.ClientMessage` garde intacts les refus métier levés par les déclencheurs
+(`RAISE EXCEPTION`, y compris les 63 levés sous le code `check_violation`, reconnus à leur contexte « at RAISE » et à
+l'absence de contrainte) et remplace les autres par un message neutre selon leur nature (doublon, référence, valeur
+obligatoire, règle, conflit concurrent, droit). L'exception d'origine reste attachée : les traductions existantes par
+nom de contrainte (paie, tiers, RH) fonctionnent comme avant. Appliqué à l'unité de travail et aux replis des services
+de paie et RH. L'assistant d'installation garde le message complet (destiné à l'administrateur qui installe).
+
+**P-001 — profil de permissions.** Chaque attribut `[RequirePermission]` (classe et action) rechargeait le profil (3 à 4
+requêtes), puis le mode maintenance une fois de plus. Le pipeline HTTP le charge désormais une fois par requête
+(`RequestPermissionProfile`, rangé dans `HttpContext.Items`). Les services gardent leur propre chargement, à jour si
+un rôle change pendant la requête.
+
+**FluentValidation.** Référencé par l'API et la couche application, jamais utilisé : retiré.
+
+**Tests.** `DatabaseErrorsTests` sur de vraies erreurs PostgreSQL : doublon → message neutre sans nom de table ni de
+contrainte ; suppression d'une écriture validée → message du déclencheur conservé. `RequestPermissionProfileTests` :
+un chargement par requête et par utilisateur. Paie, RH, comptabilité, intégrité du modèle : verts.
