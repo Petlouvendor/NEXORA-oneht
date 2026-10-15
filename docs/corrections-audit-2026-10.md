@@ -443,3 +443,22 @@ un rôle change pendant la requête.
 **Tests.** `DatabaseErrorsTests` sur de vraies erreurs PostgreSQL : doublon → message neutre sans nom de table ni de
 contrainte ; suppression d'une écriture validée → message du déclencheur conservé. `RequestPermissionProfileTests` :
 un chargement par requête et par utilisateur. Paie, RH, comptabilité, intégrité du modèle : verts.
+
+## Étape 19 — Écrans qui promettaient ce qu'ils ne font pas (A-031 bascules, remboursement réel)
+
+**Bascules de fonctionnalité.** `IFeatureFlagService.IsEnabledAsync` n'est appelé par aucune fonctionnalité : créer
+ou désactiver une bascule ne change rien, alors que l'aide de l'écran parlait de « coupe-circuit ». Décider quelles
+fonctionnalités relier est un choix produit ; en attendant, l'écran Exploitation le dit en clair (« registre
+préparatoire… ne change rien au fonctionnement »).
+
+**Remboursement d'un paiement en ligne réel.** Aucun fournisseur réel (MonCash, carte) ne rembourse par API : le serveur
+refusait toujours, mais l'écran proposait « Rembourser » et ne donnait la marche à suivre qu'après l'échec. Le bouton
+est réservé aux paiements simulés ; un paiement réel confirmé affiche « Comment rembourser ? » (portail du fournisseur,
+puis annulation du versement dans le compte du client).
+
+**Test frontend instable.** `noNativeDialogs.test.ts` (lecture de tout `src/`) échouait par dépassement du délai de 5 s
+quand la suite complète tourne en parallèle — « Test timed out in 5000ms », deux fois de suite ; 0,9 s seul. Délai porté
+à 30 s ; la règle vérifiée est inchangée.
+
+**Tests.** `paymentsApi.test.ts` : actions d'un paiement réel confirmé (marche à suivre, pas de bouton voué au refus).
+Suite frontend : 279/279.

@@ -20,5 +20,5 @@ describe("aucune boîte native du navigateur dans l'interface", () => {
     };
     walk(root);
     expect(offenders).toEqual([]);
-  });
+  }, 30_000);   // lecture de tout src/ (OneDrive) : 0,9 s seul, plus de 5 s quand la suite complète tourne en parallèle
 });
