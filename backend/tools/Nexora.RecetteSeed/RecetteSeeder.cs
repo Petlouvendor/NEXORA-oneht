@@ -543,12 +543,15 @@ internal sealed class RecetteSeeder(IServiceProvider root, string connectionStri
             tenders = [new TenderInput(co.Bank, null, total, "USD")];
         else
         {
+            // Carte : seulement sur un compte en gourdes — une vente en HTG ne s'encaisse pas sur un compte en USD (le
+            // moteur le refuse depuis l'audit 2026-10 ; avant, 77 ventes de la Pharmacie gonflaient ainsi le compte USD).
             var roll = _rng.NextDouble();
+            var card = co.HtgCardAccount;
             tenders = roll switch
             {
-                < 0.15 => [new TenderInput(co.Bank, co.CardMethod, total, $"CB-{_rng.Next(1000, 9999)}")],
+                < 0.15 when card is { } c => [new TenderInput(c, co.CardMethod, total, $"CB-{_rng.Next(1000, 9999)}")],
                 < 0.25 => [new TenderInput(co.Momo, null, total, $"MC-{_rng.Next(100000, 999999)}")],
-                < 0.30 when total > 200 => [new TenderInput(co.Bank, co.CardMethod, Math.Round(total / 2, 2), "CB-mixte"),
+                < 0.30 when total > 200 && card is { } c => [new TenderInput(c, co.CardMethod, Math.Round(total / 2, 2), "CB-mixte"),
                                              new TenderInput(co.Cash, co.CashMethod, Math.Ceiling(total / 2 / 50) * 50, null)],
                 _ => [new TenderInput(co.Cash, co.CashMethod, Math.Ceiling(total / 50) * 50, null)],
             };
