@@ -382,8 +382,7 @@ mot de passe : le temps de réponse révélait si le compte existe. Une empreint
 coût. (2) La réinitialisation de la MFA d'un autre utilisateur exigeait la permission « quelque part » et une entreprise
 commune : un directeur d'une entreprise, simple caissier d'une autre, pouvait réinitialiser la MFA des caissiers de la
 seconde. La permission doit être détenue dans une entreprise (ou un groupe) partagée avec la cible, ou au niveau
-plateforme. (3) **Non corrigé : le rejeu d'un code TOTP dans sa fenêtre de validité.** Il faut conserver le dernier pas
-de temps accepté par utilisateur, donc une migration ; laissé pour une étape dédiée.
+plateforme. (3) Le rejeu d'un code TOTP dans sa fenêtre de validité demande une migration : traité à l'étape 17.
 
 **A-024 — métriques.** `/api/v1/metrics` était anonyme et seul le chemin exact était bloqué par Caddy :
 `/api/v1.0/metrics` ou `/api/v1/metrics/` passaient. L'API ne sert plus la page qu'à une adresse interne (après
@@ -403,3 +402,22 @@ production » ont été infirmés par l'audit, deux réserves sont obsolètes, e
 `MfaAuthenticationTests.Reset_permission_held_in_another_company_does_not_reach_a_shared_company` ;
 `OperationsEndpointsTests` : adresse publique → 404 pour trois écritures du chemin, 200 avec le jeton. Les trois échouent
 sur l'ancien code (vérifié en remettant chaque fichier d'origine).
+
+## Étape 17 — Anti-rejeu des codes TOTP (fin de A-011)
+
+**Défaut.** Un code TOTP restait accepté pendant toute sa fenêtre (pas courant ± 1, jusqu'à 90 s) : un code observé
+— par-dessus l'épaule, sur un enregistrement d'écran, ou relayé par une page d'hameçonnage — servait une seconde fois, y
+compris le code saisi pour confirmer l'enrôlement.
+
+**Correction : migration V102** (`app_user.mfa_last_step`, dernier pas de temps accepté). `Totp.MatchStep` donne le pas
+auquel le code correspond ; la vérification (connexion, confirmation renforcée, code de l'utilisateur courant) n'accepte
+le code que si une mise à jour conditionnelle `mfa_last_step < pas` réussit — deux usages simultanés du même code ne
+passent donc pas tous les deux. La confirmation d'enrôlement enregistre son pas ; la réinitialisation de la MFA l'efface.
+Les codes de récupération, déjà à usage unique, sont inchangés.
+
+**Effet visible.** Un utilisateur qui se reconnecte dans les 30 secondes doit attendre le code suivant de son
+application.
+
+**Tests.** `MfaAuthenticationTests.A_totp_code_already_accepted_is_refused_on_a_new_challenge` : le code de l'enrôlement
+est refusé à la connexion (l'ancien code l'acceptait : vérifié), le code suivant passe une fois, pas deux. Les tests qui
+réutilisaient le code de l'enrôlement utilisent le pas suivant.

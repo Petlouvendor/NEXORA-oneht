@@ -105,8 +105,9 @@ public sealed class MfaAuthenticationTests(FinanceEngineFixture fx)
         first.Value.MfaToken.Should().NotBeNullOrEmpty();
 
         var verify = s2.ServiceProvider.GetRequiredService<MfaVerifyHandler>();
+        // Code du pas suivant : celui de l'enrôlement a déjà servi (anti-rejeu, audit 2026-10, A-011).
         var second = await verify.HandleAsync(
-            new MfaVerifyLoginRequest(first.Value.MfaToken!, Totp.Generate(secret, DateTimeOffset.UtcNow)));
+            new MfaVerifyLoginRequest(first.Value.MfaToken!, Totp.Generate(secret, DateTimeOffset.UtcNow.AddSeconds(30))));
         second.IsSuccess.Should().BeTrue(second.Error?.Message);
         second.Value!.AccessToken.Should().NotBeNullOrEmpty();
         second.Value.MfaRequired.Should().BeFalse();
@@ -115,6 +116,37 @@ public sealed class MfaAuthenticationTests(FinanceEngineFixture fx)
         var replay = await verify.HandleAsync(
             new MfaVerifyLoginRequest(first.Value.MfaToken!, Totp.Generate(secret, DateTimeOffset.UtcNow)));
         replay.IsSuccess.Should().BeFalse();
+    }
+
+    // ---- Audit 2026-10, A-011 : un code TOTP accepté ne sert pas une seconde fois, même dans sa fenêtre ----
+    [Fact]
+    public async Task A_totp_code_already_accepted_is_refused_on_a_new_challenge()
+    {
+        var uid = await NewUser("pw-replay");
+        string secret, enrollCode;
+        await using (var s = Scope())
+        {
+            AsUser(s.ServiceProvider, uid);
+            var mfa = s.ServiceProvider.GetRequiredService<IMfaService>();
+            secret = (await mfa.BeginEnrollmentAsync()).Value!.Secret;
+            enrollCode = Totp.Generate(secret, DateTimeOffset.UtcNow);
+            (await mfa.ConfirmEnrollmentAsync(new MfaConfirmRequest(enrollCode))).IsSuccess.Should().BeTrue();
+        }
+
+        await using var s2 = Scope();
+        var login = s2.ServiceProvider.GetRequiredService<LoginHandler>();
+        var verify = s2.ServiceProvider.GetRequiredService<MfaVerifyHandler>();
+        var email = await Scalar<string>($"SELECT email FROM nexora.app_user WHERE id = '{uid}'");
+        async Task<bool> SignIn(string code)
+        {
+            var challenge = await login.HandleAsync(new LoginRequest(email!, "pw-replay", null));
+            return (await verify.HandleAsync(new MfaVerifyLoginRequest(challenge.Value!.MfaToken!, code))).IsSuccess;
+        }
+
+        (await SignIn(enrollCode)).Should().BeFalse("le code de l'enrôlement a déjà servi");
+        var next = Totp.Generate(secret, DateTimeOffset.UtcNow.AddSeconds(30));
+        (await SignIn(next)).Should().BeTrue();
+        (await SignIn(next)).Should().BeFalse("l'ancien contrôle acceptait le même code pendant toute sa fenêtre");
     }
 
     // ---- §8-9 : un code de récupération authentifie une seule fois ----

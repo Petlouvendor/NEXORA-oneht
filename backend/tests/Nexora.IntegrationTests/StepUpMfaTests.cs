@@ -56,7 +56,7 @@ public sealed class StepUpMfaTests(FinanceEngineFixture fx)
 
             (await stepUp.ChallengeAsync(new StepUpChallengeRequest(password, "payment"))).Error!.Code.Should().Be("security.step_up_code_required");
             (await stepUp.ChallengeAsync(new StepUpChallengeRequest(password, "payment", "000000"))).Error!.Code.Should().Be("security.step_up_failed");
-            var granted = await stepUp.ChallengeAsync(new StepUpChallengeRequest(password, "payment", Totp.Generate(enrollment.Secret, DateTimeOffset.UtcNow)));
+            var granted = await stepUp.ChallengeAsync(new StepUpChallengeRequest(password, "payment", Totp.Generate(enrollment.Secret, DateTimeOffset.UtcNow.AddSeconds(30))));
             granted.IsSuccess.Should().BeTrue(granted.Error?.Message);
             (await db.Database.SqlQuery<string>($"""
                 SELECT method AS "Value" FROM nexora.step_up_challenge WHERE user_id = {fx.UserId} ORDER BY issued_at DESC LIMIT 1

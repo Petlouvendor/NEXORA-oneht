@@ -22,24 +22,32 @@ public static class Totp
     /// avant / après (dérive d'horloge). Comparaison à temps constant.
     /// </summary>
     public static bool Verify(string base32Secret, string code, DateTimeOffset now, int window = 1)
+        => MatchStep(base32Secret, code, now, window) is not null;
+
+    /// <summary>
+    /// Pas de temps (compteur RFC 6238) auquel le code correspond, ou <c>null</c>. Sert à refuser un code déjà
+    /// accepté : il reste valide pendant toute sa fenêtre (audit 2026-10, A-011).
+    /// </summary>
+    public static long? MatchStep(string base32Secret, string code, DateTimeOffset now, int window = 1)
     {
-        if (string.IsNullOrWhiteSpace(base32Secret) || string.IsNullOrWhiteSpace(code)) return false;
+        if (string.IsNullOrWhiteSpace(base32Secret) || string.IsNullOrWhiteSpace(code)) return null;
         code = code.Trim().Replace(" ", "");
-        if (code.Length != Digits) return false;
+        if (code.Length != Digits) return null;
 
         byte[] key;
         try { key = FromBase32(base32Secret); }
-        catch { return false; }
+        catch { return null; }
 
         var counter = now.ToUnixTimeSeconds() / PeriodSeconds;
+        long? matched = null;
         for (var offset = -window; offset <= window; offset++)
         {
             var candidate = Compute(key, counter + offset);
             if (CryptographicOperations.FixedTimeEquals(
                     Encoding.ASCII.GetBytes(candidate), Encoding.ASCII.GetBytes(code)))
-                return true;
+                matched ??= counter + offset;
         }
-        return false;
+        return matched;
     }
 
     /// <summary>Code TOTP à 6 chiffres pour un instant donné (symétrique de <see cref="Verify"/>).</summary>
