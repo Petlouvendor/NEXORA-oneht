@@ -40,7 +40,7 @@ public sealed class SqlHrTimeService(
         {
             "23505" => Error.Conflict("hr.duplicate", "Une saisie existe déjà pour cet employé à cette date."),
             "23514" when pg.MessageText.Contains("verrouill", StringComparison.OrdinalIgnoreCase) => Locked(pg.MessageText),
-            "23514" => Error.Validation("hr.invalid", pg.MessageText),
+            "23514" => Error.Validation("hr.invalid", Persistence.DatabaseErrors.ClientMessage(pg)),
             "23503" => Error.Validation("hr.invalid", "Employé ou période introuvable dans l'entreprise."),
             _ => null,
         };

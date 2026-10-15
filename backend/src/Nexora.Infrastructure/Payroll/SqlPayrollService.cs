@@ -52,7 +52,7 @@ public sealed partial class SqlPayrollService(
             return Error.Conflict("payroll.period_overlap", "Une période de paie de même fréquence chevauche déjà ces dates.");
         if (pg?.ConstraintName == "salary_payment_item_active_uk" || message.Contains("salary_payment_item_active_uk", StringComparison.Ordinal))
             return Error.Conflict("payroll.already_paid", "Cette ligne de paie a déjà un paiement actif (une instruction = un paiement).");
-        return Error.Conflict(fallbackCode, message);
+        return Error.Conflict(fallbackCode, pg is null ? ex.Message : Persistence.DatabaseErrors.ClientMessage(pg));
     }
 
     // ================================================================== Périodes
