@@ -24,8 +24,7 @@ namespace Nexora.ApiTests;
 public sealed class SmokeTests(WebApplicationFactory<Program> factory)
     : IClassFixture<WebApplicationFactory<Program>>
 {
-    private const string DevConnString =
-        "Host=localhost;Port=5432;Database=nexora;Username=nexora_app;Password=nexora_app_dev;Search Path=nexora,public;Include Error Detail=true";
+    private static readonly string DevConnString = ApiTestDatabase.App;
     private const string Pharmacy = "dce00000-0000-0000-0000-0000000000c1";
     private const string InventoryLocation = "dce00000-0000-0000-0000-00000000a003";  // Officine
     private const string Store = "dce00000-0000-0000-0000-00000000a001";              // Comptoir

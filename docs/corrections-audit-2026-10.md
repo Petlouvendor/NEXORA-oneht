@@ -268,3 +268,21 @@ l'interface.
 direction ni lui retirer son rôle ; la direction peut suspendre cet administrateur ; révoquer la session d'autrui →
 « introuvable », jetons intacts. Non-régression : identité, audit de sécurité, gouvernance, consolidation, comptes
 clients, administration (63 tests).
+
+## Étape 12 — Tests d'API exécutables sur une base jetable (fin de T-002)
+
+**Défaut.** Les 24 classes de tests d'API codaient en dur la base `nexora` : même après l'étape 0, la suite écrivait
+toujours dans la base de développement, qui sert aussi de modèle aux tests d'intégration.
+
+**Correction.** `ApiTestDatabase` : `NEXORA_API_TEST_DB` désigne la base visée (défaut `nexora`, comportement inchangé).
+Les fabriques sans surcharge (sonde de santé, assistant d'installation, garde des secrets) n'écrivent rien et gardent
+leur configuration — une première version qui les redirigeait aussi par variable d'environnement masquait la
+configuration écrite par l'assistant d'installation (détecté par `SetupWizardTests`, retiré).
+
+**Vérification.** Suite d'API lancée sur un clone jetable de `nexora` (mis à jour, puis supprimé) : 11 sessions créées
+dans le clone, **aucune** dans `nexora`. Résultat : 194/195 ; le seul échec était `SetupWizardTests`, dû à la première
+version décrite ci-dessus, et passe une fois celle-ci retirée (relancé seul, avec la sonde de santé). Les échecs relevés
+pendant l'audit — sessions, parcours complet, exploitation — ne se reproduisent plus.
+
+**Procédure.** `CREATE DATABASE nexora_api_it TEMPLATE nexora;` → `Nexora.Api.dll migrate` sur ce clone →
+`NEXORA_API_TEST_DB=nexora_api_it dotnet test tests/Nexora.ApiTests` → `DROP DATABASE nexora_api_it;`.

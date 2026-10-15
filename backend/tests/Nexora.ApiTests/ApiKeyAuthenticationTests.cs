@@ -20,8 +20,7 @@ public sealed class ApiKeyAuthenticationTests(WebApplicationFactory<Program> fac
     private static readonly Guid DemoCompany = Guid.Parse("dce00000-0000-0000-0000-0000000000c1");
     private static readonly Guid DemoDirection = Guid.Parse("dce00000-0000-0000-0000-0000000000d1");
 
-    private const string DevConnString =
-        "Host=localhost;Port=5432;Database=nexora;Username=nexora_app;Password=nexora_app_dev;Search Path=nexora,public;Include Error Detail=true";
+    private static readonly string DevConnString = ApiTestDatabase.App;
 
     private HttpClient ClientWith(ApiKeyResolution canned)
         => factory.WithWebHostBuilder(b =>
