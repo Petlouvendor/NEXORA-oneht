@@ -353,7 +353,7 @@ public sealed class SqlManualJournalService(
     }
 
     public async Task<Result<Guid>> ReverseAsync(Guid id, ReverseJournalEntryRequest r, CancellationToken ct = default)
-        => await reversal.ReverseAsync(id, r.Reason, r.ReversalDate, ct);
+        => await reversal.ReverseUserEntryAsync(id, r.Reason, r.ReversalDate, ct);
 
     // --- helpers -------------------------------------------------------
 

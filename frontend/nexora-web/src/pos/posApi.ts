@@ -91,6 +91,8 @@ export interface PosProduct {
   /** Taux de la taxe par défaut (0 sans taxe) et prix saisi TTC ou HT (phase 6). */
   taxRate?: number;
   priceIncludesTax?: boolean;
+  /** Conditionnement du code lu (carton de 12 → 12) ; 1 par défaut (audit 2026-10, A-015). */
+  packSize?: number;
 }
 
 export interface PosProductSearch {

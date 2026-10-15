@@ -43,7 +43,7 @@ public sealed class AccountingController(
     [RequireStepUp(StepUpPurposes.AccountingValidation)]
     [RequirePermission(Permissions.Accounting.Reverse)]
     public async Task<IActionResult> Reverse(Guid id, [FromBody] ReverseEntryRequest body, CancellationToken ct)
-        => FromResult(await reversals.ReverseAsync(id, body.Reason, body.ReversalDate, ct));
+        => FromResult(await reversals.ReverseUserEntryAsync(id, body.Reason, body.ReversalDate, ct));
 
     // --- Rapports (§34) -----------------------------------------------
 

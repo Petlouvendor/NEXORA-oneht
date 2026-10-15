@@ -85,7 +85,11 @@ public sealed partial class SqlPosOfflineService(
                         WHEN rr.reorder_point IS NOT NULL AND sb.available <= rr.reorder_point THEN 'low'
                         ELSE 'in_stock' END AS "Availability",
                    COALESCE((SELECT tx.rate FROM nexora.tax tx WHERE tx.id = p.default_tax_id), 0) AS "TaxRate",
-                   COALESCE(dp.tax_included, false) AS "PriceIncludesTax"
+                   COALESCE(dp.tax_included, false) AS "PriceIncludesTax",
+                   ARRAY(SELECT b.barcode || '=' || trim_scale(b.pack_size)::text FROM nexora.product_barcode b
+                         WHERE b.product_id = p.id AND b.status = 'active' AND b.pack_size > 1) AS "PackCodes",
+                   ARRAY(SELECT b.barcode FROM nexora.product_barcode b
+                         WHERE b.product_id = p.id AND b.status = 'active' AND b.is_weight_embedded) AS "WeightCodes"
             FROM nexora.product p
             JOIN nexora.company co ON co.id = p.company_id
             LEFT JOIN LATERAL (
