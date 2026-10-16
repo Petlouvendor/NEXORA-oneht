@@ -20,10 +20,11 @@ soldes d'ouverture par la commande `reprise-ouvertures` (étape 20).
 
 **En attente :**
 
-- **Migrations V100, V101, V102 et reprise des soldes d'ouverture** sur les bases partagées `nexora` (développement,
-  modèle des tests) et `nexora_recette` : accord donné, sauvegardes faites et vérifiées
-  (`C:\Users\Rener\nexora-sauvegardes\2026-10-15-avant-V100`), mais l'exécution est bloquée par le garde-fou de
-  l'assistant ; procédure à lancer à la main, à l'étape 20. V100 ne modifiera aucun solde (aucun compte en écart relevé).
+- ~~Migrations V100-V102 et reprise des soldes d'ouverture sur `nexora` et `nexora_recette`~~ : **faites le 2026-10-16**
+  (lancées à la main ; sauvegardes `C:\Users\Rener\nexora-sauvegardes\2026-10-15-avant-V100`). Vérifié : les deux bases
+  en V102, soldes de trésorerie identiques au centime à ceux des sauvegardes, 3 + 6 écritures d'ouverture, plus aucun
+  écart trésorerie / grand livre hors le compte Unibank de la recette (ci-dessous). Suites lancées directement sur
+  `nexora` migrée : unitaires 103/103, intégration 532/532, API 200/200 (sur une copie fraîche).
 - A-021 : modèle d'à-nouveaux retenu (grand livre continu, à-nouveaux limités au résultat) à confirmer par le comptable.
 - Données de recette : 77 ventes par carte en gourdes de la Pharmacie ont été encaissées sur le compte Unibank en
   dollars (+71 690,15 « USD » en trésorerie, absents du grand livre en USD) — étape 20.
