@@ -56,6 +56,7 @@ public sealed class SchedulerRunner(
     Nexora.Application.Customers.ICreditAlertScanner creditAlerts,
     Nexora.Application.Credit.CollectionsService collections,
     Nexora.Application.Payroll.IPayrollAlerts payrollAlerts,
+    Nexora.Application.Finance.Periods.IAccountingPeriodService accountingPeriods,
     IJobRegistry jobs,
     ILogger<SchedulerRunner> logger)
 {
@@ -90,6 +91,7 @@ public sealed class SchedulerRunner(
         await Run("credit.settle_promises");
         await Run("credit.scan_alerts");
         await Run("payroll.scan_alerts");
+        await Run("accounting.open_next_year");
 
         var result = new SchedulerTickResult(companies.Count, automationsRun, deliveries, expired, failures, lotsExpired, dispatched);
         if (automationsRun + deliveries + expired + failures + lotsExpired + dispatched > 0)
@@ -153,6 +155,7 @@ public sealed class SchedulerRunner(
         ["credit.settle_promises"] = token => PerCompanyAsync(companies, collections.SettleDuePromisesAsync, "échéance des promesses", token),
         ["credit.scan_alerts"] = token => PerCompanyAsync(companies, creditAlerts.ScanAsync, "alertes crédit", token),
         ["payroll.scan_alerts"] = token => PerCompanyAsync(companies, payrollAlerts.ScanAsync, "alertes paie", token),
+        ["accounting.open_next_year"] = token => PerCompanyAsync(companies, accountingPeriods.OpenNextYearIfDueAsync, "ouverture de l'exercice suivant", token),
     };
 
     private async Task<List<CompanyRow>> LoadActiveCompaniesAsync(CancellationToken ct)
