@@ -204,7 +204,9 @@ public sealed class RecetteCorrectionsTests(FinanceEngineFixture fx)
         var r = await users.CreateUserAsync(new CreateUserRequest(email, "Directeur usurpé", StrongPassword,
             new GrantAssignmentRequest("owner_direction", "COMPANY", Pharmacy, null, null, null, null)));
 
-        r.Error!.Code.Should().Be("identity.escalation");
+        // Un caissier ne gère pas les utilisateurs de l'entreprise : refus de périmètre (A-033), avant même la garde
+        // anti-élévation.
+        r.Error!.Code.Should().BeOneOf("identity.scope", "identity.escalation");
         (await Scalar<long>($"SELECT COUNT(*) FROM nexora.app_user WHERE email = '{email}'"))
             .Should().Be(0, "le refus de l'affectation annule la création du compte dans la même transaction");
     }

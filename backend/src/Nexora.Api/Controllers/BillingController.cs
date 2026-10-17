@@ -62,8 +62,13 @@ public sealed class BillingController(
     [AllowAnonymous]
     public async Task<IActionResult> PaymentWebhook([FromBody] PaymentWebhookEvent evt, [FromHeader(Name = "X-Platform-Webhook-Token")] string? token, CancellationToken ct)
     {
-        var expected = config["PlatformBilling:WebhookToken"] ?? "dev-platform-webhook-token";
-        if (!string.Equals(token, expected, StringComparison.Ordinal))
+        // Audit 2026-10 éd. 2, A-049 : le jeton par défaut « dev-platform-webhook-token », public, était accepté en
+        // production. Sans jeton configuré, la route n'existe pas (installation d'un seul client, sans facturation
+        // plateforme) ; la force du jeton est vérifiée au démarrage (ProductionConfiguration.SecretProblems).
+        var expected = config["PlatformBilling:WebhookToken"];
+        if (string.IsNullOrWhiteSpace(expected)) return NotFound();
+        if (token is null || !System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
+                System.Text.Encoding.UTF8.GetBytes(token), System.Text.Encoding.UTF8.GetBytes(expected)))
             return Unauthorized(new { title = "webhook_unauthorized" });
         return FromResult(await billing.HandlePaymentEventAsync(evt, ct));
     }

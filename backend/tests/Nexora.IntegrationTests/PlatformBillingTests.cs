@@ -101,6 +101,39 @@ public sealed class PlatformBillingTests(FinanceEngineFixture fx)
         (await Scalar<long>($"SELECT COUNT(*) FROM nexora.platform_license WHERE customer_id = '{customer}' AND status = 'active'")).Should().Be(1);
     }
 
+    // ---- Audit 2026-10 éd. 2, A-049 : une facture n'est soldée que par un paiement de son client, à hauteur de son total ----
+    [Fact]
+    public async Task A_payment_settles_only_its_own_customers_invoice_and_only_up_to_its_total()
+    {
+        await using var s = Scope();
+        var (cat, cust, sub, bill, _, _) = Svcs(s.ServiceProvider);
+        var plan = await PlanAsync(cat, $"it-a049-{Guid.NewGuid():N}"[..19], "business", 49m, 0);
+        var owner = await CustomerAsync(cust, "a049-owner");
+        var stranger = await CustomerAsync(cust, "a049-other");
+        var created = await sub.CreateAsync(owner, new CreateSubscriptionRequest(plan, StartTrial: false));
+        var invoice = await Scalar<Guid>($"SELECT id FROM nexora.platform_invoice WHERE customer_id = '{owner}' AND status = 'issued'");
+
+        // Paiement d'un autre client visant cette facture : avant, la facture passait payée en totalité.
+        var foreign = await bill.HandlePaymentEventAsync(new PaymentWebhookEvent($"evt-{Guid.NewGuid():N}", "charge.succeeded", "sim",
+            null, null, stranger, invoice, 1m, "USD", null, "succeeded"));
+        foreign.IsSuccess.Should().BeTrue(foreign.Error?.Message);
+        foreign.Value!.ReviewRequired.Should().BeTrue("paiement non imputable : revue humaine");
+        (await Scalar<string>($"SELECT status FROM nexora.platform_invoice WHERE id = '{invoice}'")).Should().Be("issued");
+
+        // Paiement partiel du bon client : imputé, la facture reste ouverte et l'abonnement ne s'active pas.
+        (await bill.HandlePaymentEventAsync(new PaymentWebhookEvent($"evt-{Guid.NewGuid():N}", "charge.succeeded", "sim",
+            null, null, owner, invoice, 20m, "USD", null, "succeeded"))).IsSuccess.Should().BeTrue();
+        (await Scalar<string>($"SELECT status FROM nexora.platform_invoice WHERE id = '{invoice}'")).Should().Be("issued");
+        (await Scalar<decimal>($"SELECT paid_amount FROM nexora.platform_invoice WHERE id = '{invoice}'")).Should().Be(20m);
+        (await sub.GetAsync(created.Value!.Id)).Value!.Status.Should().Be("past_due");
+
+        // Le solde : facture payée, abonnement actif.
+        (await bill.HandlePaymentEventAsync(new PaymentWebhookEvent($"evt-{Guid.NewGuid():N}", "charge.succeeded", "sim",
+            null, null, owner, invoice, 29m, "USD", null, "succeeded"))).IsSuccess.Should().BeTrue();
+        (await Scalar<string>($"SELECT status FROM nexora.platform_invoice WHERE id = '{invoice}'")).Should().Be("paid");
+        (await sub.GetAsync(created.Value.Id)).Value!.Status.Should().Be("active");
+    }
+
     // ---- §14 : l'upgrade calcule le prorata et bascule le plan ----
     [Fact]
     public async Task Upgrade_prorates_the_difference_and_switches_plan()

@@ -1,6 +1,7 @@
 using Asp.Versioning;
 using Microsoft.AspNetCore.Mvc;
 using Nexora.Api.Security;
+using Nexora.Application.Abstractions;
 using Nexora.Application.Intelligence;
 using Nexora.Application.Reporting;
 using Nexora.Application.Security;
@@ -27,8 +28,13 @@ public sealed class IntelligenceController(
     ITaskService tasks,
     IIntelligenceAuditQuery audit,
     IInsightService insights,
-    IForecastService forecasts) : ApiControllerBase
+    IForecastService forecasts,
+    IPermissionService permissions,
+    ITenantContext tenant) : ApiControllerBase
 {
+    // A-048 : mêmes règles de confidentialité que les tableaux de bord (IntelligenceVisibility).
+    private Task<IReadOnlyCollection<string>> GrantedAsync(CancellationToken ct) => permissions.CurrentPermissionsAsync(tenant, ct);
+
     // --- §2, §4-5, §12-13, §18, §20-21, §31, §33, §46 Recommandations --------
 
     [HttpGet("intelligence/recommendations")]
@@ -81,22 +87,32 @@ public sealed class IntelligenceController(
 
     [HttpGet("intelligence/insights")]
     [RequirePermission(Permissions.Intelligence.View)]
-    public async Task<IActionResult> Insights([FromQuery] string? status, CancellationToken ct) => Ok(await insights.ListAsync(status, ct));
+    public async Task<IActionResult> Insights([FromQuery] string? status, CancellationToken ct)
+    {
+        var granted = await GrantedAsync(ct);
+        return Ok((await insights.ListAsync(status, ct)).Where(i => IntelligenceVisibility.IsVisible(i.Category, granted)).ToList());
+    }
 
     /// <summary>§22 — chaque catégorie d'insight (Phase 42) EST une anomalie détectée ; alias sans redérivation.</summary>
     [HttpGet("intelligence/anomalies")]
     [RequirePermission(Permissions.Intelligence.View)]
-    public async Task<IActionResult> Anomalies([FromQuery] string? status, CancellationToken ct) => Ok(await insights.ListAsync(status, ct));
+    public async Task<IActionResult> Anomalies([FromQuery] string? status, CancellationToken ct) => await Insights(status, ct);
 
+    /// <summary>Prévisions de chiffre d'affaires et de trésorerie : même permission que <c>GET /forecasts</c> (A-048).</summary>
     [HttpGet("intelligence/forecasts")]
     [RequirePermission(Permissions.Intelligence.View)]
+    [RequirePermission(Permissions.Reporting.ViewFinancial)]
     public async Task<IActionResult> Forecasts([FromQuery] string? metric, CancellationToken ct) => Ok(await forecasts.ListAsync(metric, ct));
 
     // --- §35 Scoring ----------------------------------------------------------
 
     [HttpGet("intelligence/scores")]
     [RequirePermission(Permissions.Intelligence.View)]
-    public async Task<IActionResult> Scores([FromQuery] string? entityType, CancellationToken ct) => Ok(await scoring.ListAsync(entityType, ct));
+    public async Task<IActionResult> Scores([FromQuery] string? entityType, CancellationToken ct)
+    {
+        var granted = await GrantedAsync(ct);
+        return Ok((await scoring.ListAsync(entityType, ct)).Where(x => IntelligenceVisibility.IsScoreVisible(x.EntityType, granted)).ToList());
+    }
 
     // --- §39 Gouvernance — catalogue descriptif, lecture seule ----------------
 

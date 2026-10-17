@@ -148,18 +148,28 @@ public sealed class SqlPlatformBillingService(
         if (p.CustomerId is not { } custId) return Error.Conflict("platform.payment_unlinked", "Rattachez ce paiement à un client avant de le confirmer.");
 
         var now = clock.UtcNow;
-        await uow.ExecuteInTransactionAsync(async token =>
+        try
         {
-            await db.Database.ExecuteSqlAsync($"""
-                UPDATE nexora.platform_payment SET status = 'succeeded', review_required = false, confirmed_by = {tenant.UserId},
-                    reconciled_at = {now}, updated_at = now()
-                WHERE id = {paymentId}
-                """, token);
-            await ApplySuccessfulPaymentAsync(custId, p.InvoiceId, p.Amount, now, token);
-            await PlatformInvoices.LogEventAsync(db, p.CustomerId, null, PlatformEvents.PaymentSucceeded,
-                new { paymentId, amount = p.Amount, manual = true }, tenant.UserId, now, token);
-            return 0;
-        }, ct);
+            await uow.ExecuteInTransactionAsync(async token =>
+            {
+                await db.Database.ExecuteSqlAsync($"""
+                    UPDATE nexora.platform_payment SET status = 'succeeded', review_required = false, confirmed_by = {tenant.UserId},
+                        reconciled_at = {now}, updated_at = now()
+                    WHERE id = {paymentId}
+                    """, token);
+                if (!await ApplySuccessfulPaymentAsync(custId, p.InvoiceId, p.Amount, p.CurrencyCode, now, token))
+                    throw new InvalidOperationException(
+                        "Paiement non imputable : la facture n'est pas à ce client, pas dans cette devise ou n'est plus ouverte.");
+                await PlatformInvoices.LogEventAsync(db, p.CustomerId, null, PlatformEvents.PaymentSucceeded,
+                    new { paymentId, amount = p.Amount, manual = true }, tenant.UserId, now, token);
+                return 0;
+            }, ct);
+        }
+        catch (InvalidOperationException ex)
+        {
+            db.ChangeTracker.Clear();
+            return Error.Conflict("platform.payment_unapplied", ex.Message);
+        }
         await uow.SaveChangesAsync(ct);
         return await LoadPaymentDtoAsync(paymentId, ct);
     }
@@ -182,6 +192,7 @@ public sealed class SqlPlatformBillingService(
 
         var id = Guid.NewGuid();
         var status = ambiguous ? "pending" : evt.Outcome == "succeeded" ? "succeeded" : "failed";
+        var unapplied = false;
 
         await uow.ExecuteInTransactionAsync(async token =>
         {
@@ -205,9 +216,19 @@ public sealed class SqlPlatformBillingService(
 
             if (status == "succeeded")
             {
-                await ApplySuccessfulPaymentAsync(customerId!.Value, invoiceId, evt.Amount, now, token);
-                await PlatformInvoices.LogEventAsync(db, customerId, null, PlatformEvents.PaymentSucceeded,
-                    new { evt.EventId, amount = evt.Amount }, null, now, token);
+                if (await ApplySuccessfulPaymentAsync(customerId!.Value, invoiceId, evt.Amount, evt.CurrencyCode.ToUpperInvariant(), now, token))
+                    await PlatformInvoices.LogEventAsync(db, customerId, null, PlatformEvents.PaymentSucceeded,
+                        new { evt.EventId, amount = evt.Amount }, null, now, token);
+                else
+                {
+                    // A-049 : facture d'un autre client, autre devise ou déjà soldée — revue humaine, aucun effet.
+                    unapplied = true;
+                    await db.Database.ExecuteSqlAsync($"""
+                        UPDATE nexora.platform_payment SET review_required = true, reconciled_at = NULL, updated_at = now() WHERE id = {id}
+                        """, token);
+                    await PlatformInvoices.LogEventAsync(db, customerId, null, "PaymentUnapplied",
+                        new { evt.EventId, evt.Amount, evt.CurrencyCode, requestedInvoice = invoiceId }, null, now, token);
+                }
             }
             else
             {
@@ -225,6 +246,7 @@ public sealed class SqlPlatformBillingService(
         }, ct);
 
         await uow.SaveChangesAsync(ct);
+        if (unapplied) await AlertPlatformBillingAsync("Paiement non imputé", $"Événement {evt.EventId} : facture d'un autre client, d'une autre devise ou déjà soldée — revue manuelle requise.", ct);
         if (ambiguous) await AlertPlatformBillingAsync("Paiement à examiner", $"Événement {evt.EventId} ambigu ou non rattaché — revue manuelle requise (§54).", ct);
         else if (status == "failed" && customerId is { } cid)
             await NotifyCustomerAsync(cid, "Paiement échoué", "Votre dernier paiement NEXORA a échoué. Mettez à jour votre moyen de paiement avant la fin de la période de grâce.", 1, ct);
@@ -283,39 +305,35 @@ public sealed class SqlPlatformBillingService(
 
     // ------------------------------------------------------------- Helpers
 
-    private async Task ApplySuccessfulPaymentAsync(Guid customerId, Guid? invoiceId, decimal amount, DateTimeOffset now, CancellationToken ct)
+    /// <summary>
+    /// Imputation d'un paiement réussi (audit 2026-10 éd. 2, A-049) : la facture visée devait seulement être ouverte —
+    /// elle passait payée en totalité quel que soit le montant, le client ou la devise. Désormais elle doit appartenir au
+    /// client et être dans la devise du paiement ; le montant s'ajoute au déjà payé et la facture n'est soldée qu'une
+    /// fois son total atteint. Renvoie faux si le paiement n'a pu être imputé (revue humaine).
+    /// </summary>
+    private async Task<bool> ApplySuccessfulPaymentAsync(Guid customerId, Guid? invoiceId, decimal amount, string currency,
+        DateTimeOffset now, CancellationToken ct)
     {
-        if (invoiceId is { } iid)
-        {
-            var inv = await db.Database.SqlQuery<InvoiceLiteRow>($"""
-                SELECT id AS "Id", customer_id AS "CustomerId", status AS "Status", total_amount AS "TotalAmount"
-                FROM nexora.platform_invoice WHERE id = {iid}
-                """).FirstOrDefaultAsync(ct);
-            if (inv is not null && inv.Status is "issued" or "overdue")
-            {
-                await db.Database.ExecuteSqlAsync($"""
-                    UPDATE nexora.platform_invoice SET status = 'paid', paid_amount = total_amount, paid_at = {now}, updated_at = now()
-                    WHERE id = {iid}
-                    """, ct);
-                await PlatformInvoices.LogEventAsync(db, customerId, null, PlatformEvents.InvoicePaid, new { invoiceId = iid }, null, now, ct);
-            }
-        }
-        else
-        {
-            // Pas de facture ciblée : solde la plus ancienne facture ouverte du client.
-            var open = await db.Database.SqlQuery<Guid?>($"""
-                SELECT id AS "Value" FROM nexora.platform_invoice
-                WHERE customer_id = {customerId} AND status IN ('issued','overdue') ORDER BY issue_date LIMIT 1
-                """).FirstOrDefaultAsync(ct);
-            if (open is { } oid)
-            {
-                await db.Database.ExecuteSqlAsync($"""
-                    UPDATE nexora.platform_invoice SET status = 'paid', paid_amount = total_amount, paid_at = {now}, updated_at = now()
-                    WHERE id = {oid}
-                    """, ct);
-                await PlatformInvoices.LogEventAsync(db, customerId, null, PlatformEvents.InvoicePaid, new { invoiceId = oid }, null, now, ct);
-            }
-        }
+        var target = invoiceId ?? await db.Database.SqlQuery<Guid?>($"""
+            SELECT id AS "Value" FROM nexora.platform_invoice
+            WHERE customer_id = {customerId} AND status IN ('issued','overdue') AND currency_code = {currency}
+            ORDER BY issue_date LIMIT 1
+            """).FirstOrDefaultAsync(ct);
+        if (target is not { } iid) return false;
+
+        var settled = await db.Database.SqlQuery<string>($"""
+            UPDATE nexora.platform_invoice
+               SET paid_amount = paid_amount + {amount},
+                   status = CASE WHEN paid_amount + {amount} >= total_amount THEN 'paid' ELSE status END,
+                   paid_at = CASE WHEN paid_amount + {amount} >= total_amount THEN {now} ELSE paid_at END,
+                   updated_at = now()
+             WHERE id = {iid} AND customer_id = {customerId} AND currency_code = {currency}
+               AND status IN ('issued','overdue') AND {amount} > 0
+            RETURNING status AS "Value"
+            """).ToListAsync(ct);
+        if (settled.Count == 0) return false;
+        if (settled[0] != "paid") return true;   // paiement partiel : imputé, facture encore ouverte
+        await PlatformInvoices.LogEventAsync(db, customerId, null, PlatformEvents.InvoicePaid, new { invoiceId = iid }, null, now, ct);
 
         // Le paiement d'une échéance réactive un abonnement en attente / en grâce / suspendu (§19, §33).
         var sub = await db.Database.SqlQuery<SubLiteRow>($"""
@@ -324,6 +342,7 @@ public sealed class SqlPlatformBillingService(
             """).FirstOrDefaultAsync(ct);
         if (sub is not null)
             await subscriptions.ActivateAsync(sub.Id, ct);
+        return true;
     }
 
     private async Task<Guid?> ResolveCustomerAsync(string? customerRef, CancellationToken ct)
@@ -343,11 +362,12 @@ public sealed class SqlPlatformBillingService(
             """).FirstOrDefaultAsync(ct);
     }
 
-    private sealed record PaymentBasic(Guid Id, Guid? CustomerId, Guid? InvoiceId, decimal Amount, string Status);
+    private sealed record PaymentBasic(Guid Id, Guid? CustomerId, Guid? InvoiceId, decimal Amount, string CurrencyCode, string Status);
 
     private async Task<PaymentBasic?> LoadPaymentAsync(Guid id, CancellationToken ct)
         => await db.Database.SqlQuery<PaymentBasic>($"""
-            SELECT id AS "Id", customer_id AS "CustomerId", invoice_id AS "InvoiceId", amount AS "Amount", status AS "Status"
+            SELECT id AS "Id", customer_id AS "CustomerId", invoice_id AS "InvoiceId", amount AS "Amount",
+                   currency_code AS "CurrencyCode", status AS "Status"
             FROM nexora.platform_payment WHERE id = {id}
             """).FirstOrDefaultAsync(ct);
 

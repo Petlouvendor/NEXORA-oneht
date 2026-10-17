@@ -159,3 +159,61 @@ USD à 132,5 équilibrée au centime ; un écart de 40 200 ou un déséquilibre 
 `ConversionRoundingTests` (vente 10,01 + 1,01 USD ; écriture manuelle 20,02 = 10,01 + 10,01 — ancien code :
 « 2652.6500 <> 2652.6400 », exactement le refus constaté par l'audit), `KpiCurrencyTests` (trésorerie de la
 Pharmacie : 492 525 attendus, 63 725 avant).
+
+**Résultats.** Unitaires 105/105, intégration 553/553, API 200/200 (frontend inchangé).
+
+## Lot 5 — Droits d'accès et sécurité (A-049, A-045, A-048, A-033, A-034, A-035, A-009 résidu)
+
+**A-049 (webhook de facturation plateforme).** Le jeton par défaut `dev-platform-webhook-token`, publié dans le code,
+était accepté en production, et un paiement soldait sa facture en totalité quels que soient le montant, le client et la
+devise. Désormais : sans `PlatformBilling:WebhookToken` configuré, la route n'existe pas (404) ; un jeton fourni doit
+être fort (32 caractères au moins, pas `dev-…`), sinon l'API refuse de démarrer hors développement ; comparaison en
+temps constant. Un paiement n'est imputé qu'à une facture ouverte de son client, dans sa devise ; il s'ajoute au déjà
+payé et la facture n'est soldée (et l'abonnement réactivé) qu'une fois son total atteint. Paiement non imputable :
+revue humaine, alerte, aucun effet ; confirmation manuelle refusée (`platform.payment_unapplied`).
+
+**A-045 (routes `/finance/*`).** Écritures financières brutes à montants libres, qu'aucun écran n'appelait : un
+comptable seul y payait une dépense sans approbation. Le contrôleur est supprimé ; les opérations internes
+(`IFinanceOperations`) restent utilisées par les services métier, qui portent les contrôles (4 yeux, session…).
+
+**A-048 (centre d'intelligence).** `intelligence.view` donnait aux responsables stock et achats les créances
+nominatives, la trésorerie et les prévisions. Règle `IntelligenceVisibility`, alignée sur `KpiCatalog` : catégories
+financières (créances, trésorerie, budget, marge, dépenses) réservées à `reporting.view_financial`, commerciales (chiffre
+d'affaires, clients) à `reporting.view_sales` ; appliquée aux recommandations (liste, détail, tableau de bord, actions),
+aux anomalies et aux scores clients ; `/intelligence/forecasts` exige `reporting.view_financial` comme `/forecasts`.
+
+**A-033 (gestion des utilisateurs).** Le périmètre de gestion comprenait toute entreprise d'appartenance : un
+administrateur de A, simple caissier dans B, listait et affectait les comptes de B. Il se limite aux entreprises où
+l'appelant détient `admin.manage_users`.
+
+**A-034 (permission vérifiée sur l'entreprise active, données lues partout).** Journal d'audit et audit RH limités aux
+entreprises où l'appelant détient `security.audit_view` (ou `payroll.audit`) ; clonage de configuration : la
+permission `config.transfer` est exigée aussi sur l'entreprise cible.
+
+**A-035 (accès d'urgence).** La révocation ignorait le refus du retrait de l'affectation et affichait « révoqué » ;
+elle renvoie désormais l'erreur et ne change pas le statut.
+
+**A-009 résidu (V105).** RLS activée et forcée sur `app_user`, `user_role` et `access_scope`, les dernières tables
+d'entreprise sans RLS : un utilisateur se voit lui-même et voit les comptes rattachés (même par une affectation
+révoquée, pour l'historique) à ses entreprises ou groupes ; la connexion et la recherche d'identité passent par la
+portée système, inchangée. Le test de couverture RLS n'admet plus `access_scope` en exception.
+
+**Tests** (rouges sur l'ancien code, vérifié en le rétablissant le temps du test, puis verts) : `AccessScopeTests`
+(responsable stock : stock visible, créances masquées, direction inchangée ; administrateur de A sans droit sur B) ;
+`PlatformBillingTests` (paiement d'un autre client → revue, paiement partiel → facture ouverte, solde → payée et
+abonnement actif) ; `PlatformEndpointsTests` (route absente sans jeton, ancien jeton refusé) ; `CashierAccessTests`
+(`/finance/*` → 404) ; `ProductionConfigurationTests` (jeton faible refusé au démarrage) ; `IdentityAccessTests`
+(garde anti-élévation testée avec un administrateur des utilisateurs sans droits comptables). Trois tests du moteur
+d'intelligence faisaient travailler l'utilisateur « direction » dans une entreprise où il n'avait aucun rôle : ils
+utilisent désormais un directeur de l'entreprise créée.
+
+**Résultats.** V105 essayée d'abord sur des copies jetables (`nexora` et `nexora_api_it`, supprimées ensuite) :
+unitaires 106/106, intégration 556/556, API 204/204. Puis appliquée à `nexora`, `nexora_recette` et `nexora_api_it`
+(sauvegardes `C:\Users\Rener\nexora-sauvegardes\2026-10-17-avant-V105`). Contrôle réel sur `nexora_recette`, API
+connectée en `nexora_app` : connexion de la comptable, du responsable stock et de la direction ; le responsable stock
+ne voit plus que les recommandations de stock et les prévisions lui sont refusées (403) ; comptable et direction gardent
+la vue complète ; la direction liste ses 16 utilisateurs.
+
+**Non traité ici.** A-035 n'a pas de test dédié (scénario de retrait refusé lourd à monter) ; correction vérifiée par
+lecture. Le statut d'un compte (suspendu, verrouillé) reste global : un administrateur de A peut toujours suspendre un
+utilisateur qu'il partage avec B, dans la limite de la garde anti-élévation.

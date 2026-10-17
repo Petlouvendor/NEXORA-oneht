@@ -46,6 +46,20 @@ public sealed class ProductionConfigurationTests
     }
 
     [Fact]
+    public void A_weak_platform_webhook_token_is_refused_but_its_absence_is_allowed()
+    {
+        // Audit 2026-10 éd. 2, A-049 : sans jeton, le webhook de facturation est fermé ; le jeton publié dans le code
+        // (dev-platform-webhook-token) ou un jeton court bloquent le démarrage.
+        ProductionConfiguration.SecretProblems(Production()).Should().BeEmpty();
+        ProductionConfiguration.SecretProblems(Production(("PlatformBilling:WebhookToken", "dev-platform-webhook-token")))
+            .Should().ContainSingle().Which.Should().Contain("WebhookToken");
+        ProductionConfiguration.SecretProblems(Production(("PlatformBilling:WebhookToken", "court")))
+            .Should().ContainSingle().Which.Should().Contain("WebhookToken");
+        ProductionConfiguration.SecretProblems(Production(("PlatformBilling:WebhookToken", new string('k', 48))))
+            .Should().BeEmpty();
+    }
+
+    [Fact]
     public void Secret_values_never_appear_in_the_verdicts()
     {
         var checks = ProductionConfiguration.Evaluate(Production(("Jwt:SigningKey", "dev-only-insecure-key-de-test-0123456789")), "Production");

@@ -320,8 +320,11 @@ public sealed class SqlEmergencyAccessService(
         if (row is null) return Error.NotFound("emergency_access.not_found", "Demande introuvable.");
         if (row.Status != "approved") return Error.Conflict("emergency_access.not_active", "Cet accès n'est pas actif.");
 
-        if (row.UnderlyingAssignmentId is { } assignmentId)
-            await assignments.RevokeAsync(assignmentId, new RevokeAssignmentRequest(reason), ct);
+        // Audit 2026-10 éd. 2, A-035 : le résultat du retrait était ignoré — un retrait refusé (garde anti-élévation,
+        // affectation hors périmètre) laissait l'accès actif jusqu'à son expiration, affiché pourtant « révoqué ».
+        if (row.UnderlyingAssignmentId is { } assignmentId
+            && await assignments.RevokeAsync(assignmentId, new RevokeAssignmentRequest(reason), ct) is { IsSuccess: false } refused)
+            return refused.Error!;
 
         await db.Database.ExecuteSqlAsync($"""
             UPDATE nexora.emergency_access_grant SET status = 'revoked', revoked_at = now(), revoked_by = {CurrentUser}, updated_at = now()

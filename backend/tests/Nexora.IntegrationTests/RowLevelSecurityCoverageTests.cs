@@ -12,8 +12,8 @@ public sealed class RowLevelSecurityCoverageTests(FinanceEngineFixture fx)
 {
     private static readonly Dictionary<string, string> Exceptions = new()
     {
-        // Résolution de l'identité et des périmètres à la connexion, avant tout contexte d'entreprise.
-        ["access_scope"] = "identité",
+        // access_scope (identité) n'est plus une exception : RLS depuis V105 (audit 2026-10 éd. 2, A-009 résidu) ; la
+        // connexion lit les périmètres en portée système.
         // Tables de la plateforme (éditeur), lues hors de toute entreprise (V051, V054).
         ["feature_flag"] = "plateforme",
         ["platform_customer_company"] = "plateforme",
