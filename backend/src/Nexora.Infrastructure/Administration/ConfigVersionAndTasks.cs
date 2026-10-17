@@ -55,6 +55,10 @@ public sealed class SqlConfigVersionService(NexoraDbContext db, IUnitOfWork uow,
         return Result.Success((await ListAsync(d, ct)).First(v => v.Id == id));
     }
 
+    /// <summary>
+    /// Marque une version comme référence datée (§39) : historique et comparaison. L'instantané est un relevé résumé ;
+    /// il n'est jamais réappliqué aux paramètres (audit 2026-10 éd. 2, A-037 — le « retour arrière » le laissait croire).
+    /// </summary>
     public async Task<Result<ConfigVersionDto>> ActivateAsync(Guid versionId, ActivateVersionRequest request, CancellationToken ct = default)
     {
         var v = (await db.Database.SqlQuery<Row>($"""

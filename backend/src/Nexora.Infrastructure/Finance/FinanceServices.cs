@@ -145,7 +145,9 @@ public sealed class EfAccountingPeriods(
     private async Task<AccountingPeriod?> OpenFollowingYearsUpToAsync(DateOnly date, CancellationToken ct)
     {
         var last = await LastAsync(ct);
-        if (last is null || date <= last.EndDate) return null;
+        if (last is null) return null;
+        // Une opération simultanée vient peut-être d'ouvrir l'exercice (entre la première lecture et celle-ci) : relire.
+        if (date <= last.EndDate) return await CoveringAsync(date, ct);
         if (date > (await calendar.TodayAsync(ct)).AddDays(1)) return null;
 
         while (last.EndDate < date)

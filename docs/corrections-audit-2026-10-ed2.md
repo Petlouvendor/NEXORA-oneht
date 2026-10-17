@@ -217,3 +217,57 @@ la vue complète ; la direction liste ses 16 utilisateurs.
 **Non traité ici.** A-035 n'a pas de test dédié (scénario de retrait refusé lourd à monter) ; correction vérifiée par
 lecture. Le statut d'un compte (suspendu, verrouillé) reste global : un administrateur de A peut toujours suspendre un
 utilisateur qu'il partage avec B, dans la limite de la garde anti-élévation.
+
+## Lot 6 — Écarts de fonctionnement (A-039, A-044, A-047, A-022 résidu, A-050, A-037, A-051)
+
+**A-039 (simulateur ≠ caisse).** Le simulateur appliquait le coupon en pourcentage après la promotion, la caisse sur
+le montant de la ligne (102,96 annoncés, 100,10 encaissés pour 130 HTG à −20 % puis −10 %) ; il cumulait aussi un
+coupon fixe avec une promotion, ce que la caisse refuse. Le simulateur suit désormais la caisse, qui fait foi.
+
+**A-044 (réouverture d'un exercice clôturé).** Rouvrir ne rouvrait que la période : la clôture restait passée, les
+écritures suivantes n'étaient jamais soldées et la reclôture était refusée ; le motif n'était écrit que dans le journal
+applicatif. Désormais la réouverture annule l'écriture de clôture par son miroir (origine `closing`, donc écarté des
+états de résultat comme la clôture elle-même ; la balance est nette), passe la clôture à `reopened` avec le motif en
+base, et la reclôture solde l'exercice entier une seule fois.
+
+**A-047 (budget contre réalisé).** Toutes les versions de l'exercice étaient additionnées (une révision doublait le
+budget, un brouillon abandonné s'ajoutait) et le réalisé était pris en valeur absolue sur l'année civile. Le rapport
+retient le budget en vigueur (actif le plus récemment approuvé, sinon le dernier clos) ; l'approbation d'une révision
+clôt la version qu'elle remplace ; le réalisé est signé selon la nature du compte, sur les dates de l'exercice.
+
+**A-022 résidu (balance âgée du pilotage).** Reste dû = `remaining_amount` (avoirs fournisseurs déduits), converti
+dans la devise de l'entreprise (A-046).
+
+**A-050 (stock d'ouverture).** L'import créait le stock sans écriture. Nouvel événement `InventoryOpeningRecorded`
+(D Stock / C Report à nouveau, comme l'ouverture de trésorerie), passé dans la transaction de l'import, avec un
+identifiant d'opération stable par produit et emplacement. Rien à reprendre sur les bases : `nexora` a 47 mouvements
+d'ouverture tous à coût nul, `nexora_recette` aucun.
+
+**A-037 (« retour arrière » de configuration).** Les instantanés sont des relevés résumés (préfixe et remplissage
+concaténés, politiques réduites) : on ne peut pas les réappliquer fidèlement. La route `rollback`, qui ne changeait
+qu'un statut, est retirée ; l'écran dit « Marquer comme référence » et explique que rien n'est appliqué.
+
+**A-051 (continuité déclarative).** Une sauvegarde devenait « vérifiée » et un test de restauration « réussi » sur la
+foi de métadonnées saisies ; une restauration de production approuvée passait « réussie » sans avoir eu lieu.
+Désormais seule la restauration réelle de `database/scripts/restore.sh --verify` (clé d'API) rend une sauvegarde
+vérifiée et enregistre un test réussi ; depuis l'écran, le contrôle reste déclaratif et le dit ; une restauration de
+production approuvée passe « en cours ». Les quatre tests qui décrivaient l'ancien comportement ont été réécrits.
+
+**Tests** (rouges sur l'ancien code, vérifié en le rétablissant le temps du test, puis verts) : `FunctionalGapsTests`
+(réouverture puis reclôture : résultat 1 500 une fois ; budget 120 après révision, avant 1 219 ; balance âgée 50,
+avant 90 ; stock d'ouverture 50 au grand livre, une seule fois), `CatalogPromotionTests` (simulateur = caisse sur
+promotion + coupon ; coupon fixe non cumulé), `ContinuityRegisterTests` et `OperationsReadinessTests` (contrôle
+déclaratif, preuve par l'outil de restauration).
+
+**Correctif de concurrence du lot 1 (trouvé ici).** Un passage complet a fait échouer le test des six ventes
+simultanées du 1er janvier : si une autre vente ouvrait l'exercice entre les deux lectures du filet, celui-ci voyait
+2027 déjà présent et renonçait (« Aucune période comptable ne couvre le 2027-01-01 »). Il relit désormais l'exercice
+dans ce cas.
+
+**Résultats.** Unitaires 106/106, intégration 562/562 (trois passages complets consécutifs), API 204/204, Vitest
+281/281, typage et lint sans erreur.
+
+**Échec non expliqué.** Un premier passage complet a fait échouer d'un coup les 21 tests des comptes clients
+(`CustomerAccountTests`, `CustomerAccountGapsTests`). Ils passent isolément et n'ont pas échoué dans les trois passages
+complets suivants. Le journal de ce passage, en mode silencieux, ne donne que les noms : la cause n'est pas établie. À
+surveiller : relancer la suite complète avec `--logger "console;verbosity=normal"` si cela se reproduit.

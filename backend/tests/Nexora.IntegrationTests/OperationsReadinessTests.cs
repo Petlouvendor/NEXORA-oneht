@@ -102,7 +102,18 @@ public sealed class OperationsReadinessTests(FinanceEngineFixture fx)
         (await ops.GoLiveReadinessAsync()).Checks.Single(c => c.Key == "backup_verified").Status.Should().Be("fail");
 
         var b = await cont.RegisterBackupAsync(new RegisterBackupRequest("full", DateTimeOffset.UtcNow.AddMinutes(-1), Checksum: Sha(), ObjectCount: 3));
+
+        // Audit 2026-10 éd. 2, A-051 : une sauvegarde déclarée et « vérifiée » depuis l'écran ne suffit plus.
         await cont.VerifyBackupAsync(b.Value!.Id);
+        await cont.RunRestoreTestAsync(new RestoreTestRequest(b.Value.Id, "sandbox"));
+        var declared = await ops.GoLiveReadinessAsync();
+        declared.Checks.Single(c => c.Key == "backup_verified").Status.Should().Be("fail");
+        declared.Checks.Single(c => c.Key == "restore_tested").Status.Should().Be("fail");
+
+        // La preuve vient de l'outil de restauration (restore.sh --verify, clé d'API).
+        ((TestTenantContext)s.ServiceProvider.GetRequiredService<Nexora.Application.Abstractions.ITenantContext>())
+            .SetApiScopes([Nexora.Application.Security.Permissions.Continuity.Manage]);
+        await cont.VerifyBackupAsync(b.Value.Id);
         await cont.RunRestoreTestAsync(new RestoreTestRequest(b.Value.Id, "sandbox"));
 
         var r = await ops.GoLiveReadinessAsync();

@@ -35,6 +35,7 @@ public sealed class PostingRuleSet : IPostingRuleSet
             ReceivableWrittenOff e => await ReceivableWriteOff(e, ctx, ct),
             InventoryWriteOffRecorded e => await InventoryWriteOff(e, ctx, ct),
             InventoryRevaluationRecorded e => await InventoryRevaluation(e, ctx, ct),
+            InventoryOpeningRecorded e => await InventoryOpening(e, ctx, ct),
             SupplierReturnRecorded e => await SupplierReturn(e, ctx, ct),
             PosSaleRecorded e => await PosSale(e, ctx, ct),
             SaleRefundRecorded e => await SaleRefund(e, ctx, ct),
@@ -307,6 +308,16 @@ public sealed class PostingRuleSet : IPostingRuleSet
         var (valueBase, rateId) = await ctx.ToFunctional(e.Value.Abs(), e.OccurredAt, ct);
         d.Debit(await ctx.Account(AccountKeys.InventoryLoss, ct), e.Value.Abs(), valueBase, rateId);
         d.Credit(await ctx.Account(AccountKeys.Inventory, ct), e.Value.Abs(), valueBase, rateId);
+        return d;
+    }
+
+    private static async Task<JournalEntryDraft> InventoryOpening(InventoryOpeningRecorded e, PostingContext ctx, CancellationToken ct)
+    {
+        var d = new JournalEntryDraft("OD", ctx.DateOf(e.OccurredAt), ctx.FunctionalCurrency,
+            "inventory_opening", e.ProductId, "Stock d'ouverture");
+        var (valueBase, rateId) = await ctx.ToFunctional(e.Value, e.OccurredAt, ct);
+        d.Debit(await ctx.Account(AccountKeys.Inventory, ct), e.Value, valueBase, rateId);
+        d.Credit(await ctx.Account(AccountKeys.RetainedEarnings, ct), e.Value, valueBase, rateId);
         return d;
     }
 

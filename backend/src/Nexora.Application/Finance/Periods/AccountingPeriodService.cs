@@ -26,7 +26,8 @@ public sealed class AccountingPeriodService(
     IAccountingPeriods periods,
     ITenantContext tenant,
     IBusinessCalendar calendar,
-    ILogger<AccountingPeriodService> logger) : IAccountingPeriodService
+    ILogger<AccountingPeriodService> logger,
+    Ledger.IFiscalYearService fiscalYear) : IAccountingPeriodService
 {
     /// <summary>Fenêtre d'ouverture anticipée de l'exercice suivant par le planificateur.</summary>
     public const int OpenAheadDays = 31;
@@ -50,6 +51,16 @@ public sealed class AccountingPeriodService(
         var period = await periods.GetAsync(periodId, ct);
         if (period is null) return Error.NotFound("accounting.period_not_found", "Période introuvable.");
         if (period.IsOpen) return Result.Success();
+
+        // Exercice clôturé (écriture de clôture passée) : la clôture est annulée avec lui (A-044). Avant, seule la
+        // période rouvrait ; les écritures passées ensuite n'étaient jamais soldées et la reclôture était refusée.
+        var year = await fiscalYear.ReopenClosedYearAsync(periodId, reason, ct);
+        if (!year.IsSuccess) return year.Error!;
+        if (year.Value)
+        {
+            logger.LogWarning("Exercice {Period} rouvert (clôture annulée) par {User} — motif : {Reason}", periodId, tenant.UserId, reason);
+            return Result.Success();
+        }
 
         await periods.ReopenAsync(periodId, tenant.UserId, ct);
         logger.LogWarning("Période {Period} rouverte par {User} — motif : {Reason}", periodId, tenant.UserId, reason);

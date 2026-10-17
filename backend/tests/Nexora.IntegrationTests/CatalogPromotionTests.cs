@@ -253,4 +253,41 @@ public sealed class CatalogPromotionTests(FinanceEngineFixture fx)
         line.CouponId.Should().BeNull();
         line.PromotionDiscount.Should().Be(0m);
     }
+
+    // Audit 2026-10 éd. 2, A-039 (constaté à l'exécution) : promotion −20 % et coupon −10 % sur un article à 130 —
+    // simulateur 102,96 (coupon après promotion), caisse 100,10 (coupon sur le montant de la ligne). Le simulateur suit
+    // désormais la caisse, qui fait foi ; un coupon à montant fixe ne se cumule pas avec une promotion, des deux côtés.
+    [Fact]
+    public async Task Promotion_and_percentage_coupon_give_the_same_price_at_the_pos_and_in_the_simulator()
+    {
+        var product = await Product(130m);
+        var code = $"A039{U()}";
+        await using var s = Scope();
+        (await s.ServiceProvider.GetRequiredService<IPromotionService>().CreateAsync(Promo(product, "percentage", 20m))).IsSuccess.Should().BeTrue();
+        (await s.ServiceProvider.GetRequiredService<IPromotionService>().CreateCouponAsync(
+            new CreateCouponRequest(code, "percentage", 10m, null, null, null))).IsSuccess.Should().BeTrue();
+
+        var pos = await PriceAtPos(s.ServiceProvider, product, 1m, code);
+        var quote = (await s.ServiceProvider.GetRequiredService<ICatalogPricingEngine>().QuoteAsync(
+            new PriceQuoteRequest(product, 1m, "HTG", null, null, null, null, 0m, code))).Value!;
+
+        pos.PromotionDiscount.Should().Be(39m, "20 % + 10 % du montant de la ligne");
+        quote.LineDiscount.Should().Be(pos.PromotionDiscount, "avant : 36,40 au simulateur contre 39 à la caisse");
+    }
+
+    [Fact]
+    public async Task A_fixed_coupon_is_not_combined_with_a_promotion_in_the_simulator_either()
+    {
+        var product = await Product(130m);
+        var code = $"A039F{U()}";
+        await using var s = Scope();
+        (await s.ServiceProvider.GetRequiredService<IPromotionService>().CreateAsync(Promo(product, "percentage", 20m))).IsSuccess.Should().BeTrue();
+        (await s.ServiceProvider.GetRequiredService<IPromotionService>().CreateCouponAsync(
+            new CreateCouponRequest(code, "amount", 10m, null, null, null))).IsSuccess.Should().BeTrue();
+
+        var quote = (await s.ServiceProvider.GetRequiredService<ICatalogPricingEngine>().QuoteAsync(
+            new PriceQuoteRequest(product, 1m, "HTG", null, null, null, null, 0m, code))).Value!;
+        quote.LineDiscount.Should().Be(26m, "la promotion seule, comme à la caisse");
+        quote.Steps.Should().Contain(st => st.Rule == "coupon" && st.Reference == "ignoré");
+    }
 }
