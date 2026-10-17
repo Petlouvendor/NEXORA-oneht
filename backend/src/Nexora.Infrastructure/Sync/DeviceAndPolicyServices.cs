@@ -19,6 +19,8 @@ public sealed class SqlDeviceRegistryService(NexoraDbContext db, IUnitOfWork uow
         Guid Id, string DeviceIdentifier, string? Name, string DeviceType, string Status,
         DateTimeOffset? LastSyncAt, DateTimeOffset? LastSeenAt, int Pending);
 
+    private sealed record DeviceStateRow(Guid Id, string Status);
+
     public async Task<Result<Guid>> RegisterAsync(RegisterDeviceRequest request, CancellationToken ct = default)
     {
         var type = request.DeviceType.Trim().ToLowerInvariant();
@@ -43,14 +45,21 @@ public sealed class SqlDeviceRegistryService(NexoraDbContext db, IUnitOfWork uow
                     {request.PosTerminalId}, {request.PublicKey}, {userId}, 'active', now())
             ON CONFLICT (company_id, device_identifier) DO UPDATE
             SET device_type = EXCLUDED.device_type, name = EXCLUDED.name, pos_terminal_id = EXCLUDED.pos_terminal_id,
-                public_key = EXCLUDED.public_key, user_id = EXCLUDED.user_id, status = 'active', last_seen_at = now(), updated_at = now()
+                public_key = EXCLUDED.public_key, user_id = EXCLUDED.user_id, last_seen_at = now(), updated_at = now()
+            -- Un appareil révoqué ou suspendu le reste (audit 2026-10 éd. 2, A-003 résidu) : le réenregistrer sous le même
+            -- identifiant le réactivait, et la révocation ne tenait pas.
+            WHERE nexora.sync_device.status NOT IN ('revoked', 'suspended')
             """, ct);
         await uow.SaveChangesAsync(ct);
 
-        var actual = await db.Database.SqlQuery<Guid>($"""
-            SELECT id AS "Value" FROM nexora.sync_device WHERE company_id = {Company} AND device_identifier = {request.DeviceIdentifier.Trim()}
+        var actual = await db.Database.SqlQuery<DeviceStateRow>($"""
+            SELECT id AS "Id", status AS "Status" FROM nexora.sync_device
+            WHERE company_id = {Company} AND device_identifier = {request.DeviceIdentifier.Trim()}
             """).FirstAsync(ct);
-        return Result.Success(actual);
+        if (actual.Status is "revoked" or "suspended")
+            return Error.Forbidden("sync.device_revoked",
+                $"Cet appareil est {(actual.Status == "revoked" ? "révoqué" : "suspendu")} : un responsable doit le réactiver.");
+        return Result.Success(actual.Id);
     }
 
     public async Task<IReadOnlyList<SyncDeviceDto>> ListAsync(CancellationToken ct = default)

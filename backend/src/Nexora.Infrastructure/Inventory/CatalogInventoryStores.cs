@@ -463,6 +463,22 @@ public sealed class EfInventoryOpsStore(NexoraDbContext db, ITenantContext tenan
     public Task<StockTransfer?> GetTransferAsync(Guid id, CancellationToken ct = default)
         => db.StockTransfers.Include(t => t.Lines).FirstOrDefaultAsync(t => t.Id == id, ct);
 
+    public async Task<StockTransfer?> LockTransferAsync(Guid id, CancellationToken ct = default)
+    {
+        await db.Database.ExecuteSqlAsync($"SELECT id FROM nexora.stock_transfer WHERE id = {id} FOR UPDATE", ct);
+        var transfer = await db.StockTransfers.Include(t => t.Lines).FirstOrDefaultAsync(t => t.Id == id, ct);
+        if (transfer is null) return null;
+        // Déjà suivi par le contexte (lecture antérieure) : on écrase par l'état en base, lu après le verrou.
+        await db.Entry(transfer).ReloadAsync(ct);
+        foreach (var line in transfer.Lines) await db.Entry(line).ReloadAsync(ct);
+        return transfer;
+    }
+
+    public async Task<string?> LockCountStatusAsync(Guid id, CancellationToken ct = default)
+        => (await db.Database.SqlQuery<string>($"""
+            SELECT status AS "Value" FROM nexora.inventory_count WHERE id = {id} FOR UPDATE
+            """).ToListAsync(ct)).FirstOrDefault();
+
     public async Task AddCountAsync(InventoryCount count, CancellationToken ct = default) => await db.InventoryCounts.AddAsync(count, ct);
     public Task<InventoryCount?> GetCountAsync(Guid id, CancellationToken ct = default)
         => db.InventoryCounts.Include(c => c.Lines).FirstOrDefaultAsync(c => c.Id == id, ct);

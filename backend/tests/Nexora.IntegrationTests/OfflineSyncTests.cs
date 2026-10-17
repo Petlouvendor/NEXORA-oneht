@@ -255,4 +255,55 @@ public sealed class OfflineSyncTests(FinanceEngineFixture fx)
         replay.Value!.Operations[0].Status.Should().Be("FAILED");
         (await db.Sales.AsNoTracking().AnyAsync(x => x.SourceOperationUuid == op)).Should().BeFalse();
     }
+
+    // ---- Audit 2026-10 éd. 2, A-003 résidu : vente rejouée dans une caisse déjà comptée ; appareil révoqué réactivé ----
+    private static readonly Guid CashRegister = Guid.Parse("dce00000-0000-0000-0000-00000000a061");
+
+    [Fact]
+    public async Task An_offline_sale_into_a_closed_session_waits_for_a_manager_decision()
+    {
+        await using var s = Scope();
+        var sync = s.ServiceProvider.GetRequiredService<ISyncService>();
+        var sessions = s.ServiceProvider.GetRequiredService<CashSessionService>();
+        var device = await RegisterDevice(s.ServiceProvider, $"CLS-{Guid.NewGuid():N}"[..12]);
+        var p = await Stocked(s.ServiceProvider, "CLS", 100m, 50m, 10m);
+
+        var session = (await sessions.OpenAsync(new OpenSessionCommand(CashRegister, null, 1_000m))).Value;
+        var soldAt = DateTimeOffset.UtcNow;
+        var closed = await sessions.CloseAsync(new CloseSessionCommand(session, 1_000m, null));
+        closed.IsSuccess.Should().BeTrue(closed.Error?.Message);
+        closed.Value!.Status.Should().Be("closed");
+
+        var op = Guid.NewGuid();
+        var cmd = new CheckoutCommand(op, Officine, null, null, session, null, "HTG",
+            [new CheckoutLine(p, 1m, null, 0m, null)], [Cash(100m)], 100m, null, null, null, soldAt);
+        var push = await sync.PushBatchAsync(new PushBatchRequest(device,
+            [new SyncOperationInput(op, "sale", "create", JsonSerializer.SerializeToElement(cmd))]));
+
+        push.IsSuccess.Should().BeTrue(push.Error?.Message);
+        var result = push.Value!.Operations.Single();
+        result.Status.Should().Be("CONFLICT", "l'ancien code ajoutait la vente en silence à la caisse déjà comptée");
+        var db = s.ServiceProvider.GetRequiredService<NexoraDbContext>();
+        (await db.Sales.AsNoTracking().CountAsync(x => x.SourceOperationUuid == op)).Should().Be(0);
+
+        var accepted = await sync.ResolveConflictAsync(result.ConflictId!.Value,
+            new ResolveConflictRequest("client_wins", "Vente vérifiée avec le ticket ; écart de clôture expliqué"));
+        accepted.IsSuccess.Should().BeTrue(accepted.Error?.Message);
+        (await db.Sales.AsNoTracking().CountAsync(x => x.SourceOperationUuid == op && x.CashSessionId == session))
+            .Should().Be(1, "acceptée par un responsable, la vente rejoint sa session");
+    }
+
+    [Fact]
+    public async Task Registering_a_revoked_device_again_does_not_reactivate_it()
+    {
+        await using var s = Scope();
+        var registry = s.ServiceProvider.GetRequiredService<IDeviceRegistryService>();
+        var identifier = $"RVK-{Guid.NewGuid():N}"[..12];
+        var device = await RegisterDevice(s.ServiceProvider, identifier);
+        (await registry.RevokeAsync(device, new RevokeDeviceRequest("Appareil perdu"))).IsSuccess.Should().BeTrue();
+
+        var again = await registry.RegisterAsync(new RegisterDeviceRequest(identifier, identifier, "pos", null, null));
+        again.Error!.Code.Should().Be("sync.device_revoked", "l'ancien code le remettait « actif »");
+        (await registry.ListAsync()).Should().Contain(d => d.Id == device && d.Status == "revoked");
+    }
 }

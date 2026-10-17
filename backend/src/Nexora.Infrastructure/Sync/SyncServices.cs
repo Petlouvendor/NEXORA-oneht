@@ -336,6 +336,14 @@ public sealed class SqlSyncService(
             return await ConflictAsync(opId, op, "validation", refusal,
                 "Vérifier la vente puis l'accepter (« le poste a raison ») pour l'enregistrer, ou l'annuler.", ct);
 
+        // Session déjà comptée ou fermée (audit 2026-10 éd. 2, A-003 résidu) : la vente rejouée s'ajoutait en silence à
+        // une caisse dont l'écart était déjà constaté — le caissier pouvait ainsi justifier après coup un manquant. Elle
+        // devient un conflit : un responsable (sync.manage) vérifie l'écart de clôture, puis l'accepte ou l'annule.
+        if (!bypassPolicy && cmd.CashSessionId is { } sessionId && await ClosedSessionAsync(sessionId, ct) is { } closed)
+            return await ConflictAsync(opId, op, "period",
+                $"Vente hors ligne rattachée à la session {closed.DocumentNumber ?? sessionId.ToString()}, déjà {(closed.Status == "closing" ? "comptée" : "fermée")}.",
+                "Vérifier l'écart de clôture de la session, puis accepter la vente (« le poste a raison ») ou l'annuler.", ct);
+
         // Contrôle de crédit offline (§17) : le crédit projeté est bloqué si la politique l'interdit.
         var paid = cmd.Tenders.Sum(t => t.Amount);
         var estimatedTotal = await EstimateTotalAsync(cmd, ct);
@@ -392,6 +400,15 @@ public sealed class SqlSyncService(
     /// Politique hors ligne (phase 6) — ce que la vente hors ligne n'avait pas le droit de faire : remise interdite,
     /// moyen de paiement non autorisé, vente faite après la durée maximale sans contact avec le serveur.
     /// </summary>
+    private sealed record SessionStateRow(string Status, string? DocumentNumber);
+
+    /// <summary>Session de caisse de l'entreprise qui n'est plus ouverte (comptée ou fermée), sinon null.</summary>
+    private async Task<SessionStateRow?> ClosedSessionAsync(Guid sessionId, CancellationToken ct)
+        => (await db.Database.SqlQuery<SessionStateRow>($"""
+            SELECT status AS "Status", NULL::text AS "DocumentNumber" FROM nexora.cash_session
+            WHERE id = {sessionId} AND company_id = {Company} AND status <> 'open'
+            """).ToListAsync(ct)).FirstOrDefault();
+
     private async Task<string?> PolicyRefusalAsync(CheckoutCommand cmd, SyncOperationInput op, PolicyRow policy, DateTimeOffset? lastSeen, CancellationToken ct)
     {
         if (!policy.AllowOfflineDiscount && cmd.Lines.Any(l => l.LineDiscount > 0m))
