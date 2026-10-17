@@ -66,11 +66,18 @@ public sealed class ContinuityRegisterTests(FinanceEngineFixture fx)
     public async Task Verify_passes_the_integrity_checks_and_flips_status_to_verified()
     {
         await using var s = Scope();
-        var (svc, _) = Ctx(s.ServiceProvider, Direction);
+        var (svc, tc) = Ctx(s.ServiceProvider, Direction);
         var b = await svc.RegisterBackupAsync(new RegisterBackupRequest("full", DateTimeOffset.UtcNow.AddMinutes(-1), Checksum: Sha(), ObjectCount: 5));
 
-        var verif = await svc.VerifyBackupAsync(b.Value!.Id);
+        // Audit 2026-10 éd. 2, A-051 : depuis l'écran, le contrôle ne lit que des métadonnées saisies — il reste déclaratif.
+        var declared = await svc.VerifyBackupAsync(b.Value!.Id);
+        declared.Value!.Ok.Should().BeFalse();
+        declared.Value.Detail.Should().Contain("restore.sh --verify");
+        (await Scalar<string>($"SELECT status FROM nexora.backup WHERE id = '{b.Value.Id}'")).Should().Be("completed");
 
+        // L'outil de restauration (clé d'API) a restauré la sauvegarde : elle devient « vérifiée ».
+        tc.SetApiScopes([Nexora.Application.Security.Permissions.Continuity.Manage]);
+        var verif = await svc.VerifyBackupAsync(b.Value.Id);
         verif.IsSuccess.Should().BeTrue(verif.Error?.Message);
         verif.Value!.Ok.Should().BeTrue(verif.Value.Detail);
         (await Scalar<string>($"SELECT status FROM nexora.backup WHERE id = '{b.Value.Id}'")).Should().Be("verified");
@@ -97,10 +104,15 @@ public sealed class ContinuityRegisterTests(FinanceEngineFixture fx)
     public async Task Restore_test_records_a_run_and_a_verdict()
     {
         await using var s = Scope();
-        var (svc, _) = Ctx(s.ServiceProvider, Direction);
+        var (svc, tc) = Ctx(s.ServiceProvider, Direction);
         var b = await svc.RegisterBackupAsync(new RegisterBackupRequest("full", DateTimeOffset.UtcNow.AddMinutes(-1), Checksum: Sha(), ObjectCount: 3));
 
-        var run = await svc.RunRestoreTestAsync(new RestoreTestRequest(b.Value!.Id, "sandbox"));
+        // A-051 : un test « réussi » sans restauration réelle n'est plus possible depuis l'écran.
+        (await svc.RunRestoreTestAsync(new RestoreTestRequest(b.Value!.Id, "sandbox"))).Error!.Code
+            .Should().Be("continuity.restore_test_tool_only");
+
+        tc.SetApiScopes([Nexora.Application.Security.Permissions.Continuity.Manage]);   // restore.sh --verify
+        var run = await svc.RunRestoreTestAsync(new RestoreTestRequest(b.Value.Id, "sandbox"));
 
         run.IsSuccess.Should().BeTrue(run.Error?.Message);
         run.Value!.Mode.Should().Be("test");
@@ -130,7 +142,7 @@ public sealed class ContinuityRegisterTests(FinanceEngineFixture fx)
         tc.SetUser(Compta);
         var approved = await svc.ApproveProductionRestoreAsync(req.Value.Id);
         approved.IsSuccess.Should().BeTrue(approved.Error?.Message);
-        approved.Value!.Status.Should().Be("passed");
+        approved.Value!.Status.Should().Be("running", "approuver n'est pas restaurer : l'outil de restauration l'exécute (A-051)");
         approved.Value.ApprovedBy.Should().Be(Compta);
     }
 

@@ -635,9 +635,18 @@ public sealed class SqlFiscalYearService(
                       (id, company_id, accounting_period_id, net_result, result_entry_id, next_period_id, controls, forced, note, closed_by)
                     VALUES ({cid}, {Company}, {periodId}, {net}, {entry.Id},
                             {(next == Guid.Empty ? (Guid?)null : next)}, {controlsJson}::jsonb, {forced}, {r.Note}, {tenant.UserId})
+                    ON CONFLICT (accounting_period_id) DO UPDATE
+                    SET net_result = EXCLUDED.net_result, result_entry_id = EXCLUDED.result_entry_id,
+                        next_period_id = EXCLUDED.next_period_id, controls = EXCLUDED.controls, forced = EXCLUDED.forced,
+                        note = EXCLUDED.note, closed_by = EXCLUDED.closed_by, status = 'completed', closed_at = now(),
+                        updated_at = now()
                     """, token);
 
-                return (cid, entry.Id, number);
+                // Après une réouverture, la ligne de clôture reprise garde son identifiant d'origine.
+                var savedCloseId = await db.Database.SqlQuery<Guid>($"""
+                    SELECT id AS "Value" FROM nexora.accounting_year_close WHERE accounting_period_id = {periodId}
+                    """).FirstAsync(token);
+                return (savedCloseId, entry.Id, number);
             }, ct);
 
             return Result.Success(new CloseYearResultDto(closeId, periodId, report.NetResult, entryId, entryNumber, forced));
@@ -645,6 +654,68 @@ public sealed class SqlFiscalYearService(
         catch (Exception ex) when (ex is InvalidOperationException or Npgsql.PostgresException or DbUpdateException)
         {
             return Error.Conflict("accounting.year_close_failed", ex.Message);
+        }
+    }
+
+    private sealed record YearCloseRow(Guid Id, Guid ResultEntryId, string? Note);
+
+    public async Task<Result<bool>> ReopenClosedYearAsync(Guid periodId, string reason, CancellationToken ct = default)
+    {
+        var close = (await db.Database.SqlQuery<YearCloseRow>($"""
+            SELECT id AS "Id", result_entry_id AS "ResultEntryId", note AS "Note" FROM nexora.accounting_year_close
+            WHERE company_id = {Company} AND accounting_period_id = {periodId} AND status = 'completed'
+            """).ToListAsync(ct)).FirstOrDefault();
+        if (close is null) return Result.Success(false);
+        var period = await PeriodAsync(periodId, ct);
+        if (period is null) return Error.NotFound("accounting.period_not_found", "Période comptable introuvable.");
+
+        try
+        {
+            await uow.ExecuteInTransactionAsync(async token =>
+            {
+                await periods.ReopenAsync(periodId, tenant.UserId, token);
+
+                var closing = await db.JournalEntries.Include(e => e.Lines).FirstAsync(e => e.Id == close.ResultEntryId, token);
+                var journalId = await JournalIdAsync("CL", token);
+                var number = await numbers.NextAsync("journal:CL", null, token);
+                // Miroir d'origine « closing » : comme l'écriture de clôture, il est écarté des états de résultat ; la
+                // balance, elle, compte les deux et se retrouve nette.
+                var mirror = new JournalEntry
+                {
+                    Id = Guid.NewGuid(), CompanyId = Company, JournalId = journalId, AccountingPeriodId = periodId,
+                    EntryNumber = number, EntryDate = period.EndDate, Origin = "closing", SourceType = "year_end_reopen",
+                    SourceId = close.Id, ReversalOfEntryId = closing.Id,
+                    Description = $"Annulation de la clôture — {period.Name} — {reason.Trim()}",
+                    Status = JournalEntryStatus.Posted, PostedAt = DateTimeOffset.UtcNow, PostedBy = tenant.UserId,
+                    CreatedBy = tenant.UserId,
+                };
+                var n = 1;
+                foreach (var l in closing.Lines)
+                    mirror.Lines.Add(new JournalEntryLine
+                    {
+                        Id = Guid.NewGuid(), CompanyId = Company, AccountId = l.AccountId, LineNumber = n++,
+                        Description = "Annulation de la clôture", Debit = l.Credit, Credit = l.Debit, CurrencyId = l.CurrencyId,
+                        ExchangeRateId = l.ExchangeRateId, BaseDebit = l.BaseCredit, BaseCredit = l.BaseDebit,
+                    });
+                await db.JournalEntries.AddAsync(mirror, token);
+                await uow.SaveChangesAsync(token);
+                await db.Database.ExecuteSqlAsync($"""
+                    UPDATE nexora.journal_entry SET status = 'reversed', updated_at = now() WHERE id = {closing.Id} AND status = 'posted'
+                    """, token);
+                // Motif conservé en base (avant : seulement dans le journal applicatif).
+                var note = string.IsNullOrWhiteSpace(close.Note)
+                    ? $"Rouvert : {reason.Trim()}"
+                    : $"{close.Note} — Rouvert : {reason.Trim()}";
+                await db.Database.ExecuteSqlAsync($"""
+                    UPDATE nexora.accounting_year_close SET status = 'reopened', note = {note}, updated_at = now() WHERE id = {close.Id}
+                    """, token);
+                return 0;
+            }, ct);
+            return Result.Success(true);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or Npgsql.PostgresException or DbUpdateException)
+        {
+            return Error.Conflict("accounting.year_reopen_failed", ex.Message);
         }
     }
 

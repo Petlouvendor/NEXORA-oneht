@@ -135,6 +135,14 @@ public sealed class SqlContinuityService(
         return Result.Success(await GetBackupAsync(id, ct) ?? throw new InvalidOperationException());
     }
 
+    /// <summary>
+    /// Appel de l'outil de restauration (audit 2026-10 éd. 2, A-051) : <c>database/scripts/restore.sh --verify</c>
+    /// restaure réellement la sauvegarde dans une base jetable, puis appelle l'API avec une clé d'API. Un contrôle lancé
+    /// depuis l'écran ne lit que des métadonnées saisies : il ne peut pas rendre une sauvegarde « vérifiée » ni un test
+    /// « réussi » — c'est ce qui alimentait la liste de mise en production et la note de reprise.
+    /// </summary>
+    private bool FromRestoreTool => tenant.ApiScopes is not null;
+
     public async Task<Result<BackupVerificationDto>> VerifyBackupAsync(Guid backupId, CancellationToken ct = default)
     {
         var b = await LoadBackupAsync(backupId, ct);
@@ -149,9 +157,17 @@ public sealed class SqlContinuityService(
         if (b.ExpiresAt is { } e && e <= clock.UtcNow) problems.Add("rétention expirée");
         if (b.ObjectCount is { } oc && oc > live * 2 + 1000) problems.Add($"comptage déclaré {oc} incohérent avec l'état actuel {live}");
 
-        var ok = problems.Count == 0;
-        var detail = ok ? "Contrôles d'intégrité passés." : string.Join(" ; ", problems);
-        var verif = JsonSerializer.Serialize(new { ok, detail, liveObjectCount = live, backupObjectCount = b.ObjectCount, checkedAt = clock.UtcNow }, Web);
+        var metadataOk = problems.Count == 0;
+        var ok = metadataOk && FromRestoreTool;
+        var detail = !metadataOk ? string.Join(" ; ", problems)
+            : ok ? "Restauration réelle réussie (outil de restauration) et contrôles d'intégrité passés."
+            : "Métadonnées cohérentes — contrôle déclaratif. La sauvegarde ne sera « vérifiée » qu'après une restauration "
+              + "réelle : database/scripts/restore.sh --verify.";
+        var verif = JsonSerializer.Serialize(new
+        {
+            ok, declarative = !FromRestoreTool, detail, liveObjectCount = live, backupObjectCount = b.ObjectCount,
+            checkedAt = clock.UtcNow,
+        }, Web);
 
         await db.Database.ExecuteSqlAsync($"""
             UPDATE nexora.backup
@@ -186,6 +202,10 @@ public sealed class SqlContinuityService(
         var b = await LoadBackupAsync(request.BackupId, ct);
         if (b is null) return Error.NotFound("continuity.backup", "Sauvegarde introuvable.");
         if (b.Status is "failed" or "expired") return Error.Conflict("continuity.backup_unusable", "Sauvegarde en échec ou expirée.");
+        if (!FromRestoreTool)
+            return Error.Validation("continuity.restore_test_tool_only",
+                "Un test de restauration est enregistré par l'outil de restauration (database/scripts/restore.sh --verify, "
+                + "avec une clé d'API) : il restaure réellement la sauvegarde dans une base jetable. Un test déclaratif ne peut pas être « réussi ».");
 
         var live = await LiveObjectCountAsync(ct);
         var checksumOk = !string.IsNullOrEmpty(b.Checksum);
@@ -198,7 +218,7 @@ public sealed class SqlContinuityService(
             liveObjectCount = live,
             backupObjectCount = b.ObjectCount,
             coversUpTo = b.CoversUpTo,
-            note = "Test de contrôle applicatif — la restauration réelle en sandbox est réalisée par l'agent d'infrastructure.",
+            note = "Enregistré par l'outil de restauration après une restauration réelle dans une base jetable.",
         }, Web);
 
         var id = Guid.NewGuid();
@@ -246,8 +266,9 @@ public sealed class SqlContinuityService(
 
         await db.Database.ExecuteSqlAsync($"""
             UPDATE nexora.restore_run
-            SET status = 'passed', approved_by = {tenant.UserId}, finished_at = now(),
-                report = jsonb_build_object('approved', true, 'approvedBy', {tenant.UserId}::text, 'approvedAt', {clock.UtcNow}::text),
+            SET status = 'running', approved_by = {tenant.UserId},
+                report = jsonb_build_object('approved', true, 'approvedBy', {tenant.UserId}::text, 'approvedAt', {clock.UtcNow}::text,
+                                            'note', 'Approuvée : à exécuter par l''outil de restauration (A-051 : l''approbation n''est pas la restauration).'),
                 updated_at = now()
             WHERE id = {restoreRunId}
             """, ct);

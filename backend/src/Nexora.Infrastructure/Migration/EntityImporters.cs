@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Nexora.Application.Inventory;
 using Nexora.Application.Migration;
 using Nexora.Contracts.Migration;
+using Nexora.Domain.Common;
 using Nexora.Domain.Inventory;
 using Nexora.Infrastructure.Persistence;
 
@@ -346,7 +347,9 @@ internal sealed class ProductImporter(NexoraDbContext db) : ImporterBase(db), IE
 
 // ----------------------------------------------------------------- Stock d'ouverture (§14)
 
-internal sealed class OpeningStockImporter(NexoraDbContext db, IStockLedger stock) : ImporterBase(db), IEntityImporter
+internal sealed class OpeningStockImporter(
+    NexoraDbContext db, IStockLedger stock, Nexora.Application.Finance.Engine.IFinancialEngine engine,
+    Nexora.Application.Finance.Abstractions.ICompanyCurrencyContext currencies) : ImporterBase(db), IEntityImporter
 {
     public string Kind => "opening_stock";
 
@@ -405,10 +408,26 @@ internal sealed class OpeningStockImporter(NexoraDbContext db, IStockLedger stoc
                 ? BusinessDate.Noon(d) : (DateTimeOffset?)null;
             await stock.PostAsync(new StockMovementRequest(pid, lid, MovementType.Opening, qty, cost,
                 ReferenceType: "import", ReferenceId: ctx.ImportJobId, OccurredAt: occurred), ct);
+
+            // Contrepartie comptable (A-050), dans la même transaction que le mouvement ; identifiant d'opération stable
+            // par produit et emplacement : une reprise relancée ne double pas l'écriture.
+            var value = Math.Round(qty * cost, 2);
+            if (value > 0m)
+            {
+                var posted = await engine.HandleAsync(new Nexora.Application.Finance.Events.InventoryOpeningRecorded(
+                    ctx.CompanyId, OpeningOperation(ctx.CompanyId, pid, lid), occurred ?? DateTimeOffset.UtcNow, pid,
+                    new Money(value, await currencies.FunctionalCurrencyAsync(ct))), ct);
+                if (!posted.IsSuccess) throw new InvalidOperationException(posted.Error!.Message);
+            }
         }
         return new("created", "none", $"{sku}|{loc}", pid, "stock_movement", "created",
             [new("info", "quantity", $"Ouverture {qty:0.###} @ {cost:0.##}")]);
     }
+
+    /// <summary>Identifiant d'opération de l'écriture d'ouverture d'un produit à un emplacement.</summary>
+    internal static Guid OpeningOperation(Guid company, Guid product, Guid location)
+        => new(System.Security.Cryptography.MD5.HashData(
+            System.Text.Encoding.UTF8.GetBytes($"nexora.opening-stock:{company}:{product}:{location}")));
 
     private async Task<Guid?> ProductIdAsync(Guid company, string sku, CancellationToken ct)
         => await Db.Database.SqlQuery<Guid?>($"""

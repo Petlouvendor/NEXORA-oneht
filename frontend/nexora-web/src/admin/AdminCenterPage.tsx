@@ -102,6 +102,10 @@ function VersionsPanel() {
         </div>
       }>Versions — {domain} (§39)</SectionLabel>
 
+      <p style={{ margin: "0 0 8px", color: "var(--nx-text-2)", fontSize: "var(--nx-fs-sm)" }}>
+        Un instantané est un relevé daté de la configuration, pour l'historique et la comparaison. Le marquer comme référence
+        n'applique rien : les paramètres se modifient dans leur écran.
+      </p>
       {error && <div className="nx-error-text">{error}</div>}
       {!data ? <Skeleton rows={3} /> : data.length === 0 ? (
         <EmptyState title="Aucune version" hint="Créez un premier instantané de configuration." />
@@ -118,9 +122,10 @@ function VersionsPanel() {
               </span>
               {v.status === "draft" && (
                 <Button size="sm" style={{ marginLeft: "auto" }} onClick={async () => {
-                  try { await activateConfigVersion(v.id); toast.success(`Version v${v.versionNumber} activée.`); reload(); }
+                  // Audit 2026-10 éd. 2, A-037 : « Activer » laissait croire que la configuration était restaurée.
+                  try { await activateConfigVersion(v.id); toast.success(`v${v.versionNumber} est la version de référence (paramètres inchangés).`); reload(); }
                   catch (e) { toast.error(e instanceof ApiError ? e.message : "Erreur"); }
-                }}>Activer</Button>
+                }}>Marquer comme référence</Button>
               )}
             </div>
           ))}
