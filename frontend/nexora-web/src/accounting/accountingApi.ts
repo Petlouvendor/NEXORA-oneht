@@ -1,4 +1,5 @@
 import { apiFetch } from "@/core/apiClient";
+import { parseDate, todayIso } from "@/shared/format";
 
 // Comptabilité générale — workflow manuel & clôture d'exercice (Phase 29 §9-19, §51).
 
@@ -237,5 +238,21 @@ export const getFinancialStatements = (from: string, to: string) =>
   apiFetch<{ incomeStatement: IncomeStatement; balanceSheet: BalanceSheet }>(`/financial-statements${qs({ from, to })}`);
 
 export const closePeriod = (id: string) => apiFetch<void>(`/accounting-periods/${id}/close`, { method: "POST" });
+/** Ouvre l'exercice qui suit le dernier (audit 2026-10 éd. 2, A-042). */
+export const openNextYear = () => apiFetch<AccountingPeriod>("/accounting-periods/next-year", { method: "POST" });
+
+/**
+ * État de l'exercice suivant : on peut l'ouvrir quand le dernier exercice a commencé ; on le propose en évidence dans
+ * le dernier mois (même fenêtre que le planificateur, 31 jours).
+ */
+export function nextYearState(periods: AccountingPeriod[], today: string): { last?: AccountingPeriod; canOpen: boolean; dueSoon: boolean } {
+  const last = [...periods].sort((a, b) => a.endDate.localeCompare(b.endDate)).at(-1);
+  if (!last) return { canOpen: false, dueSoon: false };
+  const canOpen = last.startDate <= today;
+  const limit = parseDate(today);
+  limit.setDate(limit.getDate() + 31);
+  return { last, canOpen, dueSoon: canOpen && last.endDate <= todayIso(limit) };
+}
+
 export const reopenPeriod = (id: string, reason: string) =>
   apiFetch<void>(`/accounting-periods/${id}/reopen`, { method: "POST", body: JSON.stringify({ reason, reversalDate: null }) });

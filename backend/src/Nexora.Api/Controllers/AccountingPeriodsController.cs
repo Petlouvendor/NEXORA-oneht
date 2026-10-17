@@ -29,6 +29,21 @@ public sealed class AccountingPeriodsController(
             status = p.Status.ToString().ToLowerInvariant(),
         }));
 
+    /// <summary>Ouvre l'exercice qui suit le dernier (audit 2026-10 éd. 2, A-042).</summary>
+    [HttpPost("next-year")]
+    [RequirePermission(Permissions.Accounting.ClosePeriod)]
+    public async Task<IActionResult> OpenNextYear(CancellationToken ct)
+    {
+        var r = await periodService.OpenNextYearAsync(ct);
+        return r.IsSuccess
+            ? Ok(new
+            {
+                id = r.Value!.Id, name = r.Value.Name, startDate = r.Value.StartDate, endDate = r.Value.EndDate,
+                status = r.Value.Status.ToString().ToLowerInvariant(),
+            })
+            : FromResult(r);
+    }
+
     [HttpPost("{id:guid}/close")]
     [RequireStepUp(StepUpPurposes.AccountingValidation)]
     [RequirePermission(Permissions.Accounting.ClosePeriod)]

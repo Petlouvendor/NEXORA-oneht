@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Nexora.Application.Abstractions;
 using Nexora.Application.Finance.Abstractions;
 using Nexora.Domain.Accounting;
@@ -116,15 +117,17 @@ public sealed class EfExchangeRateProvider(NexoraDbContext db) : IExchangeRatePr
 
 // --- Périodes comptables (§27) ---------------------------------------------
 
-public sealed class EfAccountingPeriods(NexoraDbContext db, ITenantContext tenant) : IAccountingPeriods
+public sealed class EfAccountingPeriods(
+    NexoraDbContext db, ITenantContext tenant, IBusinessCalendar calendar,
+    ILogger<EfAccountingPeriods> logger) : IAccountingPeriods
 {
     private Guid Company => tenant.ActiveCompanyId
         ?? throw TenantErrors.ActiveCompanyRequired();
 
     public async Task<AccountingPeriod> ResolveOpenPeriodAsync(DateOnly date, CancellationToken ct = default)
     {
-        var period = await db.AccountingPeriods.AsNoTracking()
-            .FirstOrDefaultAsync(p => p.CompanyId == Company && p.StartDate <= date && p.EndDate >= date, ct)
+        var period = await CoveringAsync(date, ct)
+            ?? await OpenFollowingYearsUpToAsync(date, ct)
             ?? throw new InvalidOperationException($"Aucune période comptable ne couvre le {date:yyyy-MM-dd}.");
 
         if (period.Status != PeriodStatus.Open)
@@ -132,6 +135,61 @@ public sealed class EfAccountingPeriods(NexoraDbContext db, ITenantContext tenan
                 $"Période « {period.Name} » {period.Status} — écriture interdite (§27).");
         return period;
     }
+
+    /// <summary>
+    /// Filet de sécurité (audit 2026-10 éd. 2, A-042) : seul l'amorçage créait un exercice, si bien qu'au premier jour
+    /// de l'année suivante toute écriture — donc toute vente — était refusée. Une opération du jour postérieure au
+    /// dernier exercice ouvre les exercices suivants, d'un an chacun et sans trou. Jamais pour une date future (une
+    /// saisie erronée en 2062 n'ouvre rien), ni avant le premier exercice, ni dans un trou entre deux exercices.
+    /// </summary>
+    private async Task<AccountingPeriod?> OpenFollowingYearsUpToAsync(DateOnly date, CancellationToken ct)
+    {
+        var last = await LastAsync(ct);
+        if (last is null || date <= last.EndDate) return null;
+        if (date > (await calendar.TodayAsync(ct)).AddDays(1)) return null;
+
+        while (last.EndDate < date)
+        {
+            last = await CreateFollowingAsync(last, ct);
+            logger.LogWarning("Exercice {Name} ouvert automatiquement pour une opération du {Date} (entreprise {Company})",
+                last.Name, date, Company);
+        }
+        return await CoveringAsync(date, ct);
+    }
+
+    public async Task<AccountingPeriod?> LastAsync(CancellationToken ct = default)
+        => await db.AccountingPeriods.AsNoTracking()
+            .Where(p => p.CompanyId == Company).OrderByDescending(p => p.EndDate).FirstOrDefaultAsync(ct);
+
+    public async Task<AccountingPeriod> OpenNextYearAsync(CancellationToken ct = default)
+    {
+        var last = await LastAsync(ct)
+            ?? throw new InvalidOperationException("Aucun exercice comptable : l'entreprise n'a pas été initialisée.");
+        return await CreateFollowingAsync(last, ct);
+    }
+
+    /// <summary>
+    /// Exercice d'un an qui suit immédiatement <paramref name="previous"/>. Deux créations simultanées (deux ventes du
+    /// 1er janvier) se heurtent à la contrainte d'exclusion des chevauchements : la seconde ne fait rien et relit
+    /// l'exercice créé par la première.
+    /// </summary>
+    private async Task<AccountingPeriod> CreateFollowingAsync(AccountingPeriod previous, CancellationToken ct)
+    {
+        var start = previous.EndDate.AddDays(1);
+        var end = start.AddYears(1).AddDays(-1);
+        var name = start is { Month: 1, Day: 1 } ? $"Exercice {start.Year}" : $"Exercice {start.Year}-{end.Year}";
+        await db.Database.ExecuteSqlAsync($"""
+            INSERT INTO nexora.accounting_period (company_id, name, start_date, end_date, status)
+            VALUES ({Company}, {name}, {start}, {end}, 'open')
+            ON CONFLICT DO NOTHING
+            """, ct);
+        return await CoveringAsync(start, ct)
+            ?? throw new InvalidOperationException($"L'exercice commençant le {start:yyyy-MM-dd} n'a pas pu être créé.");
+    }
+
+    private Task<AccountingPeriod?> CoveringAsync(DateOnly date, CancellationToken ct)
+        => db.AccountingPeriods.AsNoTracking()
+            .FirstOrDefaultAsync(p => p.CompanyId == Company && p.StartDate <= date && p.EndDate >= date, ct);
 
     public Task<AccountingPeriod?> GetAsync(Guid periodId, CancellationToken ct = default)
         => db.AccountingPeriods.AsNoTracking().FirstOrDefaultAsync(p => p.Id == periodId, ct);
