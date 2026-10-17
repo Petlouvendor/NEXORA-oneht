@@ -14,7 +14,7 @@
 
 **Suivi des corrections (après l'audit)** — détail et preuves dans `docs/corrections-audit-2026-10-ed2.md` :
 lot 0 (2026-10-17) A-036, T-003 **corrigés** ; lot 1 A-042 **corrigé** ; lot 2 A-052, A-043 **corrigés** (données de
-recette corrigées par `correction-cout-devise`). Le tableau ci-dessous reste l'état constaté par l'audit.
+recette corrigées par `correction-cout-devise`) ; lot 3 A-040, A-038, A-003 (résidu) **corrigés**. Le tableau ci-dessous reste l'état constaté par l'audit.
 
 ## 1. Tableau de synthèse (anomalies ouvertes)
 

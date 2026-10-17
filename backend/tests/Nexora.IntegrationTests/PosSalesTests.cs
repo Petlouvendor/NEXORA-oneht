@@ -371,4 +371,44 @@ public sealed class PosSalesTests(FinanceEngineFixture fx)
         ok.IsSuccess.Should().BeTrue(ok.Error?.Message);
         ok.Value!.Total.Should().Be(96m);
     }
+
+    // Audit 2026-10 éd. 2, A-040 : le caissier choisissait la taxe de la ligne (taxId d'une taxe à 0 %) — 143 devenaient
+    // 130 sans remise déclarée.
+    private static readonly Guid Exempt = Guid.Parse("dce00000-0000-0000-0000-00000000a021");   // EX0, 0 %
+    private static readonly Guid Vat10 = Guid.Parse("dce00000-0000-0000-0000-00000000a022");    // TVA10
+
+    private static CheckoutCommand WithTax(Guid product, Guid? taxId, decimal tendered)
+        => new(Guid.NewGuid(), Officine, null, null, null, null, "HTG",
+            [new CheckoutLine(product, 1m, null, 0m, taxId)],
+            [new TenderInput(CashAccount, CashMethod, tendered, null)], tendered, null, null, null, null);
+
+    [Fact]
+    public async Task A_cashier_cannot_choose_another_tax_than_the_products()
+    {
+        var p = await Stocked("T1", 130m, 50m, 10m, Vat10);
+        await using var s = Scope();
+        ((TestTenantContext)s.ServiceProvider.GetRequiredService<Nexora.Application.Abstractions.ITenantContext>()).SetUser(Cashier);
+        var sales = s.ServiceProvider.GetRequiredService<SalesService>();
+
+        (await sales.CheckoutAsync(WithTax(p, Exempt, 130m))).Error!.Code
+            .Should().Be("sale.tax_override_forbidden", "une taxe à 0 % sur un article à 10 % est une remise déguisée");
+        (await sales.CheckoutAsync(WithTax(p, Guid.NewGuid(), 143m))).Error!.Code.Should().Be("sale.tax_unknown");
+
+        var own = await sales.CheckoutAsync(WithTax(p, Vat10, 143m));
+        own.IsSuccess.Should().BeTrue(own.Error?.Message);
+        own.Value!.Total.Should().Be(143m, "la taxe de l'article reste acceptée si elle est envoyée");
+        var none = await sales.CheckoutAsync(WithTax(p, null, 143m));
+        none.IsSuccess.Should().BeTrue(none.Error?.Message);
+        none.Value!.Total.Should().Be(143m);
+    }
+
+    [Fact]
+    public async Task Changing_the_tax_of_a_line_needs_the_price_change_permission()
+    {
+        var p = await Stocked("T2", 130m, 50m, 10m, Vat10);
+        await using var s = Scope();   // direction : pos.change_price
+        var r = await s.ServiceProvider.GetRequiredService<SalesService>().CheckoutAsync(WithTax(p, Exempt, 130m));
+        r.IsSuccess.Should().BeTrue(r.Error?.Message);
+        r.Value!.Total.Should().Be(130m);
+    }
 }

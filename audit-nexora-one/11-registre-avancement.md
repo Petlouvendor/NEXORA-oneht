@@ -80,17 +80,29 @@ exécutés par les tests ou parcourus), dont l'essentiel des écrans frontend et
 | `nexora_api_it` | base déclarée des tests d'API (T-002 corrigé) | conservée (base de test) |
 | `nexora_audit_probe` | mesure du temps de clonage | supprimée |
 | `nexora_audit_ed2` | scénarios d'exécution | supprimée |
-| `nexora`, `nexora_recette` | **aucune écriture** (SELECT en session lecture seule) | inchangées |
+| `nexora`, `nexora_recette` | **aucune écriture** (SELECT en session lecture seule) | inchangées par l'audit |
 
-## Questions en suspens (décisions du propriétaire)
+Après l'audit, les corrections (lots 0 à 3) ont appliqué V103 et V104 à `nexora`, `nexora_recette` et `nexora_api_it`,
+et deux écritures correctives à `nexora_recette`, après sauvegarde (`C:\Users\Rener\nexora-sauvegardes\2026-10-17-avant-V103`
+et `…-avant-V104`). Détail : `docs/corrections-audit-2026-10-ed2.md`.
 
-1. A-042 : création manuelle (écran) ou automatique de l'exercice suivant — à trancher avant décembre.
-2. A-043 : modèle d'extourne (ne plus changer le statut de l'origine, ou agréger `reversed`).
-3. A-052 / A-043 : correction des données existantes par écritures correctives (pas de réécriture).
-4. A-049 : la plateforme SaaS sera-t-elle exposée ? Sinon, désactiver la route de facturation.
-5. A-045 : suppression des routes `/finance/*` (aucun écran ne les appelle).
-6. Bases laissées par l'éd. 1 : `nexora_audit_api` (clone) — à supprimer si souhaité.
-7. Identifiants bac à sable (MonCash, SMTP, Twilio, FCM) et Docker pour l'E2E.
+## Décisions du propriétaire (2026-10-17) et questions restantes
+
+Tranché le 2026-10-17 (exécution : `docs/corrections-audit-2026-10-ed2.md`) :
+
+1. A-042 : écran « Ouvrir l'exercice suivant », ouverture planifiée dans le dernier mois et filet au moment d'une
+   opération du jour — **fait** (lot 1).
+2. A-043 : les états agrègent `posted` et `reversed` par une règle unique ; l'extourne n'est pas modifiée — **fait**
+   (lot 2).
+3. A-052 : données existantes corrigées par écritures correctives (commande `correction-cout-devise`) — **fait** sur
+   `nexora_recette` (lot 2).
+4. A-049 : route de facturation plateforme désactivée tant qu'elle n'est pas configurée — prévu au lot 5.
+5. A-045 : routes `/finance/*` retirées — prévu au lot 5.
+
+Restent ouvertes :
+
+1. Bases laissées par l'éd. 1 : `nexora_audit_api` (clone) — à supprimer si souhaité.
+2. Identifiants bac à sable (MonCash, SMTP, Twilio, FCM) et Docker pour l'E2E.
 
 ## État des processus lancés par l'audit
 

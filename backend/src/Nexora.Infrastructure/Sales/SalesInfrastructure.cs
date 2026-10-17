@@ -85,9 +85,11 @@ public sealed class SqlSalesPricing(NexoraDbContext db, ITenantContext tenant) :
                 : null;
             decimal unitPrice = line.UnitPriceOverride ?? priceRow?.Amount ?? 0m;
 
+            // Taxe fournie par l'appelant : contrôlée par ISalePricingGuard (A-040) ; seule une taxe active de
+            // l'entreprise est retenue ici, jamais celle d'une autre entreprise.
             var taxId = line.TaxId ?? product.DefaultTaxId;
             decimal taxRate = taxId is null ? 0m : await db.Database.SqlQuery<decimal?>($"""
-                SELECT rate AS "Value" FROM nexora.tax WHERE id = {taxId}
+                SELECT rate AS "Value" FROM nexora.tax WHERE id = {taxId} AND company_id = {Company} AND status = 'active'
                 """).FirstOrDefaultAsync(ct) ?? 0m;
 
             // §25 : un prix saisi TTC est ramené au HT de façon déterministe ; le reste du
@@ -451,6 +453,7 @@ public sealed class SqlSalePricingGuard(
     private Guid Company => SalesHelpers.Company(tenant);
 
     private sealed record ProductState(Guid Id, string Name, string Status, bool IsSellable);
+    private sealed record TaxState(string Status, bool IsProductTax);
 
     public async Task<Nexora.Domain.Common.Result> ValidateProductsAsync(IReadOnlyList<CheckoutLine> requested, CancellationToken ct = default)
     {
@@ -508,6 +511,24 @@ public sealed class SqlSalePricingGuard(
             if (req.UnitPriceOverride is not null && !await Has(Nexora.Application.Security.Permissions.Pos.ChangePrice))
                 return Nexora.Domain.Common.Error.Forbidden("sale.price_override_forbidden",
                     "Modifier le prix de vente exige la permission pos.change_price.");
+
+            // Taxe de la ligne (audit 2026-10 éd. 2, A-040) : le caissier pouvait envoyer l'identifiant d'une taxe à 0 %
+            // et ramener le total de 143 à 130 sans remise déclarée. La taxe est celle de l'article ; une autre taxe exige
+            // pos.change_price (comme un prix forcé) et doit être une taxe active de l'entreprise.
+            if (req.TaxId is { } taxId)
+            {
+                var tax = await db.Database.SqlQuery<TaxState>($"""
+                    SELECT t.status AS "Status", COALESCE(t.id = p.default_tax_id, false) AS "IsProductTax"
+                    FROM nexora.tax t JOIN nexora.product p ON p.id = {line.ProductId}
+                    WHERE t.id = {taxId} AND t.company_id = {Company}
+                    """).FirstOrDefaultAsync(ct);
+                if (tax is null || tax.Status != "active")
+                    return Nexora.Domain.Common.Error.Validation("sale.tax_unknown",
+                        $"Taxe inconnue ou inactive pour « {line.Description} ».");
+                if (!tax.IsProductTax && !await Has(Nexora.Application.Security.Permissions.Pos.ChangePrice))
+                    return Nexora.Domain.Common.Error.Forbidden("sale.tax_override_forbidden",
+                        $"Changer la taxe de « {line.Description} » exige la permission pos.change_price.");
+            }
 
             if (line.ManualDiscount > 0)
             {

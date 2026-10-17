@@ -104,3 +104,32 @@ ventes de 16 200 HTG au lieu de 120, comptes non soldés après extourne, modifi
 passage : rien à corriger. `nexora` : rien à corriger. Compte de stock de la Pharmacie : 61 696,20 → 142 096,20 pour une
 valorisation de 140 285,00 ; l'écart restant (1 811,20) est celui des écarts de prix factures / réceptions, constat
 faible distinct. Aucune écriture déséquilibrée.
+
+**Résultats.** Unitaires 103/103, intégration 543/543, API 200/200 (frontend inchangé).
+
+## Lot 3 — Taxe choisie par le caissier, stock concurrent, vente rejouée dans une caisse fermée (A-040, A-038, A-003 résidu)
+
+**A-040.** Une ligne de vente acceptait l'identifiant de n'importe quelle taxe : un caissier ramenait 143 à 130 en
+choisissant la taxe à 0 %, sans remise déclarée. Désormais (`SqlSalePricingGuard`) la taxe envoyée doit être une taxe
+active de l'entreprise ; une autre taxe que celle de l'article exige `pos.change_price`, comme un prix forcé. La
+tarification ne retient plus une taxe d'une autre entreprise ni une taxe inactive.
+
+**A-038.** Réception, clôture et annulation de transfert, et validation d'inventaire, contrôlaient l'état du document
+avant leur transaction, sans verrou. Elles verrouillent maintenant le document (`FOR UPDATE`) et relisent son état dans
+la transaction (`LockTransferAsync`, `LockCountStatusAsync`).
+
+**A-003 (résidu).** Par la synchronisation, une vente hors ligne datée d'avant la clôture s'ajoutait en silence à une
+caisse déjà comptée. Elle devient un conflit (type `period`) qu'un responsable (`sync.manage`) tranche : « le poste a
+raison » l'enregistre dans sa session, sinon elle est annulée. Par ailleurs, réenregistrer un appareil révoqué ou
+suspendu sous le même identifiant le remettait « actif » : la révocation ne tenait pas. Il reste révoqué
+(`sync.device_revoked`).
+
+**Tests** (rouges sur l'ancien code, vérifié en le rétablissant le temps du test, puis verts) :
+`StockConcurrencyTests` — 8 réceptions simultanées d'un transfert d'une unité (ancien code : 2 réussites), annulation
+contre réception (ancien code : les deux réussissaient), 4 validations simultanées d'un inventaire (ancien code : 4
+réussites) ; `PosSalesTests` — taxe à 0 % refusée au caissier, taxe inconnue refusée, taxe de l'article acceptée,
+dérogation possible avec `pos.change_price` ; `OfflineSyncTests` — vente rejouée dans une session fermée → conflit puis
+acceptation ; appareil révoqué non réactivé.
+
+**Reste (faible, non traité ici).** Le centre de synchronisation affiche les types de conflit et les résolutions sous
+leur code (`period · sale`, `client_wins`) ; le motif et l'action recommandée sont lisibles.
