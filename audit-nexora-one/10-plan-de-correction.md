@@ -1,98 +1,70 @@
-# 10 — Plan de correction
+# 10 — Plan de correction (édition 2)
 
-> Proposition seulement : aucune correction n'a été faite pendant l'audit. Ordre imposé par le cahier d'audit :
-> (1) sécurité et intégrité des données, (2) erreurs de compilation ou d'exécution, (3) fonctionnalités essentielles
-> inutilisables, (4) incohérences frontend/backend/base, (5) flux métier, (6) fonctionnalités partielles, (7) tests,
-> (8) performance et maintenabilité, (9) améliorations secondaires. Chaque correction suppose d'abord le test de
-> non-régression qui reproduit le défaut (il doit échouer avant la correction).
+> Proposition seulement : aucune correction n'a été faite pendant l'audit. Ordre du cahier d'audit : (1) sécurité et
+> intégrité des données, (2) compilation et exécution, (3) fonctionnalités essentielles inutilisables, (4) incohérences
+> frontend / backend / base, (5) flux métier, (6) fonctionnalités partielles, (7) tests, (8) performance et
+> maintenabilité, (9) secondaire. Une échéance fixe (A-042) passe devant. Chaque correction commence par le test qui
+> reproduit le défaut (rouge avant, vert après). Le plan de l'éd. 1 a été exécuté (étapes 0 à 20, voir
+> `docs/corrections-audit-2026-10.md`) ; il reste dans l'historique Git.
 
-## Étape 0 — Préalables (sans toucher au comportement)
+## Étape 0 — Préalables
 
 | ID | Action | Critère d'acceptation |
-|---|---|---|
-| A-001 | Décider du sort de la modification non commitée de `Nexora.ApiTests.csproj` (restaurer la référence `Nexora.Api` si elle n'était pas voulue) | `dotnet build Nexora.sln` sans erreur sur la copie de travail |
-| T-002 | Appliquer réellement la chaîne de connexion des tests d'API (variable `Database__ConnectionString` dans la fabrique, ou options lues à la construction du `DbContext`) | Un passage des tests d'API n'écrit plus dans `nexora` (comptage avant/après) |
-| T-001 | Ajouter une fixture d'intégration utilisant le rôle `nexora_app` pour les tests de sécurité et de portée système | Les tests A-009/A-031 échouent avant correction, passent après |
+| --- | --- | --- |
+| T-003 | `CommandTimeout` explicite sur le clonage de la fixture (`FinanceEngineFixture.cs:48-58`) | `dotnet test` d'intégration vert sans variable d'environnement |
+| A-036 | Épingler `System.Security.Cryptography.Pkcs` corrigé dans `Directory.Packages.props` | Scan de vulnérabilités vide, CI verte |
+| Tests multidevise | Ajouter un jeu de test à taux non entier (USD à 132,5) | Les tests de A-041 et A-052 échouent avant correction |
 
-## Priorité 1 — Sécurité et intégrité des données
+## Priorité 0 — Échéance du 2027-01-01
 
-| ID | Fichiers | Cause | Correction | Dépendances | Risques de régression | Tests de validation | Critère d'acceptation |
-|---|---|---|---|---|---|---|---|
-| **A-031** | `Operations/SqlDataCorrectionService.cs`, `SqlMaintenanceService.cs`, `SqlJobRegistry.cs`, `SqlFeatureFlagService.cs`, `SqlRetentionPurgeService.cs`, `OpsMaintenanceController.cs`, migration de permissions | Console de portée plateforme protégée par des permissions accordées à des rôles d'entreprise ; lectures et mises à jour en portée système | Décision produit : (a) rôle « opérateur plateforme » distinct, retrait de `operations.*` des rôles `manager` et `owner_direction` (nouvelle migration) ; ou (b) bornage à l'entreprise active de chaque requête, fenêtre de maintenance et tâches par entreprise. Retirer `BeginSystemScope` des lectures de corrections | T-001 ; décision sur le modèle d'exploitation SaaS vs sur site | Écrans d'exploitation des clients sur site : prévoir l'attribution du nouveau rôle à l'installation | Deux entreprises de groupes différents : liste vide, 404 sur client étranger, 403 sur maintenance | Aucun rôle d'entreprise ne lit ni n'écrit hors de ses entreprises par `/ops/*` |
-| **A-002** | `Application/Sales/SalesReturnService.cs`, `Infrastructure/Sales/SalesInfrastructure.cs:378-387` | Aucun `cash_movement` `sale_refund` écrit au remboursement espèces | Écrire le mouvement (montant négatif) dans la session du retour, dans la transaction du retour ; exiger une session ouverte et un compte de remboursement | A-005 (même service) | Clôtures déjà faites : ne pas réécrire l'historique ; prévoir un rapport des sessions affectées | Vente + retour espèces + clôture comptée = fond | Écart 0 ; 5711 crédité une fois ; aucune charge 6580 |
-| **A-018** | `Infrastructure/Finance/FinanceStores.cs:100-105` | Lecture-modification-écriture du solde sans verrou | `UPDATE financial_account SET current_balance = current_balance + @delta RETURNING current_balance` ; contrôle planifié de cohérence (solde = ouverture + Σ transactions) | Tous les appelants d'`AdjustBalanceAsync` (moteur, paie, comptes clients) | Faible (même sémantique) | 20 opérations concurrentes sur un compte | Aucune dérive ; script de recalcul fourni pour les bases existantes |
-| **A-021** | `Infrastructure/Finance/SqlGeneralAccounting.cs`, `SqlFinancialReports.cs:26-118` | États cumulés depuis l'origine + écriture d'à-nouveaux | Choisir un modèle : grand livre continu sans à-nouveaux, ou à-nouveaux avec états bornés à l'exercice (exclure le journal AN des cumuls antérieurs) | A-020 | Comptabilités ayant déjà généré des à-nouveaux : écriture corrective documentée | Bilan identique avant/après génération des à-nouveaux | Soldes de bilan non doublés |
-| A-003 | `Api/Controllers/PosController.cs:111-115`, `SalesController.cs:21-25`, `Application/Sales/SalesService.cs:102,611-613` | `SoldAt` lié depuis le corps HTTP ; session close acceptée si `SoldAt <= ClosedAt` | Ignorer `SoldAt` sur les canaux en ligne ; l'accepter seulement depuis la synchronisation d'un appareil enrôlé, borné à [ouverture de session, maintenant] | Synchro hors ligne (même service) | Rejeu hors ligne d'une vente faite avant la clôture : garder ce cas par le canal de synchro | Vente directe dans session close → 409 ; rejeu hors ligne légitime → accepté | Aucune vente en ligne datée par le client |
-| A-009 | `Persistence/RlsConnectionInterceptor.cs`, `Tenancy/TenantContext.cs`, `Persistence/UnitOfWork.cs`, `Identity/MfaService.cs` | Contexte RLS posé à l'ouverture de connexion seulement ; `bypass_rls` positionnable par le rôle applicatif | Réappliquer le contexte (`SET LOCAL`) à chaque entrée/sortie de portée quand une connexion est ouverte ou interdire la portée système en transaction ; à terme, rôle base distinct pour les tâches système | T-001 | Élevé : touche tous les services ; à couvrir par la suite d'intégration exécutée avec `nexora_app` | Réinitialisation MFA d'un tiers → codes supprimés | Aucune différence de comportement entre superutilisateur et `nexora_app` dans la suite |
-| A-010 | `Identity/UserAssignmentService.cs:305-351` | Garde anti-élévation limitée à l'attribution | Même garde (cible ≤ appelant) sur suspension, verrouillage et retrait ; invalider la session au retrait | — | Faible | Admin société ne peut pas suspendre la direction | 403 |
-| A-032 | `Security/ApprovalAndSession.cs:496-510` | Seconde requête non bornée à l'utilisateur | Ne révoquer les jetons que si la session appartient à l'appelant | — | Nul | Session étrangère → 404, jetons intacts | — |
+| ID | Fichiers | Cause | Correction | Risques | Tests | Critère |
+| --- | --- | --- | --- | --- | --- | --- |
+| **A-042** | `FinanceServices.cs` (`ResolveOpenPeriodAsync`), `FinancialEngine.cs:61-69`, `V072…sql:94-98`, `SqlGeneralAccounting.cs:613-616`, écran comptabilité | Exercices et périodes créés seulement à l'amorçage | Route + écran « ouvrir l'exercice suivant » (12 périodes) ; création automatique planifiée en décembre ; message métier clair si aucune période | Faible ; la clôture de l'exercice précédent reste indépendante | Écriture datée du premier jour d'un exercice absent → refus explicite ; après création → acceptée ; vente du 2027-01-01 en test d'horloge | **Avant le 2026-12-31** sur chaque installation : exercice 2027 créé et vente du 1er janvier possible |
 
-## Priorité 2 — Compilation et exécution
+## Priorité 1 — Intégrité des données et sécurité
 
-| ID | Correction | Critère |
-|---|---|---|
-| A-001 | voir étape 0 | build vert |
-| A-004 | Contrôle d'idempotence du moteur dans la transaction, capture de la violation d'unicité → rejeu ; date de trésorerie = `OccurredAt` | Doublon concurrent → 200 identique ; trésorerie et grand livre à la même date |
-| Obs. | `IdempotencyFilter` : verrou par clé, stockage partagé (base) si plusieurs instances | Deux requêtes simultanées de même clé → une exécution |
-| Obs. | `/ops/database` → 500 constaté une fois sous charge : rejouer `OpsMaintenanceEndpointsTests` seul et capturer le journal | Test vert ou cause identifiée |
+| ID | Fichiers | Correction | Dépendances / risques | Tests de validation | Critère |
+| --- | --- | --- | --- | --- | --- |
+| **A-052** | `SalesService.cs:418`, `SalesReturnService.cs:200`, `PostingRuleSet.cs:94-100` | Coût des ventes passé en devise fonctionnelle (`new Money(cogsTotal, functional)`) | Données existantes : script de correction (écritures correctives datées, pas de réécriture) pour les ventes et retours en devise déjà comptabilisés — 2 ventes dans `nexora_recette` | Vente et retour en USD : 6031/3110 = coût en HTG | Compte de stock = valorisation (à l'écart de prix près) |
+| **A-043** | `SqlFinancialReports.cs:35,66,77,171`, `SqlGeneralAccounting.cs:665,741`, 12 fichiers / 23 requêtes `status = 'posted'` | Agréger `posted` **et** `reversed` (ou ne plus changer le statut de l'origine) ; un seul prédicat partagé | Clôtures déjà faites après une extourne : vérifier puis corriger par écriture | Écriture, extourne, puis balance / bilan / résultat / clôture / à-nouveaux | Effet net nul après extourne dans tous les états |
+| **A-049** | `BillingController.cs:62-69`, `SqlPlatformBilling.cs:167-232`, `ProductionConfiguration.cs:17-50`, `docker-compose.prod.yml` | Démarrage refusé hors développement sans jeton fort ; signature HMAC ; contrôle montant / client / devise avant de solder ; limite de débit ; ou route désactivée hors SaaS | Aucune pour une installation mono-client | Démarrage Production sans jeton → échec ; jeton par défaut → 401 ; montant partiel → facture non soldée | Plus de facture soldée par un appel anonyme |
+| A-040 | `SalesInfrastructure.cs:88-91`, `SalesContracts.cs:3-4`, `SqlSalePricingGuard` | Taxe = taxe du produit ; dérogation seulement avec `pos.change_price`, journalisée | Hors ligne : même règle dans le profil | Vente avec `taxId` 0 % → 143 ou 403 | Taxe client ignorée |
+| A-038 | `InventoryOperationsService.cs:159-200,260-283,365-456`, `CatalogInventoryStores.cs:462-534` | `SELECT … FOR UPDATE` du document et `UPDATE … WHERE status = …` conditionnel (réception, annulation, validation) | Faible | 8 réceptions simultanées → 1 réussie, 7 en 409 | Quantité reçue = quantité expédiée |
+| A-003 résidu | `SyncServices`, `SyncController` (`/sync/devices`, `/sync/batch`) | Enrôlement d'appareil approuvé par un responsable ; vente hors ligne refusée (ou mise en conflit) si la session est close ; date bornée à [ouverture, clôture] | Caisses hors ligne existantes : réenrôlement | `/sync` dans une session close → conflit | Aucune vente ajoutée à une caisse comptée |
+| A-041 | `PostingRuleSet.cs:57-117,168-220,328-399,572-615`, `JournalEntryDraft.cs:73-80`, `Money.cs:32` | Convertir le total puis dériver la dernière composante par différence (comme les achats et la paie) ; message métier au lieu du message PostgreSQL | Toutes les règles de comptabilisation en devise | Vente, retour, facture en USD à 132,5 ; OD 10,01 + 10,01 | Aucun refus d'équilibre sur une opération valide |
+| A-045 | `FinanceController.cs:19-72`, `FinanceOperations.cs:87-112`, `V022…sql:60-67` | Retirer `/finance/*` ou réserver à un rôle technique ; sinon mêmes contrôles que les services métier (4 yeux, session, plafonds) | Aucun écran ne les appelle | Comptable sur `/finance/expenses` → 403 ou approbation requise | Dépense jamais payée sans second approbateur |
+| A-048 | `IntelligenceController.cs:34-110`, `V056…sql:230-231` | Filtrer par catégorie selon les permissions de pilotage, ou exiger `reporting.view_financial` | Faible | Responsable stock : `/intelligence/forecasts` → 403 | Même réponse que `/forecasts` |
+| A-033 | `UserAssignmentService.cs:26-42,55-68,137-186,219-223` | `admin.manage_users` exigée dans l'entreprise visée | Faible | Admin A / caissier B : action sur B → 403 | — |
+| A-034 | `PermissionAuthorization.cs:51-56`, `AuditAndFraud.cs`, audit RH, clonage | Borner à l'entreprise active ou vérifier la permission par entreprise lue | Motif transverse : recenser (voir 09 §2) | Lecture d'audit multi-entreprise → entreprise active seule | — |
+| A-035 | `SecurityGovernance.cs:316-333` | Statut changé seulement si le retrait réussit | Nul | Retrait refusé → erreur, statut inchangé | — |
+| A-009 résidu | migration | RLS sur `app_user`, `user_role`, `access_scope` (lecture de soi, portée système pour l'authentification) | Élevé : chemins d'authentification ; suite complète avec `nexora_app` | Utilisateur d'une autre entreprise invisible en SQL | 0 table d'identité sans RLS |
 
-## Priorité 3 — Fonctionnalités essentielles inutilisables
-
-| ID | Fichiers | Correction | Critère |
-|---|---|---|---|
-| A-017 | `V002__currency.sql`, nouvel écran et point d'accès taux, `EfExchangeRateProvider` | Saisie historisée des taux (permission finance) ; décider global vs par entreprise | Installation neuve → saisie d'un taux → vente USD comptabilisée |
-| A-012 | `Sales/SalesInfrastructure.cs:111-112` (`PriceCartAsync`) | Coupon fixe appliqué une fois au panier, réparti au prorata ; règle de cumul promo + coupon explicite ; plafond de remise | Coupon 50 sur 3 lignes → 50 |
-| A-007 | `Application/Inventory/InventoryOperationsService.cs:284-417` | Écart calculé sur le stock courant à la validation (ou mouvements intervenus soustraits) ; lignes par lot | Ouverture → vente → validation : stock final = compté |
-| A-020 | `SqlGeneralAccounting.cs` (`PnlBalancesAsync`) | Borner à l'exercice (`periodId` réellement utilisé) | Deux exercices clôturés → comptes de gestion à zéro |
-
-## Priorité 4 — Incohérences frontend / backend / base
+## Priorité 3 à 6 — Fonctionnement et rapports
 
 | ID | Correction | Critère |
-|---|---|---|
-| A-013 | Passer la liste de prix du client au calcul serveur unique (caisse, commandes, devis) ; un seul moteur de prix | Simulateur = caisse pour tout client |
-| A-014 | `POST /sales/{id}/payments` → service des comptes clients (permission `credit.receive_payment`, session, devise) ou suppression | Caissier sans droit → 403 |
-| A-015 | Exploiter `pack_size` et décoder les codes à poids | Carton de 12 → 12 unités |
-| A-024 | Authentifier `/metrics` dans l'API ; bloquer par préfixe dans Caddy | Variantes de chemin → 401/404 |
-| A-029 / A-030 | Politiques `WITH CHECK (company_id IS NOT NULL …)` hors portée système ; RLS sur `role_permission` ; révoquer les privilèges inutiles de `nexora_app` | UPDATE d'un rôle système refusé par la base |
+| --- | --- | --- |
+| A-046 | Convertir en devise fonctionnelle au taux du jour (ou afficher par devise) dans KPI, trésorerie, pilotage | Trésorerie de la Pharmacie = HTG + USD × taux |
+| A-047 | Retenir le budget actif seulement ; signe selon le type de compte | Révision ≠ doublement |
+| A-022 résidu | `SqlAgingBudgetDrill.cs:41` : `remaining_amount` (avoirs déduits) | Âgé du pilotage = âgé des achats |
+| A-039 | Simulateur produit par `ISalesPricing.PriceCartAsync` | Simulateur = caisse |
+| A-044 | Réouverture = extourne de l'écriture de clôture + annulation de la clôture | Réouvrir puis reclôturer : résultat non doublé |
+| A-050 | Écriture d'ouverture (stock / report à nouveau) dans la transaction d'import | Stock importé = compte de stock |
+| A-037 | Réappliquer l'instantané, ou retirer le « retour arrière » | Retour arrière visible dans les paramètres |
+| A-051 | Statuts « déclarée » / « contrôlée » distincts ; « vérifiée » seulement après `restore.sh --verify` | Aucune sauvegarde « vérifiée » sans restauration |
+| FAIBLES | 90 constats par fichier (09 §5) : confirmation forte du versement d'avance, `/sync` 500 sur date non UTC, variables HTML non échappées dans les e-mails, pièce jointe servie en ligne, prévision datée de 2300, etc. | Au fil des modules |
 
-## Priorité 5 — Flux métier
+## Priorité 7 — Tests à ajouter
 
-| ID | Correction | Critère |
-|---|---|---|
-| A-019 | Comptabiliser apports, sorties et prélèvements de caisse (contrepartie choisie) avec transaction de trésorerie | Solde trésorerie caisse = Σ mouvements de session |
-| A-023 | Opération « solde d'ouverture » (transaction + écriture contre capitaux ou compte d'attente) | Trésorerie = grand livre à la mise en service |
-| A-005 | Verrou de la vente source au retour ; compte de remboursement obligatoire en espèces ; `Restocked` réel | Deux retours simultanés → un refusé |
-| A-006 | Extourne d'une écriture de document refusée (passer par l'annulation métier) ou effets de sous-registres inversés | Créance cohérente après extourne |
-| A-016 | Estimation du crédit hors ligne à partir du prix calculé localement (profil) | Plafond hors ligne appliqué |
-
-## Priorité 6 — Fonctionnalités partielles
-
-A-022 (âgé et prévision : `remaining_amount`), A-008 (semaine ISO), bascules de fonctionnalités à brancher ou retirer
-(A-031), A-026 (règle d'arrondi unique), MonCash : remboursement absent (limite fournisseur, à documenter à l'écran).
-
-## Priorité 7 — Couverture des tests
-
-Écrire les tests du §5 de `08-tests-et-resultats.md` ; faire tourner la suite d'intégration aussi avec `nexora_app` ;
-exécuter la suite E2E sur installation neuve ; recettes avec comptes bac à sable MonCash, SMTP, Twilio, FCM ; test de
-charge (aucun aujourd'hui).
-
-## Priorité 8 — Performance et maintenabilité
-
-P-001 (cache par requête du profil de permissions) ; A-028 (scan de dépendances bloquant) ; retirer FluentValidation ou
-l'utiliser ; A-027 (code mort) ; messages PostgreSQL bruts renvoyés au client (`UnitOfWork`) ; lecture ligne à ligne
-des 503 fichiers restants (voir 03).
-
-## Priorité 9 — Secondaire
-
-A-011 (temps constant à la connexion, anti-rejeu TOTP, portée de la réinitialisation MFA) ; A-025 (réviser le rapport
-de préparation finale à partir de la matrice 04).
+Ceux de `08-tests-et-resultats.md` §4 ; suite E2E sur installation neuve ; fournisseurs en bac à sable (MonCash, SMTP,
+Twilio, FCM) ; test de charge ; test d'intrusion externe ; autorisations par rôle sur les routes sans écran.
 
 ## Ordre d'exécution recommandé
 
-1. Étape 0 (A-001, T-002, T-001) : sans elle, aucune correction ne peut être prouvée.
-2. A-018 (une requête, aucun risque) puis A-002 et A-003 (caisse).
-3. A-031 (décision produit requise sur le modèle d'exploitation) et A-009.
-4. A-021 puis A-020 (comptabilité ; décision sur le modèle d'à-nouveaux).
-5. A-012, A-007, A-017.
-6. A-010, A-032, A-014, A-013, A-019, A-023.
-7. Le reste par priorité, puis recette complète (unitaires, intégration avec `nexora_app`, API, Vitest, E2E).
+1. Étape 0 (T-003, A-036, jeu de test multidevise).
+2. **A-042** — à livrer et déployer avant le 2026-12-31.
+3. A-052 puis A-043, avec scripts de correction des données existantes.
+4. A-040, A-038, A-003 résidu (fraude et stock).
+5. A-041 (multidevise), puis A-046.
+6. A-049 (avant toute exposition de la plateforme SaaS).
+7. A-045, A-048, A-033, A-034, A-035, A-009 résidu.
+8. Le reste par priorité, puis recette complète (unitaires, intégration avec `nexora_app`, API, Vitest, E2E).

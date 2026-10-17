@@ -1,92 +1,81 @@
-# 08 — Tests et résultats
+# 08 — Tests et résultats (édition 2)
 
-> Toutes les exécutions ci-dessous ont réellement eu lieu le 2026-10-13 (Windows 11, .NET SDK 10.0.401, Node 24.18,
-> PostgreSQL 18 local). Journaux bruts conservés dans le dossier temporaire de session de l'audit (`build-*.log`,
-> `test-*.log`, `fe-*.log`, `api-run.log`). Aucune configuration n'a été modifiée et aucune dépendance installée pour
-> faire passer un test.
+> Exécutions réelles des 2026-10-16 et 2026-10-17 (Windows 11 Pro, .NET SDK 10.0.402, Node 24.18, PostgreSQL 18 local),
+> HEAD `6a47c6d`. Journaux bruts dans le dossier temporaire de session de l'audit (`tests/*.log`, `scenarios-*.md`).
+> Aucune configuration du dépôt modifiée, aucune dépendance installée. L'édition 1 (2026-10-13) est dans l'historique Git.
 
 ## 1. Tests existants
 
-| Suite | Fichiers | Méthodes de test | Cas exécutés (théories développées) |
-|---|---|---|---|
-| `Nexora.UnitTests` | 9 | 65 `[Fact]`/`[Theory]` | 88 |
-| `Nexora.IntegrationTests` | 64 (dont la fixture et `TestDates`) | 496 | 496 |
-| `Nexora.ApiTests` | 29 (dont `StepUpTestHelper`) | 109 | 194 |
-| Vitest (frontend) | 62 fichiers `*.test.ts(x)` | — | 275 |
-| Playwright E2E | 6 scénarios + accessibilité + formulaires | 16 `test()` | **non exécutés** |
+| Suite | Cas exécutés | Évolution depuis l'éd. 1 |
+|---|---|---|
+| `Nexora.UnitTests` | 103 | +15 |
+| `Nexora.IntegrationTests` | 532 | +36 |
+| `Nexora.ApiTests` | 200 | +6 |
+| Vitest (63 fichiers) | 279 | +4 |
+| Playwright E2E (6 scénarios + accessibilité + formulaires) | **non exécutés** | — |
 
 ## 2. Exécutions
 
 | Commande | Résultat | Statut |
 |---|---|---|
-| `dotnet build backend/Nexora.sln` sur la **copie de travail** | exit 1 — 75 erreurs, toutes dans Nexora.ApiTests (référence `Nexora.Api` retirée, modification non commitée) | **ÉCHEC** (A-001) |
-| `dotnet build Nexora.sln` sur une copie de **HEAD** (`git archive`) | 0 erreur, 0 avertissement | réussi |
-| `dotnet test Nexora.UnitTests` (HEAD) | 88/88 | **réussi** |
-| `dotnet test Nexora.IntegrationTests` (HEAD), lancé en parallèle d'autres compilations | 496 échecs en 1 ms : délai de 30 s dépassé sur `CREATE DATABASE … TEMPLATE nexora` | bloqué par l'environnement (charge machine) |
-| `dotnet test Nexora.IntegrationTests` (HEAD), relancé seul | 496/496 en 10 min 15 s | **réussi** |
-| `dotnet test Nexora.ApiTests` (HEAD) | 190/194 | **4 échecs** (§3) |
-| `npm run typecheck` | exit 0 | réussi |
-| `npm run lint` | exit 0 | réussi |
-| `npx vitest run` en parallèle des compilations | 49 fichiers / 213 tests réussis, 13 fichiers non démarrés | bloqué par l'environnement |
-| `npx vitest run` relancé seul (2026-10-13) | **62/62 fichiers, 275/275 tests** en 109 s | **réussi** |
-| Playwright E2E | non lancé : exige une installation neuve conteneurisée (`docker-compose.e2e.yml`, port 8090) ; Docker arrêté ; le jeu crée des données | bloqué par l'environnement |
+| `dotnet build Nexora.sln` | 0 erreur | **réussi** (A-001 corrigé) |
+| `dotnet test tests/Nexora.UnitTests` | 103/103 | **réussi** |
+| `dotnet test tests/Nexora.IntegrationTests` (2 passages) | 532 échecs en 1 ms : `CREATE DATABASE … TEMPLATE nexora` dépasse le délai Npgsql de 30 s (22,9 s mesurées à vide) | bloqué (T-003) |
+| idem avec `NEXORA_IT_ADMIN="…;Command Timeout=600"` | **532/532** en 6 min 8 s | **réussi** |
+| `dotnet test tests/Nexora.ApiTests` en parallèle d'autres suites | 153/200 (annulations, délais) | bloqué par la charge |
+| idem seul, `NEXORA_API_TEST_DB=nexora_api_it` | **200/200** en 8 min 5 s | **réussi** (T-002 corrigé : la base déclarée est utilisée) |
+| `npm run typecheck`, `npm run lint`, `npm run build` | exit 0 | **réussi** |
+| `npx vitest run` sous charge | 216/216, 13 fichiers non démarrés | bloqué par la charge |
+| idem seul | **63/63 fichiers, 279/279** | **réussi** |
+| `dotnet list Nexora.sln package --vulnerable --include-transitive` | `System.Security.Cryptography.Pkcs` 10.0.0 (High + Moderate) via MimeKit 4.18.1 | **échec** (A-036 ; la CI est rouge) |
+| `npm audit --omit=dev` | 0 vulnérabilité | réussi |
+| Playwright E2E | non lancé (installation neuve conteneurisée nécessaire) | non exécuté |
 
-## 3. Échecs des tests d'API
+Écritures en base dues à l'audit : bases jetables de la fixture d'intégration (créées et supprimées par elle) ;
+`nexora_api_it` (base de test des tests d'API) ; `nexora_audit_probe` (mesure de clonage, supprimée) ;
+`nexora_audit_ed2` (scénarios, supprimée). **Aucune écriture dans `nexora` ni `nexora_recette`.**
 
-| Test | Cause | Imputable au produit ? |
+## 3. Scénarios exécutés par l'audit (API locale de HEAD, base jetable `nexora_audit_ed2`)
+
+| Scénario | Résultat | Verdict |
 |---|---|---|
-| `SessionSecurityEndpointsTests.Refresh_rotates…` | Le test modifie la base par une connexion administrateur redirigée par l'audit vers le clone, alors que l'API de test écrit dans `nexora` (T-002) | Non : artefact de l'audit, mais révèle T-002 |
-| `SessionSecurityEndpointsTests.Logout_idle_and_maximum_lifetime…` | Idem | Non (artefact), révèle T-002 |
-| `SmokeTests.Golden_path…` | `TaskCanceledException` après 3 min 53 s sous charge | Probablement environnement ; à rejouer |
-| `OpsMaintenanceEndpointsTests.Read_only_ops_endpoints…` | `GET /api/v1/ops/database` → 500 pendant le passage ; non reproduit au repos | Non déterminé |
+| Webhook de facturation plateforme avec `X-Platform-Webhook-Token: dev-platform-webhook-token` | 200, paiement enregistré ; autre jeton → 401 | **A-049 confirmé** |
+| Responsable stock : `/forecasts` puis `/intelligence/forecasts`, `/intelligence/recommendations` | 403 puis 200 (trésorerie, CA, créances nominatives) | **A-048 confirmé** |
+| OD 1 000 (5711/7011) validée puis extournée, balance avant/après | 5711 : 123 255,90 → 124 255,90 → 122 255,90 | **A-043 confirmé** |
+| Taux USD 132,5 ; OD USD 20,02 = 10,01 + 10,01 | brouillon accepté ; validation 409 « 2652.6500 <> 2652.6400 » | **A-041 confirmé** |
+| Comptable : `POST /finance/expenses` 250 HTG | 200 ; dépense payée sans approbation ; caisse −250 | **A-045 confirmé** |
+| Caissier : vente avec `taxId` d'une taxe 0 % sur un article à 10 % | 200 ; total 130 au lieu de 143 | **A-040 confirmé** |
+| Transfert d'1 unité, 8 réceptions simultanées (deux essais) | 7 puis 8 unités reçues | **A-038 confirmé** |
+| Appareil auto-enrôlé, `/sync` d'une vente datée dans une session close | `SYNCED`, vente ajoutée à la session close | **A-003 (résidu) confirmé** |
+| Promotion −20 % + coupon −10 % : simulateur contre aperçu de caisse | 102,96 contre 100,10 | **A-039 confirmé** |
+| `/sync` avec une date à décalage non UTC | 500 (Npgsql) | constat FAIBLE |
 
-**Incident d'audit** : la chaîne de connexion déclarée par les tests d'API n'est jamais appliquée (T-002). Le passage a
-donc écrit dans la base de développement `nexora` (≈ 626 lignes : journal d'audit, sessions, jetons de rafraîchissement,
-exports, imports…), comme le fait toute exécution normale de ce projet de tests. Aucune base de production touchée,
-aucun nettoyage effectué (`audit_log` est immuable ; décision laissée au propriétaire).
+Constats par requêtes SELECT en lecture seule (`nexora_recette`) : A-052 (deux ventes en USD, coût 40 500 au lieu de
+300), A-046 (trésorerie de la Pharmacie additionnant HTG et USD), A-042 (seul l'exercice 2026 existe), A-048 (droits
+des rôles), A-009 résidu (tables sans RLS), écart stock / grand livre de la Pharmacie entièrement expliqué.
 
-## 4. Scénarios exécutés par l'audit (API de HEAD, base clonée `nexora_audit_api`)
+## 4. Ce que les tests existants ne couvrent pas (cause des anomalies non détectées)
 
-| Scénario | Script | Résultat | Verdict |
-|---|---|---|---|
-| Jeton step-up utilisé dans une autre session | `nx.py` | 403 en session B, accepté en session A | FONCTIONNEL VÉRIFIÉ |
-| `X-Company-Id` d'une autre entreprise / invalide | `nx.py` | 403 / 400 | FONCTIONNEL VÉRIFIÉ |
-| Vente espèces 75 + retour espèces + clôture comptée 0 | `s1_refund.py` | attendu 75, écart −75, 5711 crédité deux fois, charge 6580 de 75 | **A-002 confirmé** |
-| Vente directe dans une session close, `soldAt` antérieur | `s2_closed_session.py` | 200, VTE2026-000049 dans la session close | **A-003 confirmé** |
-| Vente antidatée au 2026-09-01 | `s2_closed_session.py` | refus `sale.no_price` : la date client est appliquée | A-003 (confirme la prise en compte) |
-| Coupon fixe 50 sur 2 puis 3 lignes | `s3_coupon.py` | remise 100 puis 150 | **A-012 confirmé** |
-| 10 ventes espèces simultanées | `s4_concurrency.py` | solde cohérent (sérialisées par le verrou de numérotation) | non reproduit sur ce chemin |
-| 10 ventes + 10 transferts simultanés | `s4b_mixed.py` | 525 HTG perdus | **A-018 confirmé** |
-| Inventaire ouvert puis 2 ventes | `s5_count.py` | figé 411, courant 409 ; validation non exécutée | A-007 partiellement confirmé |
-| Variantes de chemin `/metrics` (GET) | `curl` | 200 sans authentification | A-024 (côté API) |
-
-Arrêt : la validation de l'inventaire (S5) a été refusée par le contrôle automatique des permissions de l'outil
-(« modification d'une ressource partagée »). Depuis, aucun scénario n'a écrit en base.
-
-## 5. Tests manquants (à écrire avant de considérer l'application fiable)
-
-| Domaine | Test | Anomalie couverte |
+| Domaine | Test manquant | Anomalie |
 |---|---|---|
-| Caisse | vente + retour espèces + clôture → écart 0, trésorerie = fond | A-002 |
-| Caisse | vente directe dans une session close → refus | A-003 |
-| Caisse | prélèvement/apport de caisse → écriture et transaction | A-019 |
-| Promotions | coupon fixe sur panier multi-lignes | A-012 |
-| Prix | vente à un client doté d'une liste de prix | A-013 |
-| Stock | ouverture d'inventaire → vente → validation → stock = compté ; produit suivi par lot | A-007 |
-| Trésorerie | N opérations concurrentes sur un même compte → solde = ouverture + Σ transactions | A-018 |
-| Comptabilité | deux exercices clôturés ; bilan identique avant/après à-nouveaux | A-020, A-021 |
-| Rapports | `FilterPeriod.Resolve` pour chaque jour de la semaine | A-008 |
-| Isolation | deux entreprises de groupes différents : `/ops/*`, corrections de données, maintenance | A-031 |
-| Isolation | réinitialisation MFA et opérations en portée système avec le rôle réel `nexora_app` | A-009, T-001 |
-| Rôles | suspension/retrait d'un compte plus privilégié | A-010 |
-| Sessions | révocation d'une session étrangère → jetons de rafraîchissement intacts | A-032 |
-| Tests d'API | isolation réelle de la base visée | T-002 |
-| Fournisseurs réels | MonCash bac à sable, SMTP, Twilio, FCM | NON VÉRIFIABLE aujourd'hui |
-| Charge | test de charge (aucun n'existe) | — |
-| E2E | suite Playwright sur installation neuve | — |
+| Comptabilité | extourne puis balance / bilan / clôture | A-043 |
+| Comptabilité | écriture au 1er jour d'un exercice non créé ; création d'exercice | A-042 |
+| Multidevise | vente, retour, facture en USD à taux non entier (132,5) ; coût des ventes en devise | A-041, A-052 |
+| Caisse | `taxId` fourni par le client | A-040 |
+| Caisse | `/sync` d'une vente dans une session close, appareil auto-enrôlé | A-003 |
+| Stock | réceptions / annulations / validations concurrentes | A-038 |
+| Prix | simulateur et caisse sur promotion + coupon | A-039 |
+| Autorisation | comptable sur `/finance/*` ; responsable stock sur `/intelligence/*` ; `manage_users` inter-entreprises | A-045, A-048, A-033 |
+| Sécurité | démarrage en Production sans jeton de webhook | A-049 |
+| Pilotage | KPI avec un compte en devise ; budget révisé | A-046, A-047 |
+| Tests | délai de clonage de la fixture | T-003 |
+| Fournisseurs réels, charge, E2E | MonCash, SMTP, Twilio, FCM ; test de charge ; Playwright | non vérifiés |
 
-## 6. Scénarios non vérifiés
+Observation : les taux de démonstration sont entiers (132, 135) — un montant en centimes multiplié par un taux entier
+ne produit jamais de demi-centime, ce qui masque A-041 dans toute la suite.
 
-Installation neuve par l'assistant ; restauration d'une sauvegarde ; flux d'achat complet de bout en bout à l'exécution ;
-paie complète à l'exécution ; caisse hors ligne dans un navigateur ; consolidation de groupe ; partage public GED ;
-fournisseurs de paiement et de notification réels ; comportement de Caddy en production.
+## 5. Scénarios non vérifiés à l'exécution
+
+Installation neuve complète (couverte seulement par `SetupWizardTests`) ; restauration réelle d'une sauvegarde ; suite
+E2E ; caisse hors ligne dans un navigateur ; fournisseurs de paiement et de notification réels ; Caddy en production ;
+test de charge ; test d'intrusion externe ; arrivée réelle au 2027-01-01 (A-042, non simulable sans changer l'horloge).
