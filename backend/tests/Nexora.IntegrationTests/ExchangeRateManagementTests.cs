@@ -51,6 +51,20 @@ public sealed class ExchangeRateManagementTests(FinanceEngineFixture fx)
     }
 
     [Fact]
+    public async Task The_fractional_rate_day_does_not_change_the_surrounding_rates()
+    {
+        await using var s = Scope();
+        var provider = s.ServiceProvider.GetRequiredService<IExchangeRateProvider>();
+        var day = FinanceEngineFixture.FractionalUsdRateDay;
+
+        (await provider.GetRateAsync("USD", "HTG", day)).Rate.Should().Be(FinanceEngineFixture.FractionalUsdRate);
+        var before = (await provider.GetRateAsync("USD", "HTG", day.AddDays(-1))).Rate;
+        (await provider.GetRateAsync("USD", "HTG", day.AddDays(1))).Rate
+            .Should().Be(before, "le taux d'origine est rétabli dès le lendemain");
+        before.Should().NotBe(FinanceEngineFixture.FractionalUsdRate);
+    }
+
+    [Fact]
     public async Task With_another_client_hosted_only_the_platform_operator_records_rates()
     {
         var other = Guid.NewGuid();
