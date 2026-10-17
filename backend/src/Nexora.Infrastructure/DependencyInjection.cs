@@ -172,6 +172,7 @@ public static class DependencyInjection
         services.AddScoped<IPosOfflineService, Nexora.Infrastructure.Sales.SqlPosOfflineService>();
         services.AddScoped<Nexora.Application.Finance.ITreasuryManagementService, Nexora.Infrastructure.Finance.SqlTreasuryManagementService>();
         services.AddScoped<Nexora.Application.Finance.IOpeningBalanceRecovery, Nexora.Infrastructure.Finance.OpeningBalanceRecoveryService>();
+        services.AddScoped<Nexora.Application.Finance.ICostOfGoodsCurrencyRecovery, Nexora.Infrastructure.Finance.CostOfGoodsCurrencyRecoveryService>();
         services.AddScoped<Nexora.Application.Finance.IExpenseService, Nexora.Infrastructure.Finance.SqlExpenseService>();
         services.AddScoped<Nexora.Application.Finance.Ledger.IChartManagementService, Nexora.Infrastructure.Finance.SqlChartManagementService>();
         services.AddScoped<ISalesReturnStore, EfSalesReturnStore>();

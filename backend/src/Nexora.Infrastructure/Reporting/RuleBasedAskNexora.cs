@@ -9,6 +9,7 @@ using Nexora.Application.Security;
 using Nexora.Contracts.Reporting;
 using Nexora.Infrastructure.Persistence;
 using Nexora.Domain.Common;
+using Nexora.Domain.Accounting;
 
 namespace Nexora.Infrastructure.Reporting;
 
@@ -169,7 +170,7 @@ public sealed class RuleBasedAskNexora(
                    COALESCE(SUM(CASE WHEN je.entry_date BETWEEN {from} AND {to} THEN l.base_debit - l.base_credit END), 0) AS "Current",
                    COALESCE(SUM(CASE WHEN je.entry_date BETWEEN {prevFrom} AND {prevTo} THEN l.base_debit - l.base_credit END), 0) AS "Previous"
             FROM nexora.journal_entry_line l
-            JOIN nexora.journal_entry je ON je.id = l.journal_entry_id AND je.status = 'posted'
+            JOIN nexora.journal_entry je ON je.id = l.journal_entry_id AND je.status = ANY({LedgerStatuses.InLedger})
             JOIN nexora.account a ON a.id = l.account_id AND a.account_type = 'expense'
             WHERE l.company_id = {Company} AND je.entry_date BETWEEN {prevFrom} AND {to}
               AND a.id NOT IN (SELECT m.account_id FROM nexora.account_mapping m

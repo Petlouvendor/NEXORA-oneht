@@ -5,6 +5,7 @@ using Nexora.Application.Reporting;
 using Nexora.Contracts.Reporting;
 using Nexora.Infrastructure.Persistence;
 using Nexora.Domain.Common;
+using Nexora.Domain.Accounting;
 
 namespace Nexora.Infrastructure.Reporting;
 
@@ -86,7 +87,7 @@ public sealed class SqlBudgetReports(NexoraDbContext db, ITenantContext tenant) 
             LEFT JOIN LATERAL (
                 SELECT SUM(jl.base_debit - jl.base_credit) actual
                 FROM nexora.journal_entry_line jl JOIN nexora.journal_entry je ON je.id = jl.journal_entry_id
-                WHERE je.company_id = {Company} AND je.status = 'posted'
+                WHERE je.company_id = {Company} AND je.status = ANY({LedgerStatuses.InLedger})
                   AND EXTRACT(YEAR FROM je.entry_date) = {fiscalYear} AND jl.account_id = a.id
             ) act ON true
             WHERE a.company_id = {Company} AND a.account_type IN ('revenue','expense')

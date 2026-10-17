@@ -662,7 +662,7 @@ public sealed class SqlFiscalYearService(
         var result = Math.Round(await db.Database.SqlQuery<decimal>($"""
             SELECT COALESCE(SUM(l.base_credit - l.base_debit), 0) AS "Value"
             FROM nexora.journal_entry_line l JOIN nexora.journal_entry e ON e.id = l.journal_entry_id
-            WHERE e.company_id = {Company} AND e.status = 'posted' AND l.account_id = {resultAccount}
+            WHERE e.company_id = {Company} AND e.status = ANY({LedgerStatuses.InLedger}) AND l.account_id = {resultAccount}
               AND e.entry_date <= {from.EndDate}
             """).FirstAsync(ct), 2);
         if (result == 0m)
@@ -738,7 +738,7 @@ public sealed class SqlFiscalYearService(
             JOIN nexora.journal_entry_line l ON l.account_id = a.id
             JOIN nexora.journal_entry e ON e.id = l.journal_entry_id
             WHERE a.company_id = {Company} AND a.account_type IN ('revenue','expense')
-              AND e.status = 'posted' AND e.entry_date <= {endDate}
+              AND e.status = ANY({LedgerStatuses.InLedger}) AND e.entry_date <= {endDate}
               AND (e.origin <> 'closing' OR e.entry_date < {startDate})
             GROUP BY a.id, a.code, a.account_type
             HAVING CASE WHEN a.account_type = 'revenue'

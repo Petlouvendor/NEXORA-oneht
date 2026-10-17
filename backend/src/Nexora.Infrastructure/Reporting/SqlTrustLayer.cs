@@ -5,6 +5,7 @@ using Nexora.Application.Reporting;
 using Nexora.Contracts.Reporting;
 using Nexora.Domain.Common;
 using Nexora.Infrastructure.Persistence;
+using Nexora.Domain.Accounting;
 
 namespace Nexora.Infrastructure.Reporting;
 
@@ -30,7 +31,7 @@ public sealed class SqlKpiReconciliation(NexoraDbContext db, ITenantContext tena
             FROM nexora.journal_entry_line l
             JOIN nexora.journal_entry e ON e.id = l.journal_entry_id
             JOIN nexora.account_mapping m ON m.account_id = l.account_id AND m.company_id = e.company_id
-            WHERE e.company_id = {Company} AND e.status = 'posted' AND m.mapping_key = {key} AND e.entry_date <= {asOf}
+            WHERE e.company_id = {Company} AND e.status = ANY({LedgerStatuses.InLedger}) AND m.mapping_key = {key} AND e.entry_date <= {asOf}
             """, ct);
         return debitNormal ? netDebit : -netDebit;
     }
@@ -42,7 +43,7 @@ public sealed class SqlKpiReconciliation(NexoraDbContext db, ITenantContext tena
             FROM nexora.journal_entry_line l
             JOIN nexora.journal_entry e ON e.id = l.journal_entry_id
             JOIN nexora.account_mapping m ON m.account_id = l.account_id AND m.company_id = e.company_id
-            WHERE e.company_id = {Company} AND e.status = 'posted' AND m.mapping_key = {key}
+            WHERE e.company_id = {Company} AND e.status = ANY({LedgerStatuses.InLedger}) AND m.mapping_key = {key}
               AND e.entry_date BETWEEN {from} AND {to}
             """, ct);
         return debitNormal ? netDebit : -netDebit;

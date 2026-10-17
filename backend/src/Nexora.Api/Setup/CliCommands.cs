@@ -24,6 +24,8 @@ namespace Nexora.Api.Setup;
 /// <item><c>healthcheck [url]</c> : sonde de vivacité pour le HEALTHCHECK Docker (l'image n'a ni curl ni wget) ;</item>
 /// <item><c>reprise-ouvertures [--appliquer]</c> : reprise des soldes d'ouverture saisis sans écriture (audit 2026-10,
 /// A-023) ; sans option, n'écrit rien et liste ce qui serait fait.</item>
+/// <item><c>correction-cout-devise [--appliquer]</c> : écritures correctives du coût des ventes en devise passé au
+/// mauvais taux avant le correctif A-052 (audit 2026-10 éd. 2) ; sans option, n'écrit rien et liste ce qui serait fait.</item>
 /// </list>
 /// </summary>
 public static class CliCommands
@@ -32,7 +34,8 @@ public static class CliCommands
 
     /// <summary>Nom de commande si le premier argument en est une (sinon l'API démarre normalement).</summary>
     public static string? Detect(string[] args)
-        => args.Length > 0 && args[0] is "migrate" or "bootstrap" or "healthcheck" or "reprise-ouvertures" ? args[0] : null;
+        => args.Length > 0 && args[0] is "migrate" or "bootstrap" or "healthcheck" or "reprise-ouvertures" or "correction-cout-devise"
+            ? args[0] : null;
 
     public static Task<int> RunAsync(string command, string[] args, IConfiguration configuration)
     {
@@ -43,6 +46,7 @@ public static class CliCommands
             "bootstrap" => BootstrapAsync(args.Skip(1).ToArray(), configuration),
             "healthcheck" => HealthCheckAsync(args.Skip(1).ToArray(), configuration),
             "reprise-ouvertures" => OpeningRecoveryAsync(args.Skip(1).ToArray(), configuration),
+            "correction-cout-devise" => CostOfGoodsRecoveryAsync(args.Skip(1).ToArray(), configuration),
             _ => Task.FromResult(Failed),
         };
     }
@@ -228,6 +232,46 @@ public static class CliCommands
         catch (Exception ex)
         {
             Console.Error.WriteLine($"reprise-ouvertures : ÉCHEC — {ex.Message}");
+            return Failed;
+        }
+    }
+
+    /// <summary>
+    /// Correction du coût des ventes en devise (A-052), entreprise par entreprise. Codes de sortie : ceux de
+    /// <c>reprise-ouvertures</c> (0 rien à faire ou tout corrigé ; 2 simulation avec des pièces à corriger ; 1 refus).
+    /// </summary>
+    private static async Task<int> CostOfGoodsRecoveryAsync(string[] options, IConfiguration configuration)
+    {
+        var apply = options.Contains("--appliquer");
+        if (string.IsNullOrWhiteSpace(configuration["Database:ConnectionString"]))
+        {
+            Console.Error.WriteLine("correction-cout-devise : aucune base configurée (Database:ConnectionString).");
+            return Failed;
+        }
+        try
+        {
+            var services = new ServiceCollection();
+            services.AddLogging();
+            services.AddSingleton(configuration);
+            services.AddApplication();
+            services.AddInfrastructure(configuration);
+            await using var provider = services.BuildServiceProvider();
+            await using var scope = provider.CreateAsyncScope();
+            var lines = await scope.ServiceProvider.GetRequiredService<Nexora.Application.Finance.ICostOfGoodsCurrencyRecovery>()
+                .RunAsync(apply);
+
+            Console.WriteLine($"correction-cout-devise : base « {new NpgsqlConnectionStringBuilder(configuration["Database:ConnectionString"]).Database} », " +
+                              (apply ? "APPLICATION." : "simulation (rien n'est écrit ; --appliquer pour corriger)."));
+            foreach (var l in lines)
+                Console.WriteLine($"  {l.Status,-10} {l.CompanyName} — écriture {l.EntryNumber} du {l.EntryDate:yyyy-MM-dd} ({l.SourceType}) : " +
+                                  $"coût des ventes {(l.Excess >= 0 ? "-" : "+")}{Math.Abs(l.Excess):N2} {l.Currency}" +
+                                  $"{(l.CorrectionNumber is { } n ? $", correction {n}" : "")}{(l.Detail is { } d ? $" — {d}" : "")}");
+            if (lines.Count == 0) Console.WriteLine("  aucune écriture à corriger.");
+            return lines.Any(l => l.Status == "refuse") ? Failed : !apply && lines.Count > 0 ? PendingMigrations : Ok;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"correction-cout-devise : ÉCHEC — {ex.Message}");
             return Failed;
         }
     }

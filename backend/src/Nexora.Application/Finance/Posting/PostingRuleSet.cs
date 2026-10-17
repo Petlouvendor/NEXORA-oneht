@@ -94,6 +94,11 @@ public sealed class PostingRuleSet : IPostingRuleSet
     private static async Task AddCogs(JournalEntryDraft d, Money? cogs, PostingContext ctx, DateTimeOffset at, CancellationToken ct)
     {
         if (cogs is not { } c || c.IsZero) return;
+        // Le coût vient de la valorisation du stock, tenue en devise fonctionnelle : le convertir au taux de la vente le
+        // multipliait par ce taux (audit 2026-10 éd. 2, A-052). Un coût dans une autre devise est une erreur d'appelant.
+        if (c.Currency != ctx.FunctionalCurrency)
+            throw new InvalidOperationException(
+                $"Le coût des marchandises vendues doit être en {ctx.FunctionalCurrency} (reçu en {c.Currency}).");
         var (cogsBase, rateId) = await ctx.ToFunctional(c, at, ct);
         d.Debit(await ctx.Account(AccountKeys.Cogs, ct), c, cogsBase, rateId, "Coût des marchandises vendues");
         d.Credit(await ctx.Account(AccountKeys.Inventory, ct), c, cogsBase, rateId);
@@ -391,9 +396,13 @@ public sealed class PostingRuleSet : IPostingRuleSet
 
         if (e.CostOfGoodsRestocked is { } cogs && !cogs.IsZero)
         {
-            var (cogsBase, _) = await ctx.ToFunctional(cogs, e.OccurredAt, ct);
-            d.Debit(await ctx.Account(AccountKeys.Inventory, ct), cogs, cogsBase, rateId, "Réintégration stock");
-            d.Credit(await ctx.Account(AccountKeys.Cogs, ct), cogs, cogsBase, rateId);
+            // Même règle qu'à la vente (A-052) : coût en devise fonctionnelle, sans taux.
+            if (cogs.Currency != ctx.FunctionalCurrency)
+                throw new InvalidOperationException(
+                    $"Le coût du stock réintégré doit être en {ctx.FunctionalCurrency} (reçu en {cogs.Currency}).");
+            var (cogsBase, cogsRateId) = await ctx.ToFunctional(cogs, e.OccurredAt, ct);
+            d.Debit(await ctx.Account(AccountKeys.Inventory, ct), cogs, cogsBase, cogsRateId, "Réintégration stock");
+            d.Credit(await ctx.Account(AccountKeys.Cogs, ct), cogs, cogsBase, cogsRateId);
         }
         return d;
     }

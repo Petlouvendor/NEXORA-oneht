@@ -31,7 +31,8 @@ public sealed class SalesService(
     IUnitOfWork uow,
     ITenantContext tenant,
     IDateTimeProvider clock,
-    ILogger<SalesService> logger, IBusinessCalendar calendar)
+    ILogger<SalesService> logger, IBusinessCalendar calendar,
+    Finance.Abstractions.ICompanyCurrencyContext currencies)
 {
     private Guid Company => tenant.ActiveCompanyId
         ?? throw TenantErrors.ActiveCompanyRequired();
@@ -415,7 +416,9 @@ public sealed class SalesService(
                     Company, cmd.OperationUuid, soldAt, sale.Id, cmd.CustomerId,
                     netMoney, taxMoney, tenderSplits, new Money(creditAmount + storeCredit, cmd.Currency),
                     creditDueDate ?? (storeCredit > 0m ? calendar.DateOf(soldAt) : null),
-                    cogsTotal > 0m ? new Money(cogsTotal, cmd.Currency) : null), token);
+                    // Le stock est valorisé en devise fonctionnelle : le coût n'est jamais converti au taux de la vente
+                    // (audit 2026-10 éd. 2, A-052 — une vente en USD passait 300 HTG de coût pour 40 500).
+                    cogsTotal > 0m ? new Money(cogsTotal, await currencies.FunctionalCurrencyAsync(token)) : null), token);
                 if (!posted.IsSuccess) throw new InvalidOperationException(posted.Error!.Message);
 
                 if (storeCredit > 0m)

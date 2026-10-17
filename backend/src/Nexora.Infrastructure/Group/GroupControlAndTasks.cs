@@ -4,6 +4,7 @@ using Nexora.Application.Group;
 using Nexora.Contracts.Group;
 using Nexora.Domain.Common;
 using Nexora.Infrastructure.Persistence;
+using Nexora.Domain.Accounting;
 
 namespace Nexora.Infrastructure.Group;
 
@@ -42,7 +43,7 @@ public sealed class SqlGroupControlCenter(NexoraDbContext db, ITenantContext ten
                 FROM nexora.journal_entry_line l
                 JOIN nexora.journal_entry e ON e.id = l.journal_entry_id
                 LEFT JOIN nexora.account_group_mapping m ON m.account_id = l.account_id AND m.status = 'active'
-                WHERE e.company_id = c.id AND e.status = 'posted' AND m.id IS NULL) um ON true
+                WHERE e.company_id = c.id AND e.status = ANY({LedgerStatuses.InLedger}) AND m.id IS NULL) um ON true
             LEFT JOIN LATERAL (
                 SELECT COUNT(*)::int cnt FROM nexora.intercompany_transaction t
                 WHERE t.group_id = {groupId} AND (t.source_company_id = c.id OR t.target_company_id = c.id)

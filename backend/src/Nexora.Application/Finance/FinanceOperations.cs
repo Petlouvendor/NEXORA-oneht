@@ -45,21 +45,27 @@ public sealed class FinanceOperations(
     IAccountResolver accounts,
     IExpenseRegister expenses,
     IUnitOfWork uow,
-    ITenantContext tenant, IBusinessCalendar calendar) : IFinanceOperations
+    ITenantContext tenant, IBusinessCalendar calendar,
+    ICompanyCurrencyContext currencies) : IFinanceOperations
 {
     private Guid Company => tenant.ActiveCompanyId
         ?? throw TenantErrors.ActiveCompanyRequired();
 
-    public Task<Result<PostingResultResponse>> RecordCashSaleAsync(RecordCashSaleRequest r, CancellationToken ct) =>
-        Run(new CashSaleRecorded(Company, r.OperationUuid, r.OccurredAt, r.SaleId,
+    // Le coût des marchandises est exprimé en devise fonctionnelle (valorisation du stock), quelle que soit la devise de
+    // la vente (audit 2026-10 éd. 2, A-052).
+    private async Task<Money?> CostOfGoodsAsync(decimal? amount, CancellationToken ct)
+        => amount is { } c ? new Money(c, await currencies.FunctionalCurrencyAsync(ct)) : null;
+
+    public async Task<Result<PostingResultResponse>> RecordCashSaleAsync(RecordCashSaleRequest r, CancellationToken ct) =>
+        await Run(new CashSaleRecorded(Company, r.OperationUuid, r.OccurredAt, r.SaleId,
             new Money(r.NetAmount, r.Currency), new Money(r.TaxAmount, r.Currency),
             r.TenderFinancialAccountId,
-            r.CostOfGoods is { } c ? new Money(c, r.Currency) : null) { UserId = tenant.UserId }, ct);
+            await CostOfGoodsAsync(r.CostOfGoods, ct)) { UserId = tenant.UserId }, ct);
 
-    public Task<Result<PostingResultResponse>> RecordCreditSaleAsync(RecordCreditSaleRequest r, CancellationToken ct) =>
-        Run(new CreditSaleRecorded(Company, r.OperationUuid, r.OccurredAt, r.SaleId, r.CustomerId,
+    public async Task<Result<PostingResultResponse>> RecordCreditSaleAsync(RecordCreditSaleRequest r, CancellationToken ct) =>
+        await Run(new CreditSaleRecorded(Company, r.OperationUuid, r.OccurredAt, r.SaleId, r.CustomerId,
             new Money(r.NetAmount, r.Currency), new Money(r.TaxAmount, r.Currency), r.DueDate,
-            r.CostOfGoods is { } c ? new Money(c, r.Currency) : null) { UserId = tenant.UserId }, ct);
+            await CostOfGoodsAsync(r.CostOfGoods, ct)) { UserId = tenant.UserId }, ct);
 
     public Task<Result<PostingResultResponse>> RecordSupplierInvoiceAsync(RecordSupplierInvoiceRequest r, CancellationToken ct) =>
         Run(new SupplierInvoiceRecorded(Company, r.OperationUuid, r.OccurredAt, r.SupplierInvoiceId, r.SupplierId,

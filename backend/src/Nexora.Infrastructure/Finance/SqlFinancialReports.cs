@@ -5,6 +5,7 @@ using Nexora.Application.Finance.Reports;
 using Nexora.Contracts.Finance;
 using Nexora.Infrastructure.Persistence;
 using Nexora.Domain.Common;
+using Nexora.Domain.Accounting;
 
 namespace Nexora.Infrastructure.Finance;
 
@@ -32,7 +33,7 @@ public sealed class SqlFinancialReports(
             FROM nexora.journal_entry_line l
             JOIN nexora.journal_entry e ON e.id = l.journal_entry_id
             JOIN nexora.account a ON a.id = l.account_id
-            WHERE e.company_id = {Company} AND e.status = 'posted' AND e.entry_date <= {asOf}
+            WHERE e.company_id = {Company} AND e.status = ANY({LedgerStatuses.InLedger}) AND e.entry_date <= {asOf}
             GROUP BY a.code, a.name, a.account_type
             HAVING COALESCE(SUM(l.base_debit),0) <> COALESCE(SUM(l.base_credit),0)
             ORDER BY a.code
@@ -63,7 +64,7 @@ public sealed class SqlFinancialReports(
             FROM nexora.journal_entry_line l
             JOIN nexora.journal_entry e ON e.id = l.journal_entry_id
             JOIN nexora.account a ON a.id = l.account_id
-            WHERE e.company_id = {Company} AND e.status = 'posted'
+            WHERE e.company_id = {Company} AND e.status = ANY({LedgerStatuses.InLedger})
               AND a.code = {accountCode} AND e.entry_date < {from}
             """).FirstAsync(ct);
 
@@ -74,7 +75,7 @@ public sealed class SqlFinancialReports(
             JOIN nexora.journal_entry e ON e.id = l.journal_entry_id
             JOIN nexora.journal j ON j.id = e.journal_id
             JOIN nexora.account a ON a.id = l.account_id
-            WHERE e.company_id = {Company} AND e.status = 'posted'
+            WHERE e.company_id = {Company} AND e.status = ANY({LedgerStatuses.InLedger})
               AND a.code = {accountCode} AND e.entry_date BETWEEN {from} AND {to}
             ORDER BY e.entry_date, e.entry_number, l.line_number
             """).ToListAsync(ct);
@@ -168,7 +169,7 @@ public sealed class SqlFinancialReports(
             FROM nexora.journal_entry_line l
             JOIN nexora.journal_entry e ON e.id = l.journal_entry_id
             JOIN nexora.account a ON a.id = l.account_id
-            WHERE e.company_id = {Company} AND e.status = 'posted'
+            WHERE e.company_id = {Company} AND e.status = ANY({LedgerStatuses.InLedger})
               AND e.entry_date BETWEEN {from} AND {to}
               AND (NOT {excludeClosing} OR e.origin <> 'closing')
             GROUP BY a.code, a.name, a.account_type
