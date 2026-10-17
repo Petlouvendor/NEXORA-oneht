@@ -37,6 +37,9 @@ public sealed class FinanceEngineFixture : IAsyncLifetime
     public async Task InitializeAsync()
     {
         var adminBuilder = new NpgsqlConnectionStringBuilder(AdminConnString);
+        // Le clonage de la base modèle (≈ 50 Mo) dépasse couramment les 30 s par défaut de Npgsql sur un poste chargé :
+        // toute la suite échouait alors en 1 ms (audit 2026-10 éd. 2, T-003). Un délai fourni plus long est conservé.
+        adminBuilder.CommandTimeout = Math.Max(adminBuilder.CommandTimeout, 600);
         await using (var admin = new NpgsqlConnection(adminBuilder.ConnectionString))
         {
             await admin.OpenAsync();
@@ -67,6 +70,8 @@ public sealed class FinanceEngineFixture : IAsyncLifetime
             Database = _testDb,
             SearchPath = "nexora,public",
             IncludeErrorDetail = true,
+            // Les tests gardent le délai d'origine : seul le clonage a besoin du délai allongé.
+            CommandTimeout = new NpgsqlConnectionStringBuilder(AdminConnString).CommandTimeout,
         }.ConnectionString;
         TestConnectionString = testConn;
 
@@ -87,10 +92,37 @@ public sealed class FinanceEngineFixture : IAsyncLifetime
                 INSERT INTO nexora.access_scope (id, scope_type) VALUES ('{PlatformOperatorScope}', 'PLATFORM');
                 INSERT INTO nexora.user_role (user_id, role_id, scope_id) VALUES ('{UserId}', '{PlatformOperatorRole}', '{PlatformOperatorScope}');
                 """);
+
+            // Taux non entier sur une seule journée (audit 2026-10 éd. 2, A-041 / A-052) : les taux de démonstration
+            // sont entiers (132, 135), et un montant en centimes multiplié par un taux entier ne produit jamais de
+            // demi-centime — les défauts d'arrondi en devise restaient invisibles. Le taux d'avant est rétabli le
+            // lendemain, les autres tests ne voient donc aucun changement.
+            await Exec(test, $"""
+                WITH usd AS (SELECT id FROM nexora.currency WHERE code = 'USD'),
+                     htg AS (SELECT id FROM nexora.currency WHERE code = 'HTG'),
+                     previous AS (
+                         SELECT r.rate FROM nexora.exchange_rate r, usd, htg
+                         WHERE r.base_currency_id = usd.id AND r.quote_currency_id = htg.id
+                           AND r.effective_at <= '{FractionalUsdRateDay.AddDays(1):yyyy-MM-dd} 00:00:00+00'
+                         ORDER BY r.effective_at DESC LIMIT 1)
+                INSERT INTO nexora.exchange_rate (base_currency_id, quote_currency_id, rate, effective_at, source)
+                SELECT usd.id, htg.id, {FractionalUsdRate.ToString(System.Globalization.CultureInfo.InvariantCulture)}::numeric,
+                       '{FractionalUsdRateDay:yyyy-MM-dd} 00:00:00+00'::timestamptz, 'test'
+                FROM usd, htg
+                UNION ALL
+                SELECT usd.id, htg.id, previous.rate, '{FractionalUsdRateDay.AddDays(1):yyyy-MM-dd} 00:00:00+00'::timestamptz, 'test'
+                FROM usd, htg, previous;
+                """);
         }
 
         Provider = BuildProvider(testConn);
     }
+
+    /// <summary>Taux USD → HTG non entier, en vigueur le seul jour <see cref="FractionalUsdRateDay"/>.</summary>
+    public const decimal FractionalUsdRate = 132.5m;
+
+    /// <summary>Jour (UTC, 10 h) où <see cref="FractionalUsdRate"/> s'applique ; la veille et le lendemain gardent le taux d'origine.</summary>
+    public static readonly DateTimeOffset FractionalUsdRateDay = new(2026, 3, 10, 10, 0, 0, TimeSpan.Zero);
 
     private static readonly Guid PlatformOperatorRole = Guid.Parse("dce00000-0000-0000-0000-00000000f0a1");
     private static readonly Guid PlatformOperatorScope = Guid.Parse("dce00000-0000-0000-0000-00000000f0a2");
