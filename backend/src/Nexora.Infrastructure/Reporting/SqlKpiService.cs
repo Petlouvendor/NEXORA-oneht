@@ -23,14 +23,17 @@ public sealed class SqlKpiService(
         var today = await ReportingClock.TodayAsync(db, ct);
         var (from, to) = FilterPeriod.Resolve(filter, today);
         var currency = await FunctionalCurrency(ct);
+        // Montants convertis dans la devise de l'entreprise (audit 2026-10 éd. 2, A-046) : ventes et flux au taux de
+        // leur date, soldes au taux du jour. Avant, un compte en dollars était additionné aux gourdes.
+        var fc = await FunctionalCurrencyIdAsync(ct);
 
         var revenue = await Money($"""
-            SELECT COALESCE(SUM(subtotal - discount_total),0) AS "Value" FROM nexora.sale
+            SELECT COALESCE(SUM(nexora.convert_amount(subtotal - discount_total, currency_id, {fc}, sold_at)),0) AS "Value" FROM nexora.sale
             WHERE company_id = {Company} AND status IN ('completed','partially_refunded','refunded')
               AND sold_at::date BETWEEN {from} AND {to}
             """, ct);
         var returns = await Money($"""
-            SELECT COALESCE(SUM(sr.refund_total - COALESCE(l.tax,0)),0) AS "Value"
+            SELECT COALESCE(SUM(nexora.convert_amount(sr.refund_total - COALESCE(l.tax,0), sr.currency_id, {fc}, sr.returned_at)),0) AS "Value"
             FROM nexora.sale_return sr
             LEFT JOIN LATERAL (SELECT SUM(tax_amount) tax FROM nexora.sale_return_line WHERE sale_return_id = sr.id) l ON true
             WHERE sr.company_id = {Company} AND sr.status = 'completed' AND sr.returned_at::date BETWEEN {from} AND {to}
@@ -44,7 +47,7 @@ public sealed class SqlKpiService(
               AND s.sold_at::date BETWEEN {from} AND {to}
             """, ct);
         var expenses = await Money($"""
-            SELECT COALESCE(SUM(amount),0) AS "Value" FROM nexora.expense
+            SELECT COALESCE(SUM(nexora.convert_amount(amount, currency_id, {fc}, expense_date::timestamptz)),0) AS "Value" FROM nexora.expense
             WHERE company_id = {Company} AND status IN ('approved','paid') AND expense_date BETWEEN {from} AND {to}
             """, ct);
         var count = await Count($"""
@@ -53,16 +56,16 @@ public sealed class SqlKpiService(
               AND sold_at::date BETWEEN {from} AND {to}
             """, ct);
         var cash = await Money($"""
-            SELECT COALESCE(SUM(current_balance),0) AS "Value" FROM nexora.financial_account
+            SELECT COALESCE(SUM(nexora.convert_amount(current_balance, currency_id, {fc})),0) AS "Value" FROM nexora.financial_account
             WHERE company_id = {Company} AND status = 'active'
               AND account_type IN ('cash','bank','mobile_money')
             """, ct);
         var receivables = await Money($"""
-            SELECT COALESCE(SUM(remaining_amount),0) AS "Value" FROM nexora.customer_receivable
+            SELECT COALESCE(SUM(nexora.convert_amount(remaining_amount, currency_id, {fc})),0) AS "Value" FROM nexora.customer_receivable
             WHERE company_id = {Company} AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE')
             """, ct);
         var payables = await Money($"""
-            SELECT COALESCE(SUM(remaining_amount),0) AS "Value" FROM nexora.supplier_payable
+            SELECT COALESCE(SUM(nexora.convert_amount(remaining_amount, currency_id, {fc})),0) AS "Value" FROM nexora.supplier_payable
             WHERE company_id = {Company} AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE')
             """, ct);
         var stockValue = await Money($"""
@@ -70,22 +73,25 @@ public sealed class SqlKpiService(
             WHERE company_id = {Company}
             """, ct);
         var todayRevenue = await Money($"""
-            SELECT COALESCE(SUM(subtotal - discount_total),0) AS "Value" FROM nexora.sale
+            SELECT COALESCE(SUM(nexora.convert_amount(subtotal - discount_total, currency_id, {fc}, sold_at)),0) AS "Value" FROM nexora.sale
             WHERE company_id = {Company} AND status IN ('completed','partially_refunded','refunded')
               AND sold_at::date = {today}
             """, ct);
         var inflows = await Money($"""
-            SELECT COALESCE(SUM(amount),0) AS "Value" FROM nexora.payment
+            SELECT COALESCE(SUM(nexora.convert_amount(amount, currency_id, {fc}, received_at)),0) AS "Value" FROM nexora.payment
             WHERE company_id = {Company} AND direction = 'inbound' AND status = 'completed'
               AND received_at::date BETWEEN {from} AND {to}
             """, ct);
         var outflows = await Money($"""
-            SELECT COALESCE(SUM(amount),0) AS "Value" FROM nexora.payment
+            SELECT COALESCE(SUM(nexora.convert_amount(amount, currency_id, {fc}, received_at)),0) AS "Value" FROM nexora.payment
             WHERE company_id = {Company} AND direction = 'outbound' AND status = 'completed'
               AND received_at::date BETWEEN {from} AND {to}
             """, ct);
 
         var margin = revenue - cogs;
+        // Taux manquant : la somme omet le montant ; l'indicateur est alors donné pour « estimé », jamais présenté
+        // comme exact en additionnant deux devises.
+        var balancesKind = await UnconvertibleBalancesAsync(Company, fc, ct) ? KpiValue.Estimated : KpiValue.Actual;
         var kpis = new List<KpiValue>
         {
             new(KpiCatalog.Revenue, "Chiffre d'affaires", Round(revenue), currency, KpiValue.Actual),
@@ -93,9 +99,9 @@ public sealed class SqlKpiService(
             new(KpiCatalog.MarginRate, "Taux de marge", revenue == 0 ? 0m : Math.Round(margin / revenue * 100m, 1), "%", KpiValue.Actual),
             new(KpiCatalog.Profit, "Bénéfice", Round(margin - expenses), currency, KpiValue.Actual),
             new(KpiCatalog.Expenses, "Dépenses", Round(expenses), currency, KpiValue.Actual),
-            new(KpiCatalog.Cash, "Trésorerie", Round(cash), currency, KpiValue.Actual),
-            new(KpiCatalog.OpenReceivables, "Créances ouvertes", Round(receivables), currency, KpiValue.Actual),
-            new(KpiCatalog.OpenPayables, "Dettes ouvertes", Round(payables), currency, KpiValue.Actual),
+            new(KpiCatalog.Cash, "Trésorerie", Round(cash), currency, balancesKind),
+            new(KpiCatalog.OpenReceivables, "Créances ouvertes", Round(receivables), currency, balancesKind),
+            new(KpiCatalog.OpenPayables, "Dettes ouvertes", Round(payables), currency, balancesKind),
             new(KpiCatalog.StockValue, "Stock valorisé", Round(stockValue), currency, KpiValue.Actual),
             new(KpiCatalog.Transactions, "Nombre de ventes", count, "n", KpiValue.Actual),
             new(KpiCatalog.AverageBasket, "Panier moyen", count == 0 ? 0m : Round(revenue / count), currency, KpiValue.Actual),
@@ -111,7 +117,7 @@ public sealed class SqlKpiService(
 
         var trend = (await db.Database.SqlQuery<TrendRow>($"""
             SELECT d::date AS "D",
-                   COALESCE((SELECT SUM(subtotal - discount_total) FROM nexora.sale
+                   COALESCE((SELECT SUM(nexora.convert_amount(subtotal - discount_total, currency_id, {fc}, sold_at)) FROM nexora.sale
                              WHERE company_id = {Company} AND status IN ('completed','partially_refunded','refunded')
                                AND sold_at::date = d::date), 0) AS "V"
             FROM generate_series({from}::date, {to}::date, interval '1 day') d
@@ -122,7 +128,7 @@ public sealed class SqlKpiService(
         var prevFrom = from.AddDays(-(span + 1));
         var prevTo = from.AddDays(-1);
         var prevRevenue = await Money($"""
-            SELECT COALESCE(SUM(subtotal - discount_total),0) AS "Value" FROM nexora.sale
+            SELECT COALESCE(SUM(nexora.convert_amount(subtotal - discount_total, currency_id, {fc}, sold_at)),0) AS "Value" FROM nexora.sale
             WHERE company_id = {Company} AND status IN ('completed','partially_refunded','refunded')
               AND sold_at::date BETWEEN {prevFrom} AND {prevTo}
             """, ct);
@@ -187,10 +193,11 @@ public sealed class SqlKpiService(
         var today = await ReportingClock.TodayAsync(db, ct);
         var (from, to) = FilterPeriod.Resolve(filter, today);
         var currency = await FunctionalCurrency(ct);
+        var fc = await FunctionalCurrencyIdAsync(ct);   // A-046 : montants convertis dans la devise de l'entreprise
         var estFilter = filter.EstablishmentId;
 
         var revenue = await Money($"""
-            SELECT COALESCE(SUM(s.subtotal - s.discount_total),0) AS "Value" FROM nexora.sale s
+            SELECT COALESCE(SUM(nexora.convert_amount(s.subtotal - s.discount_total, s.currency_id, {fc}, s.sold_at)),0) AS "Value" FROM nexora.sale s
             WHERE s.company_id = {Company} AND s.status IN ('completed','partially_refunded','refunded')
               AND s.sold_at::date BETWEEN {from} AND {to}
               AND ({estFilter}::uuid IS NULL OR s.establishment_id = {estFilter})
@@ -205,7 +212,7 @@ public sealed class SqlKpiService(
 
         var byRegister = (await db.Database.SqlQuery<MgrRow>($"""
             SELECT COALESCE(cr.name,'(sans caisse)') AS "Label",
-                   SUM(s.subtotal - s.discount_total) AS "Revenue", 0::numeric AS "Margin", COUNT(*)::int AS "Transactions"
+                   SUM(nexora.convert_amount(s.subtotal - s.discount_total, s.currency_id, {fc}, s.sold_at)) AS "Revenue", 0::numeric AS "Margin", COUNT(*)::int AS "Transactions"
             FROM nexora.sale s
             LEFT JOIN nexora.cash_session cs ON cs.id = s.cash_session_id
             LEFT JOIN nexora.cash_register cr ON cr.id = cs.cash_register_id
@@ -216,7 +223,7 @@ public sealed class SqlKpiService(
 
         var bySalesperson = (await db.Database.SqlQuery<MgrRow>($"""
             SELECT COALESCE(u.full_name, u.email::text, '(inconnu)') AS "Label",
-                   SUM(s.subtotal - s.discount_total) AS "Revenue", 0::numeric AS "Margin", COUNT(*)::int AS "Transactions"
+                   SUM(nexora.convert_amount(s.subtotal - s.discount_total, s.currency_id, {fc}, s.sold_at)) AS "Revenue", 0::numeric AS "Margin", COUNT(*)::int AS "Transactions"
             FROM nexora.sale s LEFT JOIN nexora.app_user u ON u.id = s.salesperson_user_id
             WHERE s.company_id = {Company} AND s.status IN ('completed','partially_refunded','refunded')
               AND s.sold_at::date BETWEEN {from} AND {to}
@@ -236,11 +243,11 @@ public sealed class SqlKpiService(
             """).ToListAsync(ct);
 
         var openReceivables = await Money($"""
-            SELECT COALESCE(SUM(remaining_amount),0) AS "Value" FROM nexora.customer_receivable
+            SELECT COALESCE(SUM(nexora.convert_amount(remaining_amount, currency_id, {fc})),0) AS "Value" FROM nexora.customer_receivable
             WHERE company_id = {Company} AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE')
             """, ct);
         var expenses = await Money($"""
-            SELECT COALESCE(SUM(amount),0) AS "Value" FROM nexora.expense
+            SELECT COALESCE(SUM(nexora.convert_amount(amount, currency_id, {fc}, expense_date::timestamptz)),0) AS "Value" FROM nexora.expense
             WHERE company_id = {Company} AND status IN ('approved','paid') AND expense_date BETWEEN {from} AND {to}
               AND ({estFilter}::uuid IS NULL OR establishment_id = {estFilter})
             """, ct);
@@ -275,6 +282,8 @@ public sealed class SqlKpiService(
             var currency = await (from g in db.BusinessGroups.AsNoTracking()
                 join cur in db.Currencies.AsNoTracking() on g.DefaultCurrencyId equals cur.Id
                 where g.Id == groupId select cur.Code).FirstOrDefaultAsync(ct) ?? "HTG";
+            // A-046 : chaque entreprise est convertie dans la devise du groupe avant d'être additionnée.
+            var gc = await db.Currencies.AsNoTracking().Where(cur => cur.Code == currency).Select(cur => cur.Id).FirstAsync(ct);
 
             var companies = await db.Companies.AsNoTracking()
                 .Where(c => c.GroupId == groupId && c.Status != "archived")   // §29 : hors vues opérationnelles
@@ -295,30 +304,30 @@ public sealed class SqlKpiService(
                 if (!authorized) { excluded.Add(c.Name); continue; }   // §37 : exclusion stricte
 
                 var rev = await Money($"""
-                    SELECT COALESCE(SUM(subtotal - discount_total),0) AS "Value" FROM nexora.sale
+                    SELECT COALESCE(SUM(nexora.convert_amount(subtotal - discount_total, currency_id, {gc}, sold_at)),0) AS "Value" FROM nexora.sale
                     WHERE company_id = {c.Id} AND status IN ('completed','partially_refunded','refunded')
                       AND sold_at::date BETWEEN {from} AND {to}
                     """, ct);
                 var cogs = await Money($"""
-                    SELECT COALESCE(SUM(sl.unit_cost * sl.quantity),0) AS "Value"
-                    FROM nexora.sale_line sl JOIN nexora.sale s ON s.id = sl.sale_id
+                    SELECT COALESCE(SUM(nexora.convert_amount(sl.unit_cost * sl.quantity, co.default_currency_id, {gc}, s.sold_at)),0) AS "Value"
+                    FROM nexora.sale_line sl JOIN nexora.sale s ON s.id = sl.sale_id JOIN nexora.company co ON co.id = s.company_id
                     WHERE s.company_id = {c.Id} AND s.status IN ('completed','partially_refunded','refunded')
                       AND s.sold_at::date BETWEEN {from} AND {to}
                     """, ct);
                 var exp = await Money($"""
-                    SELECT COALESCE(SUM(amount),0) AS "Value" FROM nexora.expense
+                    SELECT COALESCE(SUM(nexora.convert_amount(amount, currency_id, {gc}, expense_date::timestamptz)),0) AS "Value" FROM nexora.expense
                     WHERE company_id = {c.Id} AND status IN ('approved','paid') AND expense_date BETWEEN {from} AND {to}
                     """, ct);
                 var cash = await Money($"""
-                    SELECT COALESCE(SUM(current_balance),0) AS "Value" FROM nexora.financial_account
+                    SELECT COALESCE(SUM(nexora.convert_amount(current_balance, currency_id, {gc})),0) AS "Value" FROM nexora.financial_account
                     WHERE company_id = {c.Id} AND status = 'active' AND account_type IN ('cash','bank','mobile_money')
                     """, ct);
                 var recv = await Money($"""
-                    SELECT COALESCE(SUM(remaining_amount),0) AS "Value" FROM nexora.customer_receivable
+                    SELECT COALESCE(SUM(nexora.convert_amount(remaining_amount, currency_id, {gc})),0) AS "Value" FROM nexora.customer_receivable
                     WHERE company_id = {c.Id} AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE')
                     """, ct);
                 var pay = await Money($"""
-                    SELECT COALESCE(SUM(remaining_amount),0) AS "Value" FROM nexora.supplier_payable
+                    SELECT COALESCE(SUM(nexora.convert_amount(remaining_amount, currency_id, {gc})),0) AS "Value" FROM nexora.supplier_payable
                     WHERE company_id = {c.Id} AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE')
                     """, ct);
 
@@ -349,16 +358,37 @@ public sealed class SqlKpiService(
         var sql =
             "SELECT p.id AS \"ProductId\", p.sku AS \"Sku\", p.name AS \"Name\", " +
             "SUM(sl.quantity) AS \"Quantity\", " +
-            "SUM(sl.line_total - sl.tax_amount) AS \"Revenue\", " +
-            "SUM(sl.line_total - sl.tax_amount - sl.unit_cost * sl.quantity) AS \"Margin\" " +
-            "FROM nexora.sale_line sl JOIN nexora.sale s ON s.id = sl.sale_id " +
+            // A-046 : chiffre d'affaires de la ligne converti au taux de la vente ; le coût est déjà en devise de l'entreprise.
+            "SUM(nexora.convert_amount(sl.line_total - sl.tax_amount, s.currency_id, co.default_currency_id, s.sold_at)) AS \"Revenue\", " +
+            "SUM(nexora.convert_amount(sl.line_total - sl.tax_amount, s.currency_id, co.default_currency_id, s.sold_at) - sl.unit_cost * sl.quantity) AS \"Margin\" " +
+            "FROM nexora.sale_line sl JOIN nexora.sale s ON s.id = sl.sale_id JOIN nexora.company co ON co.id = s.company_id " +
             "JOIN nexora.product p ON p.id = sl.product_id " +
             "WHERE s.company_id = {0} AND s.status IN ('completed','partially_refunded','refunded') " +
             "AND s.sold_at::date BETWEEN {1} AND {2} " +
             "GROUP BY p.id, p.sku, p.name " +
-            $"ORDER BY SUM(sl.line_total - sl.tax_amount) {direction} LIMIT {{3}}";
+            $"ORDER BY 5 {direction} LIMIT {{3}}";
         return await db.Database.SqlQueryRaw<ProductRankRow>(sql, Company, from, to, take).ToListAsync(ct);
     }
+
+    private async Task<Guid> FunctionalCurrencyIdAsync(CancellationToken ct)
+        => await db.Companies.AsNoTracking().Where(c => c.Id == Company).Select(c => c.DefaultCurrencyId).FirstAsync(ct);
+
+    private sealed record FlagRow(bool Value);
+
+    /// <summary>Un solde ouvert (trésorerie, créance, dette) dans une devise sans taux vers <paramref name="target"/>.</summary>
+    private async Task<bool> UnconvertibleBalancesAsync(Guid companyId, Guid target, CancellationToken ct)
+        => (await db.Database.SqlQuery<FlagRow>($"""
+            SELECT EXISTS (
+                SELECT 1 FROM nexora.financial_account WHERE company_id = {companyId} AND status = 'active'
+                   AND current_balance <> 0 AND nexora.convert_amount(current_balance, currency_id, {target}) IS NULL
+                UNION ALL
+                SELECT 1 FROM nexora.customer_receivable WHERE company_id = {companyId} AND remaining_amount <> 0
+                   AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE') AND nexora.convert_amount(remaining_amount, currency_id, {target}) IS NULL
+                UNION ALL
+                SELECT 1 FROM nexora.supplier_payable WHERE company_id = {companyId} AND remaining_amount <> 0
+                   AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE') AND nexora.convert_amount(remaining_amount, currency_id, {target}) IS NULL
+            ) AS "Value"
+            """).ToListAsync(ct)).First().Value;
 
     private async Task<string> FunctionalCurrency(CancellationToken ct)
         => await (from c in db.Companies.AsNoTracking()

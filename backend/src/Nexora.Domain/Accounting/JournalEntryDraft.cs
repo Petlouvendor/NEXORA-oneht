@@ -64,6 +64,24 @@ public sealed class JournalEntryDraft
         return this;
     }
 
+    /// <summary>Porte l'arrondi de conversion d'une devise étrangère sur une ligne (A-041, voir <see cref="ConversionRounding"/>).</summary>
+    public void AbsorbConversionRounding(int functionalDecimals = 2)
+    {
+        var adapters = _lines.Select(l => new LineAdapter(l)).ToList();
+        ConversionRounding.Absorb(adapters, BaseCurrency, functionalDecimals);
+        for (var i = 0; i < _lines.Count; i++)
+            _lines[i] = _lines[i] with { BaseDebit = adapters[i].BaseDebit, BaseCredit = adapters[i].BaseCredit };
+    }
+
+    private sealed class LineAdapter(DraftLine line) : ConversionRounding.ILine
+    {
+        public string Currency => line.Currency;
+        public decimal Debit => line.Debit;
+        public decimal Credit => line.Credit;
+        public decimal BaseDebit { get; set; } = line.BaseDebit;
+        public decimal BaseCredit { get; set; } = line.BaseCredit;
+    }
+
     public decimal TotalBaseDebit => _lines.Sum(l => l.BaseDebit);
     public decimal TotalBaseCredit => _lines.Sum(l => l.BaseCredit);
 

@@ -259,11 +259,11 @@ public sealed class SqlManualJournalService(
                      WHERE id = {id} AND company_id = {Company}
                     """, token);
                 var n = 1;
-                foreach (var l in r.Lines)
-                {
-                    var line = await BuildLineAsync(l, r.Currency, r.EntryDate, n++, token);
-                    await InsertLineAsync(id, line, token);
-                }
+                var lines = new List<JournalEntryLine>();
+                foreach (var l in r.Lines) lines.Add(await BuildLineAsync(l, r.Currency, r.EntryDate, n++, token));
+                ConversionRounding.Absorb(lines.Select(l => (ConversionRounding.ILine)new ManualLine(l, r.Currency)).ToList(),
+                    await currency.FunctionalCurrencyAsync(token));   // A-041, comme à la création
+                foreach (var line in lines) await InsertLineAsync(id, line, token);
                 return 0;
             }, ct);
             return Result.Success();
@@ -428,7 +428,20 @@ public sealed class SqlManualJournalService(
         };
         var n = 1;
         foreach (var l in r.Lines) entry.Lines.Add(await BuildLineAsync(l, r.Currency, r.EntryDate, n++, ct));
+        // Écriture juste en devise refusée pour un centime de conversion (audit 2026-10 éd. 2, A-041) : l'arrondi
+        // est porté sur une ligne, comme pour les écritures du moteur.
+        ConversionRounding.Absorb(entry.Lines.Select(l => (ConversionRounding.ILine)new ManualLine(l, r.Currency)).ToList(),
+            await currency.FunctionalCurrencyAsync(ct));
         return (entry, period);
+    }
+
+    private sealed class ManualLine(JournalEntryLine line, string currencyCode) : ConversionRounding.ILine
+    {
+        public string Currency => currencyCode;
+        public decimal Debit => line.Debit;
+        public decimal Credit => line.Credit;
+        public decimal BaseDebit { get => line.BaseDebit; set => line.BaseDebit = value; }
+        public decimal BaseCredit { get => line.BaseCredit; set => line.BaseCredit = value; }
     }
 
     private async Task<JournalEntryLine> BuildLineAsync(JournalEntryLineInput l, string ccy, DateOnly date, int lineNumber, CancellationToken ct)
