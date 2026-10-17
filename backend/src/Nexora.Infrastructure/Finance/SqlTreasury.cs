@@ -69,12 +69,9 @@ public sealed class SqlTreasuryQueries(
         db.Database.SqlQuery<AccountRow>($"""
             SELECT fa.id AS "AccountId", fa.name AS "Name", fa.account_type AS "AccountType",
                    cur.code AS "Currency", fa.current_balance AS "SystemBalance", fa.status AS "Status",
-                   fa.current_balance * COALESCE(
-                     CASE WHEN cur.id = co.default_currency_id THEN 1
-                          ELSE (SELECT er.rate FROM nexora.exchange_rate er
-                                WHERE er.base_currency_id = cur.id AND er.quote_currency_id = co.default_currency_id
-                                ORDER BY er.effective_at DESC LIMIT 1)
-                     END, 1) AS "BaseBalance"
+                   -- Même règle que le moteur (taux direct ou inverse, A-046) ; sans taux, 0 et non le solde brut :
+                   -- un solde en dollars n'est plus compté comme des gourdes.
+                   COALESCE(nexora.convert_amount(fa.current_balance, fa.currency_id, co.default_currency_id), 0) AS "BaseBalance"
             FROM nexora.financial_account fa
             JOIN nexora.currency cur ON cur.id = fa.currency_id
             JOIN nexora.company co ON co.id = fa.company_id

@@ -127,20 +127,25 @@ public sealed class SqlFinancialReports(
     public async Task<CashFlowForecastResponse> CashFlowForecastAsync(DateOnly from, DateOnly to, CancellationToken ct = default)
     {
         var func = await currency.FunctionalCurrencyAsync(ct);
-        var opening = await db.FinancialAccounts.AsNoTracking()
-            .Where(a => a.CompanyId == Company && a.Status == "active"
-                        && (a.AccountType == "cash" || a.AccountType == "bank" || a.AccountType == "mobile_money"))
-            .SumAsync(a => a.CurrentBalance, ct);
+        // Soldes, créances et dettes convertis dans la devise de l'entreprise au taux du jour (audit 2026-10 éd. 2,
+        // A-046) : un compte en dollars était additionné aux gourdes.
+        var opening = await db.Database.SqlQuery<decimal>($"""
+            SELECT COALESCE(SUM(nexora.convert_amount(fa.current_balance, fa.currency_id, co.default_currency_id)), 0) AS "Value"
+            FROM nexora.financial_account fa JOIN nexora.company co ON co.id = fa.company_id
+            WHERE fa.company_id = {Company} AND fa.status = 'active' AND fa.account_type IN ('cash','bank','mobile_money')
+            """).FirstAsync(ct);
 
         var inflows = await db.Database.SqlQuery<DueRow>($"""
-            SELECT COALESCE(due_date, {to}) AS "DueDate", SUM(remaining_amount) AS "Amount"
+            SELECT COALESCE(due_date, {to}) AS "DueDate",
+                   SUM(nexora.convert_amount(remaining_amount, currency_id, (SELECT default_currency_id FROM nexora.company WHERE id = {Company}))) AS "Amount"
             FROM nexora.customer_receivable
             WHERE company_id = {Company} AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE')
             GROUP BY COALESCE(due_date, {to})
             """).ToListAsync(ct);
 
         var outflows = await db.Database.SqlQuery<DueRow>($"""
-            SELECT COALESCE(due_date, {to}) AS "DueDate", SUM(remaining_amount) AS "Amount"
+            SELECT COALESCE(due_date, {to}) AS "DueDate",
+                   SUM(nexora.convert_amount(remaining_amount, currency_id, (SELECT default_currency_id FROM nexora.company WHERE id = {Company}))) AS "Amount"
             FROM nexora.supplier_payable
             WHERE company_id = {Company} AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE')
             GROUP BY COALESCE(due_date, {to})

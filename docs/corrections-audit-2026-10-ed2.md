@@ -133,3 +133,29 @@ acceptation ; appareil révoqué non réactivé.
 
 **Reste (faible, non traité ici).** Le centre de synchronisation affiche les types de conflit et les résolutions sous
 leur code (`period · sale`, `client_wins`) ; le motif et l'action recommandée sont lisibles.
+
+**Résultats.** Unitaires 103/103, intégration 550/550, API 200/200 (frontend inchangé).
+
+## Lot 4 — Arrondis de conversion (A-041) et indicateurs multidevises (A-046)
+
+**A-041.** Chaque ligne d'une écriture en devise était convertie puis arrondie séparément : à 132,5, 10,01 + 1,01 USD
+donnaient 1 326,32 + 133,82 = 1 460,14 HTG contre 1 460,15 pour les 11,02 USD encaissés, et l'écriture, juste en
+devise, était refusée (par le moteur, ou par la base avec un message PostgreSQL brut pour une écriture manuelle).
+Correction centrale (`ConversionRounding`, domaine) appliquée par le moteur à toutes les règles et par la saisie
+manuelle (création et modification de brouillon) : pour chaque devise étrangère dont les lignes s'équilibrent
+exactement en devise, l'écart de base — au plus un demi-centime par ligne — est porté sur la plus grosse ligne du côté
+le plus faible. Un écart plus grand (A-052 : 40 200) ou un déséquilibre en devise ne sont jamais ajustés.
+
+**A-046.** Les indicateurs additionnaient des montants de devises différentes : la trésorerie de la Pharmacie
+(gourdes + 3 200 USD) affichait 63 725 « HTG » au lieu de 492 525. Le centre de pilotage, le tableau du responsable, la
+vue groupe (convertie dans la devise du groupe, coût des ventes compris), le classement des articles, la prévision de
+trésorerie et la position de trésorerie convertissent désormais chaque montant par `nexora.convert_amount` (fonction
+existante, même règle que le moteur) : ventes, retours, dépenses et paiements au taux de leur date, soldes, créances et
+dettes au taux du jour. Sans taux, trésorerie, créances et dettes sont marquées « estimé » ; la position de trésorerie
+ne compte plus un solde en devise comme des gourdes faute de taux (elle le comptait au taux 1).
+
+**Tests** (rouges sur l'ancien code, vérifié en le rétablissant le temps du test) : `PostingRuleSetTests` (vente en
+USD à 132,5 équilibrée au centime ; un écart de 40 200 ou un déséquilibre en devise ne sont pas absorbés),
+`ConversionRoundingTests` (vente 10,01 + 1,01 USD ; écriture manuelle 20,02 = 10,01 + 10,01 — ancien code :
+« 2652.6500 <> 2652.6400 », exactement le refus constaté par l'audit), `KpiCurrencyTests` (trésorerie de la
+Pharmacie : 492 525 attendus, 63 725 avant).

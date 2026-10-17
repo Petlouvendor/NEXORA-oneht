@@ -50,6 +50,7 @@ public sealed class PostingRuleSet : IPostingRuleSet
             EmployeeExpensePaid e => await EmployeeExpensePayment(e, ctx, ct),
             _ => throw new NotSupportedException($"Aucune règle de génération pour {evt.GetType().Name}."),
         };
+        draft.AbsorbConversionRounding(ctx.FunctionalDecimals);
         draft.EnsureBalanced();
         return draft;
     }
