@@ -261,7 +261,8 @@ public sealed class SqlSectorProfileService(
 // -----------------------------------------------------------------------------
 
 public sealed class SqlConfigTransferService(
-    NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow, IConfigGuardrails guardrails) : IConfigTransferService
+    NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow, IConfigGuardrails guardrails,
+    IPermissionService permissions) : IConfigTransferService
 {
     private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
@@ -336,6 +337,11 @@ public sealed class SqlConfigTransferService(
             return Error.Validation("config.clone_self", "L'entreprise cible doit être différente de l'entreprise source.");
         if (!tenant.CompanyIds.Contains(r.TargetCompanyId))
             return Error.Forbidden("config.clone_scope", "Entreprise cible hors de votre périmètre.");
+        // A-034 : config.transfer n'était vérifiée que sur l'entreprise source ; la configuration d'une entreprise où
+        // l'appelant n'est que caissier pouvait être écrasée. La permission est exigée aussi sur la cible.
+        if (tenant.UserId is not { } caller
+            || !(await permissions.LoadProfileAsync(caller, ct)).HasPermission(Nexora.Application.Security.Permissions.Config.Transfer, r.TargetCompanyId))
+            return Error.Forbidden("config.clone_scope", "Vous n'avez pas le droit de modifier la configuration de l'entreprise cible.");
 
         var bundle = await ExportAsync(ct);
         return await ApplyBundleAsync(r.TargetCompanyId, bundle, "clone", Company, false, ct);

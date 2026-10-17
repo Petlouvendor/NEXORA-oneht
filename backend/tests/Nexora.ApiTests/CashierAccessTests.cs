@@ -34,13 +34,22 @@ public sealed class CashierAccessTests(WebApplicationFactory<Program> factory)
     [InlineData("GET", "/api/v1/insights")]
     [InlineData("GET", "/api/v1/financial-accounts")]
     [InlineData("GET", "/api/v1/cashflow/forecast")]
-    [InlineData("POST", "/api/v1/finance/expenses")]
-    [InlineData("POST", "/api/v1/finance/supplier-payments")]
-    [InlineData("POST", "/api/v1/finance/customer-payments")]
-    [InlineData("POST", "/api/v1/finance/cash-counts")]
-    [InlineData("POST", "/api/v1/finance/cash-sales")]
+    [InlineData("POST", "/api/v1/expenses")]
     public async Task Cashier_is_refused_management_and_finance_apis(string method, string url)
         => (await Send(await Cashier(), method, url)).StatusCode.Should().Be(HttpStatusCode.Forbidden, url);
+
+    // Audit 2026-10 éd. 2, A-045 : les écritures financières brutes à montants libres (/finance/*) contournaient les
+    // contrôles des services métier — un comptable seul payait une dépense sans approbation. Aucun écran ne les
+    // appelait : elles sont retirées.
+    [Theory]
+    [InlineData("/api/v1/finance/expenses")]
+    [InlineData("/api/v1/finance/supplier-payments")]
+    [InlineData("/api/v1/finance/customer-payments")]
+    [InlineData("/api/v1/finance/cash-counts")]
+    [InlineData("/api/v1/finance/cash-sales")]
+    [InlineData("/api/v1/finance/transfers")]
+    public async Task Raw_finance_routes_no_longer_exist(string url)
+        => (await Send(await Cashier(), "POST", url)).StatusCode.Should().Be(HttpStatusCode.NotFound, url);
 
     // §28 « Caissier tente stock global → Accès refusé » ; §7.2 catalogue complet, prix d'achat.
     [Theory]

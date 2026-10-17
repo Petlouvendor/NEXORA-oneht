@@ -37,6 +37,14 @@ public static class ProductionConfiguration
         if (!string.IsNullOrWhiteSpace(dataKey) && Base64KeyProblem(dataKey) is { } dataProblem)
             problems.Add("Security:DataEncryptionKey " + dataProblem);
 
+        // Facturation plateforme (A-049) : facultative — sans jeton, le webhook est fermé — mais un jeton fourni doit
+        // être fort ; l'ancien jeton de développement, publié dans le code, est refusé.
+        var webhookToken = configuration["PlatformBilling:WebhookToken"];
+        if (!string.IsNullOrWhiteSpace(webhookToken)
+            && (webhookToken.Length < 32 || webhookToken.StartsWith("dev-", StringComparison.OrdinalIgnoreCase)
+                || WeakMarkers.Any(m => webhookToken.Contains(m, StringComparison.OrdinalIgnoreCase))))
+            problems.Add("PlatformBilling:WebhookToken trop court (< 32 caractères) ou de développement");
+
         var connection = configuration["Database:ConnectionString"] ?? "";
         if (string.IsNullOrWhiteSpace(connection))
             problems.Add("Database:ConnectionString absente");

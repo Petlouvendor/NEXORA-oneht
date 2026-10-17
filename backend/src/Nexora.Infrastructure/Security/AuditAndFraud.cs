@@ -10,7 +10,7 @@ using Nexora.Infrastructure.Persistence;
 namespace Nexora.Infrastructure.Security;
 
 /// <summary>Consultation du journal d'audit, bornée au périmètre entreprise (Phase 11 §10-12, §39).</summary>
-public sealed class SqlAuditQueryService(NexoraDbContext db, ITenantContext tenant) : IAuditQueryService
+public sealed class SqlAuditQueryService(NexoraDbContext db, ITenantContext tenant, IPermissionService permissions) : IAuditQueryService
 {
     private sealed record Row(
         Guid Id, DateTimeOffset OccurredAt, Guid? UserId, Guid? CompanyId, string Action,
@@ -18,10 +18,21 @@ public sealed class SqlAuditQueryService(NexoraDbContext db, ITenantContext tena
 
     private (int Page, int Size) Paging(AuditQueryFilter f) => (Math.Max(1, f.Page), Math.Clamp(f.PageSize, 1, 200));
 
-    private Guid[] Companies => tenant.CompanyIds.ToArray();
-
-    public async Task<AuditPageDto> QueryAsync(AuditQueryFilter filter, CancellationToken ct = default)
+    /// <summary>
+    /// Entreprises lisibles (audit 2026-10 éd. 2, A-034) : celles du jeton où l'appelant détient la permission. Avant,
+    /// <c>security.audit_view</c> dans A suffisait à lire l'audit de B — anciennes et nouvelles valeurs comprises — dès
+    /// lors que l'utilisateur appartenait aussi à B, même comme simple caissier.
+    /// </summary>
+    private async Task<Guid[]> CompaniesAsync(string permission, CancellationToken ct)
     {
+        if (tenant.UserId is not { } userId) return tenant.CompanyIds.ToArray();   // traitement système (planificateur)
+        var profile = await permissions.LoadProfileAsync(userId, ct);
+        return tenant.CompanyIds.Where(c => profile.HasPermission(permission, c)).ToArray();
+    }
+
+    public async Task<AuditPageDto> QueryAsync(AuditQueryFilter filter, CancellationToken ct = default, string? requiredPermission = null)
+    {
+        var Companies = await CompaniesAsync(requiredPermission ?? Nexora.Application.Security.Permissions.Security.AuditView, ct);
         var (page, size) = Paging(filter);
         DateTimeOffset? from = filter.From is { } d ? new DateTimeOffset(d.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero) : null;
         DateTimeOffset? to = filter.To is { } d2 ? new DateTimeOffset(d2.ToDateTime(new TimeOnly(23, 59, 59)), TimeSpan.Zero) : null;

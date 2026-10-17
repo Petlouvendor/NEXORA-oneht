@@ -9,7 +9,9 @@ namespace Nexora.Application.Security;
 /// </summary>
 public interface IAuditQueryService
 {
-    Task<AuditPageDto> QueryAsync(AuditQueryFilter filter, CancellationToken ct = default);
+    /// <param name="requiredPermission">Permission que l'appelant doit détenir dans chaque entreprise lue (A-034) ;
+    /// par défaut <c>security.audit_view</c> — l'audit RH passe <c>payroll.audit</c>.</param>
+    Task<AuditPageDto> QueryAsync(AuditQueryFilter filter, CancellationToken ct = default, string? requiredPermission = null);
     Task<Result<(string FileName, string Content)>> ExportAsync(AuditQueryFilter filter, CancellationToken ct = default);
 }
 

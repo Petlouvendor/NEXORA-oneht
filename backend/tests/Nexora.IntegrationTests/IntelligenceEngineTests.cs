@@ -294,6 +294,7 @@ public sealed class IntelligenceEngineTests(FinanceEngineFixture fx)
             INSERT INTO nexora.company (id, group_id, name, legal_name, default_currency_id)
             VALUES ('{id}', NULL, 'Test Intelligence {id:N}', 'Test Intelligence {id:N} SARL',
                     (SELECT id FROM nexora.currency WHERE code = 'HTG'));
+            INSERT INTO nexora.access_scope (scope_type, company_id) VALUES ('COMPANY', '{id}');
             """);
         return id;
     }
@@ -326,7 +327,7 @@ public sealed class IntelligenceEngineTests(FinanceEngineFixture fx)
         for (var d = 1; d <= 14; d++) await InsertCompanySale(companyId, 220, DateTimeOffset.UtcNow.AddDays(-d));
 
         await using var s = Scope();
-        var recs = ForCompany<IRecommendationService>(s.ServiceProvider, Direction, companyId);
+        var recs = ForCompany<IRecommendationService>(s.ServiceProvider, await fx.NewCompanyDirectorAsync(companyId), companyId);
         await recs.GenerateAsync();
 
         var all = await recs.ListAsync("new", null);
@@ -347,7 +348,7 @@ public sealed class IntelligenceEngineTests(FinanceEngineFixture fx)
         for (var d = 1; d <= 14; d++) await InsertCompanySale(companyId, 80, DateTimeOffset.UtcNow.AddDays(-d));
 
         await using var s = Scope();
-        var recs = ForCompany<IRecommendationService>(s.ServiceProvider, Direction, companyId);
+        var recs = ForCompany<IRecommendationService>(s.ServiceProvider, await fx.NewCompanyDirectorAsync(companyId), companyId);
         await recs.GenerateAsync();
 
         var decline = (await recs.ListAsync("new", "sales_decline")).Should().ContainSingle().Which;
@@ -488,7 +489,7 @@ public sealed class IntelligenceEngineTests(FinanceEngineFixture fx)
             """);
 
         await using var s = Scope();
-        var recs = ForCompany<IRecommendationService>(s.ServiceProvider, Direction, companyId);
+        var recs = ForCompany<IRecommendationService>(s.ServiceProvider, await fx.NewCompanyDirectorAsync(companyId), companyId);
 
         var dashboard = await recs.DashboardAsync();
         dashboard.CriticalCount.Should().Be(1);

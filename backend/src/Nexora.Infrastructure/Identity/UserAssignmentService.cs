@@ -216,10 +216,17 @@ public sealed class SqlUserAssignmentService(
                 $"Ce compte détient des droits que vous n'avez pas ({string.Join(", ", missing.Order().Take(5))}) : seul un administrateur au moins aussi habilité peut agir sur lui.");
     }
 
+    /// <summary>
+    /// Entreprises où l'appelant gère les utilisateurs (audit 2026-10 éd. 2, A-033) : la permission était vérifiée sur
+    /// l'entreprise active, mais le périmètre comprenait toute entreprise d'appartenance — un administrateur de A,
+    /// simple caissier dans B, listait et affectait les comptes de B.
+    /// </summary>
     private async Task<Guid[]> AuthorizedCompaniesAsync(CancellationToken ct)
     {
         var profile = await permissions.LoadProfileAsync(Caller, ct);
-        return profile.Memberships.Select(m => m.CompanyId).Distinct().ToArray();
+        return profile.Memberships
+            .Where(m => profile.HasPermission(Nexora.Application.Security.Permissions.Admin.ManageUsers, m.CompanyId))
+            .Select(m => m.CompanyId).Distinct().ToArray();
     }
 
     private sealed class GrantRejected(Error error) : Exception(error.Message) { public Error Error { get; } = error; }

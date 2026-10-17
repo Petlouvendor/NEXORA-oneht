@@ -82,9 +82,9 @@ exécutés par les tests ou parcourus), dont l'essentiel des écrans frontend et
 | `nexora_audit_ed2` | scénarios d'exécution | supprimée |
 | `nexora`, `nexora_recette` | **aucune écriture** (SELECT en session lecture seule) | inchangées par l'audit |
 
-Après l'audit, les corrections (lots 0 à 3) ont appliqué V103 et V104 à `nexora`, `nexora_recette` et `nexora_api_it`,
+Après l'audit, les corrections (lots 0 à 5) ont appliqué V103, V104 et V105 à `nexora`, `nexora_recette` et `nexora_api_it`,
 et deux écritures correctives à `nexora_recette`, après sauvegarde (`C:\Users\Rener\nexora-sauvegardes\2026-10-17-avant-V103`
-et `…-avant-V104`). Détail : `docs/corrections-audit-2026-10-ed2.md`.
+`…-avant-V104` et `…-avant-V105`). Détail : `docs/corrections-audit-2026-10-ed2.md`.
 
 ## Décisions du propriétaire (2026-10-17) et questions restantes
 
@@ -96,8 +96,9 @@ Tranché le 2026-10-17 (exécution : `docs/corrections-audit-2026-10-ed2.md`) :
    (lot 2).
 3. A-052 : données existantes corrigées par écritures correctives (commande `correction-cout-devise`) — **fait** sur
    `nexora_recette` (lot 2).
-4. A-049 : route de facturation plateforme désactivée tant qu'elle n'est pas configurée — prévu au lot 5.
-5. A-045 : routes `/finance/*` retirées — prévu au lot 5.
+4. A-049 : route de facturation plateforme fermée tant qu'aucun jeton fort n'est configuré, paiements imputés au seul
+   client de la facture et à hauteur de son total — **fait** (lot 5).
+5. A-045 : routes `/finance/*` retirées — **fait** (lot 5).
 
 Restent ouvertes :
 
