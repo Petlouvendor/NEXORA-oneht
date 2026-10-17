@@ -20,7 +20,8 @@ public sealed class SalesReturnService(
     IUnitOfWork uow,
     ITenantContext tenant,
     IDateTimeProvider clock,
-    ILogger<SalesReturnService> logger)
+    ILogger<SalesReturnService> logger,
+    Nexora.Application.Finance.Abstractions.ICompanyCurrencyContext currencies)
 {
     private Guid Company => tenant.ActiveCompanyId
         ?? throw TenantErrors.ActiveCompanyRequired();
@@ -197,7 +198,8 @@ public sealed class SalesReturnService(
                 Company, cmd.OperationUuid, now, ret.Id, locked.CustomerId,
                 new Money(refundNet, currency), new Money(refundTax, currency),
                 cmd.RefundMethod, cmd.RefundFinancialAccountId, relief > 0m,
-                cogsRestocked > 0m ? new Money(cogsRestocked, currency) : null)
+                // Coût du stock réintégré : devise fonctionnelle, comme la valorisation du stock (A-052).
+                cogsRestocked > 0m ? new Money(cogsRestocked, await currencies.FunctionalCurrencyAsync(token)) : null)
             {
                 ReceivableRelief = new Money(relief, currency),
                 RemainderToStoreCredit = toCustomerAccount,

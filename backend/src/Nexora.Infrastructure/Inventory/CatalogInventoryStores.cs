@@ -8,6 +8,7 @@ using Nexora.Domain.Inventory;
 using Nexora.Domain.Purchasing;
 using Nexora.Infrastructure.Persistence;
 using Nexora.Domain.Common;
+using Nexora.Domain.Accounting;
 
 namespace Nexora.Infrastructure.Inventory;
 
@@ -302,7 +303,7 @@ public sealed class EfPurchasingStore(NexoraDbContext db, ITenantContext tenant)
             CROSS JOIN LATERAL (SELECT EXISTS (
                 SELECT 1 FROM nexora.journal_entry je
                 WHERE je.company_id = r.company_id AND je.source_type = 'goods_receipt' AND je.source_id = r.id
-                  AND je.status IN ('posted', 'reversed')) AS accrued) a
+                  AND je.status = ANY({LedgerStatuses.InLedger})) AS accrued) a
             WHERE r.company_id = {Company} AND r.status = 'posted' AND l.product_id = ANY({ids})
               AND (r.id = {goodsReceiptId} OR ({goodsReceiptId}::uuid IS NULL AND r.purchase_order_id = {purchaseOrderId}))
             GROUP BY l.product_id
@@ -317,7 +318,7 @@ public sealed class EfPurchasingStore(NexoraDbContext db, ITenantContext tenant)
         var row = await db.Database.SqlQuery<ReceiptStateRow>($"""
             SELECT EXISTS (SELECT 1 FROM nexora.journal_entry je
                            WHERE je.company_id = r.company_id AND je.source_type = 'goods_receipt' AND je.source_id = r.id
-                             AND je.status IN ('posted', 'reversed')) AS "Accrued",
+                             AND je.status = ANY({LedgerStatuses.InLedger})) AS "Accrued",
                    EXISTS (SELECT 1 FROM nexora.supplier_invoice i
                            WHERE i.company_id = r.company_id AND i.status <> 'cancelled'
                              AND (i.goods_receipt_id = r.id

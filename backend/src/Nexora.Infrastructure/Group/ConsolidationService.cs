@@ -4,6 +4,7 @@ using Nexora.Application.Group;
 using Nexora.Contracts.Group;
 using Nexora.Domain.Common;
 using Nexora.Infrastructure.Persistence;
+using Nexora.Domain.Accounting;
 
 namespace Nexora.Infrastructure.Group;
 
@@ -138,7 +139,7 @@ public sealed class SqlConsolidationService(NexoraDbContext db, IUnitOfWork uow,
                     FROM nexora.journal_entry_line l
                     JOIN nexora.journal_entry e ON e.id = l.journal_entry_id
                     LEFT JOIN nexora.account_group_mapping m ON m.account_id = l.account_id AND m.status = 'active'
-                    WHERE e.company_id = {c.CompanyId} AND e.status = 'posted'
+                    WHERE e.company_id = {c.CompanyId} AND e.status = ANY({LedgerStatuses.InLedger})
                       AND e.entry_date BETWEEN {run.FromDate} AND {run.ToDate} AND m.id IS NULL
                     """).FirstAsync(token);
                 var mappingComplete = unmapped == 0;
@@ -152,7 +153,7 @@ public sealed class SqlConsolidationService(NexoraDbContext db, IUnitOfWork uow,
                     JOIN nexora.journal_entry e ON e.id = l.journal_entry_id
                     JOIN nexora.account_group_mapping m ON m.account_id = l.account_id AND m.status = 'active'
                     JOIN nexora.group_account ga ON ga.id = m.group_account_id
-                    WHERE e.company_id = {c.CompanyId} AND e.status = 'posted'
+                    WHERE e.company_id = {c.CompanyId} AND e.status = ANY({LedgerStatuses.InLedger})
                       AND e.entry_date BETWEEN {run.FromDate} AND {run.ToDate}
                     GROUP BY m.group_account_id, ga.account_type
                     """).ToListAsync(token);

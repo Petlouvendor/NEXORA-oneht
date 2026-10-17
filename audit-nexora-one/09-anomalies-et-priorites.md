@@ -12,6 +12,10 @@
 > `nexora_recette` (`nexora_audit_ed2`, supprimée ensuite) ; **Données** = requêtes SELECT en lecture seule sur
 > `nexora_recette` ; **Lecture** = démontré par le code, lignes citées ; **Calcul** = déduit du code par un exemple chiffré.
 
+**Suivi des corrections (après l'audit)** — détail et preuves dans `docs/corrections-audit-2026-10-ed2.md` :
+lot 0 (2026-10-17) A-036, T-003 **corrigés** ; lot 1 A-042 **corrigé** ; lot 2 A-052, A-043 **corrigés** (données de
+recette corrigées par `correction-cout-devise`). Le tableau ci-dessous reste l'état constaté par l'audit.
+
 ## 1. Tableau de synthèse (anomalies ouvertes)
 
 | ID | Gravité | Module | Titre | Preuve |

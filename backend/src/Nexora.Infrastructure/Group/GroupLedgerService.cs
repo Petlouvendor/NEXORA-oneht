@@ -4,6 +4,7 @@ using Nexora.Application.Group;
 using Nexora.Contracts.Group;
 using Nexora.Domain.Common;
 using Nexora.Infrastructure.Persistence;
+using Nexora.Domain.Accounting;
 
 namespace Nexora.Infrastructure.Group;
 
@@ -155,7 +156,7 @@ public sealed class SqlGroupLedgerService(NexoraDbContext db, IUnitOfWork uow, I
         var rows = await db.Database.SqlQuery<MappingRow>($"""
             SELECT a.id AS "AccountId", a.code AS "Code", a.name AS "Name", a.account_type AS "AccountType",
                    EXISTS(SELECT 1 FROM nexora.journal_entry_line l JOIN nexora.journal_entry e ON e.id = l.journal_entry_id
-                          WHERE l.account_id = a.id AND e.status = 'posted') AS "HasActivity",
+                          WHERE l.account_id = a.id AND e.status = ANY({LedgerStatuses.InLedger})) AS "HasActivity",
                    ga.code AS "GroupAccountCode", ga.name AS "GroupAccountName", m.effective_from AS "EffectiveFrom",
                    (SELECT COUNT(*)::int FROM nexora.account_group_mapping h WHERE h.account_id = a.id) AS "Versions"
             FROM nexora.account a
@@ -218,7 +219,7 @@ public sealed class SqlGroupLedgerService(NexoraDbContext db, IUnitOfWork uow, I
                 SELECT EXISTS(
                     SELECT 1 FROM nexora.journal_entry_line l
                     JOIN nexora.journal_entry e ON e.id = l.journal_entry_id
-                    WHERE l.account_id = a.id AND e.status = 'posted') AS has_activity
+                    WHERE l.account_id = a.id AND e.status = ANY({LedgerStatuses.InLedger})) AS has_activity
             ) act ON true
             WHERE c.group_id = {groupId} AND a.status = 'active'
             GROUP BY c.id, c.name ORDER BY c.name
