@@ -75,6 +75,22 @@ public sealed class SqlDataCorrectionService(NexoraDbContext db, ITenantContext 
                 """).FirstAsync(ct);
         if (!owned && !platformWide) return Error.NotFound("correction.record_not_found", "Enregistrement introuvable.");
 
+        // L'identifiant de connexion est global : le corriger change la connexion de l'utilisateur dans TOUTES ses
+        // entreprises. Réservé à l'exploitant si l'utilisateur appartient aussi à une entreprise hors du groupe de
+        // l'entreprise active (audit 2026-10 éd. 2).
+        if (table == "app_user" && field == "username" && !platformWide && await db.Database.SqlQuery<bool>($"""
+                SELECT EXISTS(SELECT 1 FROM nexora.user_role ur JOIN nexora.access_scope sc ON sc.id = ur.scope_id
+                              LEFT JOIN nexora.company c ON c.id = sc.company_id
+                              WHERE ur.user_id = {request.RecordId} AND ur.revoked_at IS NULL
+                                AND sc.scope_type <> 'PLATFORM'
+                                AND sc.company_id IS DISTINCT FROM {active}
+                                AND NOT EXISTS (SELECT 1 FROM nexora.company a
+                                                WHERE a.id = {active} AND a.group_id IS NOT NULL
+                                                  AND a.group_id = COALESCE(c.group_id, sc.group_id))) AS "Value"
+                """).FirstAsync(ct))
+            return Error.Forbidden("correction.shared_identity",
+                "Cet utilisateur appartient aussi à d'autres entreprises : son identifiant de connexion ne se corrige que par l'exploitant.");
+
         var id = Guid.NewGuid();
         await db.Database.ExecuteSqlAsync($"""
             INSERT INTO nexora.data_correction_request

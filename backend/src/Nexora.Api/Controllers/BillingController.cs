@@ -1,6 +1,7 @@
 using Asp.Versioning;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Configuration;
 using Nexora.Api.Security;
 using Nexora.Application.Platform;
@@ -60,6 +61,8 @@ public sealed class BillingController(
 
     [HttpPost("webhooks/payment")]
     [AllowAnonymous]
+    [EnableRateLimiting("webhook")]
+    [RequestSizeLimit(1_048_576)]
     public async Task<IActionResult> PaymentWebhook([FromBody] PaymentWebhookEvent evt, [FromHeader(Name = "X-Platform-Webhook-Token")] string? token, CancellationToken ct)
     {
         // Audit 2026-10 éd. 2, A-049 : le jeton par défaut « dev-platform-webhook-token », public, était accepté en

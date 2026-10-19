@@ -222,4 +222,42 @@ public sealed class CashAndLedgerConsistencyTests(FinanceEngineFixture fx)
         (await t.SetAccountStatusAsync(account, new FinancialAccountStatusRequest("closed", "Fin de test"))).IsSuccess.Should().BeTrue();
         (await t.SetAccountStatusAsync(other, new FinancialAccountStatusRequest("closed", "Fin de test"))).IsSuccess.Should().BeTrue();
     }
+
+    /// <summary>Audit 2026-10 éd. 2 : deux clôtures simultanées d'une même session — une seule sort le tiroir.</summary>
+    [Fact]
+    public async Task Simultaneous_closings_of_a_session_close_it_once()
+    {
+        var register = Guid.NewGuid();
+        Guid drawer, session;
+        await using (var s = Scope())
+            drawer = (await s.ServiceProvider.GetRequiredService<ITreasuryManagementService>()
+                .CreateAccountAsync(new SaveFinancialAccountRequest($"Tiroir double {Guid.NewGuid():N}"[..30], "cash", "HTG", null, null))).Value;
+        await using (var c = new NpgsqlConnection(fx.TestConnectionString))
+        {
+            await c.OpenAsync();
+            await using var cmd = new NpgsqlCommand($"""
+                INSERT INTO nexora.cash_register (id, company_id, financial_account_id, name, code, currency_id)
+                VALUES ('{register}', '{Company}', '{drawer}', 'Caisse double {register:N}', 'D{register:N}'::text,
+                        (SELECT id FROM nexora.currency WHERE code = 'HTG'))
+                """, c);
+            await cmd.ExecuteNonQueryAsync();
+        }
+        await using (var s = Scope())
+            session = (await s.ServiceProvider.GetRequiredService<CashSessionService>().OpenAsync(new OpenSessionCommand(register, null, 0m))).Value;
+
+        var start = new TaskCompletionSource();
+        async Task<string?> Close()
+        {
+            await start.Task;
+            await using var s = Scope();
+            var r = await s.ServiceProvider.GetRequiredService<CashSessionService>().CloseAsync(new CloseSessionCommand(session, 0m, null));
+            return r.IsSuccess ? null : r.Error!.Code;
+        }
+        var closings = Enumerable.Range(0, 3).Select(_ => Close()).ToList();
+        start.SetResult();
+        var outcomes = await Task.WhenAll(closings);
+
+        outcomes.Count(o => o is null).Should().Be(1, "une seule clôture l'emporte");
+        outcomes.Where(o => o is not null).Should().OnlyContain(o => o == "pos.session_already_closed" || o == "pos.session_closed");
+    }
 }

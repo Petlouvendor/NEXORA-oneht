@@ -109,6 +109,8 @@ public sealed class SqlEmployeeService(
         var scope = await ViewScopeAsync(ct);
         if (scope.IsEmpty) return [];
         var q = string.IsNullOrWhiteSpace(search) ? null : search.Trim();
+        // Périmètre appliqué dans la requête, avant la limite (audit 2026-10 éd. 2).
+        var inScope = scope.Ids.ToArray();
         var rows = await db.Database.SqlQuery<ListRow>($"""
             SELECT e.id AS "Id", e.employee_number AS "EmployeeNumber", e.first_name AS "FirstName", e.last_name AS "LastName",
                    e.job_title AS "JobTitle", e.department_id AS "DepartmentId", d.name AS "DepartmentName", e.status AS "Status",
@@ -127,6 +129,7 @@ public sealed class SqlEmployeeService(
                 WHERE h.contract_id = c.id AND h.effective_date <= current_date
                 ORDER BY h.effective_date DESC LIMIT 1) s ON true
             WHERE e.company_id = {Company}
+              AND ({scope.All} OR e.id = ANY({inScope}))
               AND ({status}::text IS NULL OR e.status = {status}::text)
               AND ({departmentId}::uuid IS NULL OR e.department_id = {departmentId}::uuid)
               AND ({q}::text IS NULL OR nexora.search_norm(e.first_name || ' ' || e.last_name || ' ' || e.employee_number)
@@ -303,6 +306,13 @@ public sealed class SqlEmployeeService(
         if (ValidateEmployee(r) is { } invalid) return invalid;
         if (!await ExistsAsync(employeeId, ct)) return NotFound();
         if (r.ManagerEmployeeId == employeeId) return Error.Validation("hr.manager_self", "Un employé ne peut pas être son propre responsable.");
+        // La date d'entrée ne passe pas après le début d'un contrat existant (audit 2026-10 éd. 2) : la création refuse un
+        // contrat antérieur à l'entrée, la modification de l'entrée contournait ce contrôle.
+        var firstContract = await db.Database.SqlQuery<DateOnly?>($"""
+            SELECT MIN(start_date) AS "Value" FROM nexora.employee_contract WHERE employee_id = {employeeId} AND company_id = {Company}
+            """).FirstOrDefaultAsync(ct);
+        if (firstContract is { } start && r.HireDate > start)
+            return Error.Validation("hr.hire_date", $"Un contrat commence le {start:dd/MM/yyyy} : la date d'entrée ne peut pas être postérieure.");
         var tax = r.TaxParameters is { ValueKind: JsonValueKind.Object } tp ? tp.GetRawText() : null;
         try
         {
@@ -814,6 +824,11 @@ public sealed class SqlEmployeeService(
         }
         if (content.Length == 0) return Error.Validation("hr.document_content", "Fichier vide.");
         if (content.Length > 10 * 1024 * 1024) return Error.Validation("hr.document_size", "Fichier trop volumineux (10 Mo au plus).");
+        // Le document remplacé est un document du MÊME employé (audit 2026-10 éd. 2 : identifiant non contrôlé).
+        if (r.SupersedesId is { } previous && !await db.Database.SqlQuery<bool>($"""
+                SELECT EXISTS(SELECT 1 FROM nexora.employee_document WHERE id = {previous} AND employee_id = {employeeId} AND company_id = {Company}) AS "Value"
+                """).FirstAsync(ct))
+            return Error.Validation("hr.document_supersedes", "Le document remplacé n'appartient pas à ce dossier.");
         var id = Guid.NewGuid();
         var hash = Convert.ToHexStringLower(SHA256.HashData(content));
         await db.Database.ExecuteSqlAsync($"""

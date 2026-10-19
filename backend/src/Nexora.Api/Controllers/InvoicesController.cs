@@ -20,9 +20,11 @@ public sealed class InvoicesController(IDocumentService documents, IDocumentQuer
     public async Task<IActionResult> List([FromQuery] string? status, [FromQuery] Guid? partyId,
         [FromQuery] DateOnly? from, [FromQuery] DateOnly? to, CancellationToken ct = default)
     {
-        var all = await queries.SearchAsync(new DocumentSearchRequest(
-            Type: null, Status: status, Number: null, PartyId: partyId, From: from, To: to, Limit: 300), ct);
-        return Ok(all.Where(d => d.DocumentType is "invoice" or "deposit_invoice" or "final_invoice" or "proforma").ToList());
+        // Types filtrés en base, avant la limite (audit 2026-10 éd. 2 : 300 documents de tous types étaient lus puis
+        // filtrés en mémoire — au-delà, des factures devenaient invisibles derrière les devis et bons de livraison).
+        return Ok(await queries.SearchAsync(new DocumentSearchRequest(
+            Status: status, PartyId: partyId, From: from, To: to, Limit: 500,
+            Types: ["invoice", "deposit_invoice", "final_invoice", "proforma"]), ct));
     }
 
     [HttpPost("{saleId:guid}/issue")]

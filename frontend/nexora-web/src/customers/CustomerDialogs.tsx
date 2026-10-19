@@ -218,7 +218,13 @@ export function ExpenseDialog({ customerId, customerName, currency, onClose, onD
           <input type="checkbox" checked={billable} onChange={(e) => setBillable(e.target.checked)} />
           Refacturer au client (la validation augmente sa dette)
         </label>
-        {error && <div role="alert" className="nx-error-text">{error}</div>}
+        {!billable && (
+          <p role="note" style={{ margin: 0, fontSize: "var(--nx-fs-xs)", color: "var(--nx-text-3)" }}>
+            Non refacturée : la validation ne crée ni dette ni écriture. Si de l'argent est sorti, enregistrez-le aussi
+            dans Finance &amp; trésorerie → Dépenses.
+          </p>
+        )}
+        {error &&<div role="alert" className="nx-error-text">{error}</div>}
       </div>
     </Modal>
   );

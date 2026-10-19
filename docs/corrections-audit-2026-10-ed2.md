@@ -18,6 +18,8 @@
    doublon (modèle : `reprise-ouvertures`), jamais de réécriture de l'historique.
 4. **A-049 / A-045** : route de facturation plateforme désactivée tant qu'elle n'est pas configurée ; routes
    `/finance/*` retirées (aucun écran ne les appelle).
+5. **Lot 7** : tout le registre des 90 constats faibles est traité ; double contrôle des écritures manuelles (OD) par
+   un paramètre d'entreprise, **désactivé par défaut** (les structures à un seul comptable restent possibles).
 
 ## Lot 0 — Socle : dépendance vulnérable, délai des tests, taux non entier (A-036, T-003)
 
@@ -271,3 +273,137 @@ dans ce cas.
 (`CustomerAccountTests`, `CustomerAccountGapsTests`). Ils passent isolément et n'ont pas échoué dans les trois passages
 complets suivants. Le journal de ce passage, en mode silencieux, ne donne que les noms : la cause n'est pas établie. À
 surveiller : relancer la suite complète avec `--logger "console;verbosity=normal"` si cela se reproduit.
+
+## Lot 7 — Constats faibles (registre complet, 09 §5)
+
+Les 90 constats du registre ont été repris un par un (numéros : rang dans 09 §5). Chaque correction a son test,
+rouge sur l'ancien code (vérifié en remettant les sources d'origine le temps du test) puis vert. Trois migrations,
+appliquées à `nexora`, `nexora_recette` et `nexora_api_it` après sauvegarde
+(`C:\Users\Rener\nexora-sauvegardes\2026-10-18-avant-V106`, `…-avant-V107`, `2026-10-19-avant-V108`) :
+
+| Migration | Contenu |
+| --- | --- |
+| V106 | Paramètre `accounting.manual_entry_four_eyes` (désactivé par défaut) |
+| V107 | Motif de confirmation forte `signature` |
+| V108 | Index unique du rapprochement bancaire ; formules du catalogue d'indicateurs (montants convertis) ; écriture liée au passage en perte d'un suspens |
+
+### 7a — Sécurité et droits
+
+| N° | Fichier | Correction |
+| --- | --- | --- |
+| 1 | `ci.yml`, `ApiTestDatabase` | Les tests d'API écrivent dans `nexora_api_it`, jamais dans la base modèle `nexora` |
+| 2-4 | `.vscode/` | Retiré du dépôt (configuration C/C++/COBOL sans rapport), ignoré |
+| 5 | Écritures manuelles | Double contrôle : l'auteur ne valide pas sa propre OD quand le paramètre est actif |
+| 6, 7, 15 | Administration, recouvrement, avances | Confirmation forte : workflows et automatisations, radiation, versement et remboursement d'avance |
+| 9 | Webhooks entrants (et facturation) | Débit limité (`Security:WebhookRateLimitPerMinute`, 300/min) et corps limité à 1 Mo |
+| 11 | Métriques | Jeton comparé en temps constant |
+| 12, 24, 47 | Pièces jointes, image produit | Type reconnu par la signature du contenu (PNG, JPEG, WebP) ; autre contenu servi en téléchargement, jamais en ligne |
+| 21 | Connexion | Un compte verrouillé répond comme un mot de passe faux, après le même calcul de hachage |
+| 30 | Recherche globale | Employés : même périmètre que le module RH (équipe d'un Manager) |
+| 35 | Signature GED interne | Confirmation forte (nouveau motif `signature`, V107) |
+| 39 | Clés d'API | La rotation revérifie les droits actuels du propriétaire et le périmètre de l'application ; une seule rotation l'emporte |
+| 45, 73, 75 | Tâches, anomalies, rapports planifiés | Personne assignée et destinataires : membres de l'entreprise ou de son groupe ; une tâche assignée se termine par l'assigné ou l'auteur |
+| 48 | Livraisons | Seul le livreur de la tournée fait avancer, clôture ou échoue ses arrêts |
+| 49 | Message de test | 10 envois de test au plus par canal et par heure (coût SMS) |
+| 50 | Escalade d'échec d'envoi | Administrateurs de l'entreprise et de SON groupe seulement |
+| 51 | Gabarits HTML | Variables échappées |
+| 52 | Notifications | Destinataires filtrés sur l'appartenance ; heures de silence au fuseau de l'entreprise |
+| 53 | Correction de données | L'identifiant de connexion d'un utilisateur partagé avec un autre client ne se corrige que par l'exploitant |
+| 54 | Jobs | L'exécution manuelle prend le verrou du planificateur (`job.busy`) |
+| 56 | Purge | Date limite bornée par la politique ; politique « archive » appliquée (archive, ne supprime pas) |
+| 57 | Clé des données personnelles | Clé distincte générée à l'installation ; avertissement en production si absente ou égale à la clé MFA (pas de blocage : les données existantes sont chiffrées avec la clé MFA) |
+| 69 | Tableau de bord partagé | Supprimé seulement par un administrateur de l'entreprise |
+| 81 | Approbations | Décision sous verrou de la demande (`security.approval_changed`) |
+| 87 | Jeu de démonstration | Refus sur une base qui contient des entreprises réelles (forçage : `nexora.allow_demo_seed=on`) |
+
+### 7b — Argent, intégrité, rapports
+
+| N° | Fichier | Correction |
+| --- | --- | --- |
+| 10 | Factures | Types filtrés en base avant la limite (au-delà de 300 documents, des factures disparaissaient) |
+| 16 | Export d'audit | Jusqu'à 10 000 lignes par pages, troncature signalée, champs CSV échappés |
+| 18 | Mode maintenance | Exemptions sur le premier segment de route (une route métier contenant « /ready » passait) |
+| 19 | Catalogue d'indicateurs | Formules : montants convertis en devise de l'entreprise (code et V108) |
+| 20 | Clôture de caisse | Deux clôtures simultanées : la seconde est refusée (`pos.session_already_closed`) |
+| 22 | Workflows, automatisations | Avances et prêts acceptés par le moteur d'approbation (échec silencieux) ; échec de demande d'approbation remonté ; heure d'exécution au fuseau de l'entreprise ; message d'erreur lisible |
+| 23 | Catalogue | Liste par pages (bouton « Afficher les 500 produits suivants ») ; code mort `ListPromotionsAsync` retiré |
+| 25 | Promotions | Promotion et cibles dans une transaction |
+| 26 | Comptes clients | Arrondi au pair, comme les ventes et le moteur |
+| 27 | Fiche client | Signaux convertis dans la devise du client |
+| 28 | Dépense client non refacturée | L'écran précise qu'elle ne crée ni dette ni écriture |
+| 29 | Fil d'activité | Une écriture manuelle extournée reste visible, marquée « extournée » |
+| 32 | Reprise des soldes d'ouverture | Texte en double encodage réparé ; test qui refuse tout double encodage dans les sources |
+| 33 | Trésorerie | Créances, dettes, dépenses, mouvements en attente et suspens convertis ; alerte si un taux manque ; passage en perte adossé à une écriture validée (V108) ; résolution conditionnée au statut |
+| 34 | Transferts, paiement de dépense | Contrôle du découvert sous verrou (comptes verrouillés dans un ordre fixe) |
+| 38 | MFA | Tentative réservée avant la vérification : jamais plus de 5 essais, même en parallèle |
+| 40 | Rapprochement bancaire | Un mouvement n'est rapproché qu'une fois (index unique, V108) |
+| 41 | Webhooks | Secrets de signature chiffrés au repos ; les secrets existants en clair restent lus |
+| 42, 43 | Recommandations | Seuils validés ; une règle illisible n'arrête plus les autres ; vélocité de réassort par emplacement |
+| 46 | Imports | Passage à « executing » conditionnel au statut : un import ne s'exécute qu'une fois |
+| 55 | Mise en production | Contrôle « Exercice comptable en cours et suivant » |
+| 58 | Dossier employé | Date d'entrée jamais après le premier contrat ; document remplacé du même dossier |
+| 59, 62 | Notes de frais, avances, salaires | Solde de caisse contrôlé sous verrou ; versement d'avance rattaché à la session de caisse ouverte, jamais daté dans le futur ; plafond des avances revérifié sous verrou |
+| 60 | Temps et absences | Périmètre appliqué avant la limite (7 listes) ; chevauchement d'absences contrôlé sous verrou |
+| 61 | Paies impayées | Colonnes « Déjà payé » et « Reste à payer » |
+| 64 | Erreurs de base | Refus d'un déclencheur, contrainte ou conflit : réponse explicite (409/422/403) au lieu d'une 500 |
+| 68 | Préférences | Fuseau reconnu ; logo téléversé (PNG, JPEG, WebP, 200 Ko), plus tronqué |
+| 70 | Impressions | Comptage des copies sérialisé : un seul original |
+| 71 | Relevé fournisseur | Pièces converties dans la devise du fournisseur ; paiements annulés exclus |
+| 72 | Prévision de trésorerie | Tranche « Au-delà » datée de son début (plus de point en 2300) |
+| 74 | Objectifs | Un objectif d'établissement se mesure sur ses ventes (indicateurs de vente seulement) ; le tableau de commande filtre l'établissement |
+| 77 | Centre d'alertes | Trésorerie et ventes converties |
+| 78 | Rapports | Totaux du journal sur les ventes affichées ; coût moyen pondéré ; une rupture par emplacement |
+| 79 | Planificateur | Suivi des entités vidé entre deux entreprises |
+| 82 | Journal de sécurité | Insertion sous point de sauvegarde : un échec n'avorte plus la transaction appelante |
+| 83 | Installation | Année du premier exercice au fuseau de l'entreprise |
+| 86 | `restore.sh` | Équilibre contrôlé en devise de référence |
+
+Défaut trouvé en chemin : `BusinessCalendar` gardait le fuseau de la première entreprise de la portée ; le
+planificateur, qui parcourt toutes les entreprises, l'appliquait à toutes. Il suit désormais l'entreprise active.
+
+Conséquence pour les tests de paie : les salaires payés en espèces contrôlent le solde de caisse ; la caisse de
+démonstration est alimentée une fois par base de test (banque ouverte puis transfert comptabilisé).
+
+### 7c — Outillage
+
+| N° | Fichier | Correction |
+| --- | --- | --- |
+| 88 | `frontend/nexora-web/Dockerfile` | Images épinglées : `node:22.20.0-alpine3.22`, `caddy:2.10.2-alpine` |
+| 89 | `eslint.config.js` | Règle typée `no-floating-promises` ; 17 promesses non suivies marquées `void` (leurs erreurs étaient déjà gérées) |
+| 90 | `infrastructure/docker-compose.yml` | Volume monté sur `/var/lib/postgresql` (postgres 18) ; `Security__DataEncryptionKey` exigée comme en production |
+
+### Constats classés sans correctif
+
+| N° | Motif |
+| --- | --- |
+| 8 | Aucun défaut (contrôleur des comptes de trésorerie, tests verts) |
+| 13 | Évolution : désactiver un fournisseur, annuler un paiement fournisseur (fonctions à concevoir) |
+| 14 | Conception : l'acceptation d'un devis est la décision du client, saisie par le vendeur |
+| 17, 31, 36, 37, 44, 76, 84, 85 | Déjà corrigés par les lots 0 à 6 (A-046, A-043, A-048, A-003 résidu, T-003) |
+| 63 | Décision documentée (levée de RLS par variable de session) |
+| 65 | Évolution annoncée (licence à signature asymétrique) |
+| 66, 67 | Couche SaaS non utilisée : un client par installation |
+| 80 | Évolution : effet serveur des modules sectoriels autres que restaurant |
+| 22 (partie) | La relance automatique prévient l'utilisateur interne ; l'envoi au client suppose un canal configuré (évolution) |
+| 25 (partie) | Les coupons s'appliquent au panier entier ; les rattacher à une promotion suppose de faire évoluer le moteur de prix |
+
+**Tests.** Nouveau fichier `WeakFindingsTests` et cas ajoutés aux suites existantes (paie, notifications, clés
+d'API, livraisons, impressions, trésorerie, imports, rapports, MFA, administration) ; `DatabaseRefusalTests` et
+`MaintenanceExemptionTests` (API) ; `SourceEncodingTests` et contrôle de la clé de données (unitaires).
+
+**Contre-épreuve.** Sur l'ancien code, 35 tests d'intégration et 4 tests unitaires échouent ; six autres ne compilent
+pas (ils appellent des fonctions ajoutées par ce lot : refus de base explicite, exemptions de maintenance, filtre
+multi-types, pagination du catalogue, passage en perte d'un suspens). Le test de l'index unique (40) passe déjà sur
+l'ancien code applicatif : la protection est dans la base (V108).
+
+**Pollution entre tests corrigée.** Un premier passage complet a fait échouer deux tests anciens (position de
+trésorerie, consolidation de mars) : deux nouveaux tests laissaient des caisses actives et des OD de mars dans la base
+partagée de la suite. Ils nettoient désormais leurs comptes et datent leurs écritures en juin.
+
+**Résultats.** Unitaires 109/109, intégration 600/600, API 225/225, Vitest 281/281, typage et lint sans erreur.
+
+**Échec non expliqué.** Un passage Vitest complet, lancé pendant la suite d'intégration, a fait échouer une fois
+`printApi.test.tsx` (« reçoit le PDF dans une enveloppe JSON ») ; non reproduit en sept passages (un complet, cinq
+ciblés sous charge, un complet au calme). Le message d'erreur n'a pas été conservé : à relancer avec `--reporter verbose`
+si cela revient.
+

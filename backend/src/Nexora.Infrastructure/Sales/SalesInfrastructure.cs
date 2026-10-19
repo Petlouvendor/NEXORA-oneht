@@ -424,9 +424,9 @@ public sealed class EfCashSessionStore(NexoraDbContext db, ITenantContext tenant
              WHERE id = {sessionId} AND status = 'open'
             """, ct);
 
-    public async Task FinalizeCloseAsync(Guid sessionId, decimal expected, decimal counted, string? notes,
+    public async Task<bool> FinalizeCloseAsync(Guid sessionId, decimal expected, decimal counted, string? notes,
         Guid? validatedBy, string? validationNote, CancellationToken ct = default)
-        => await db.Database.ExecuteSqlAsync($"""
+        => 1 == await db.Database.ExecuteSqlAsync($"""
             UPDATE nexora.cash_session
                SET status = 'closed', closed_at = now(), counted_at = COALESCE(counted_at, now()),
                    expected_balance = {expected}, counted_balance = {counted}, notes = {notes},

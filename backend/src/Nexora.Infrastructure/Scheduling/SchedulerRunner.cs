@@ -182,6 +182,12 @@ public sealed class SchedulerRunner(
                 failures++;
                 logger.LogWarning(ex, "Planificateur : échec {Label} pour l'entreprise {CompanyId}", label, c.Id);
             }
+            finally
+            {
+                // Un même contexte sert toutes les entreprises (audit 2026-10 éd. 2) : après un échec, des entités suivies
+                // de l'entreprise précédente auraient été enregistrées par la suivante. Le suivi repart vide.
+                db.ChangeTracker.Clear();
+            }
         }
         return (count, failures);
     }
@@ -193,6 +199,10 @@ public sealed class SchedulerRunner(
         {
             logger.LogWarning(ex, "Planificateur : échec {Label}", label);
             return (0, 1);
+        }
+        finally
+        {
+            db.ChangeTracker.Clear();
         }
     }
 

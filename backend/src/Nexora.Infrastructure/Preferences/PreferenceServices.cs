@@ -58,7 +58,9 @@ public sealed class SqlUserPreferenceService(NexoraDbContext db, ITenantContext 
         if (textScale is < 0.85m or > 1.50m) return Error.Validation("preferences.text_scale", "Échelle de texte hors bornes (0,85–1,50).");
         textScale = Math.Round(textScale, 2);
         var timezone = Clean(request.Timezone) ?? current?.Timezone ?? "America/Port-au-Prince";
-        if (timezone.Length is < 3 or > 64) return Error.Validation("preferences.timezone", "Fuseau horaire invalide.");
+        // Fuseau reconnu (audit 2026-10 éd. 2) : n'importe quel texte de 3 à 64 caractères était accepté, puis ignoré.
+        if (timezone.Length is < 3 or > 64 || !TimeZoneInfo.TryFindSystemTimeZoneById(timezone, out _))
+            return Error.Validation("preferences.timezone", "Fuseau horaire inconnu (ex. America/Port-au-Prince).");
 
         await db.Database.ExecuteSqlAsync($"""
             INSERT INTO nexora.user_preference
@@ -145,10 +147,13 @@ public sealed class SqlCompanyBrandingService(NexoraDbContext db, ITenantContext
             return Error.Validation("branding.receipt_format", "Format de reçu invalide (standard/compact/detailed).");
 
         var displayName = Trim(request.DisplayName, current?.DisplayName, 120);
-        var logo = Trim(request.LogoUrl, current?.LogoUrl, 500);
-        if (logo is not null && !(logo.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
-              || logo.StartsWith("data:image/", StringComparison.OrdinalIgnoreCase)))
-            return Error.Validation("branding.logo_url", "Le logo doit être une URL https ou une donnée image encodée.");
+        // Logo : image intégrée PNG, JPEG ou WebP (audit 2026-10 éd. 2). Limité à 500 caractères, un vrai logo était
+        // tronqué donc illisible ; une URL externe est bloquée par la politique de sécurité du site (img-src 'self' data:).
+        // Un logo déjà enregistré et renvoyé tel quel n'est pas revérifié.
+        var incomingLogo = request.LogoUrl?.Trim();
+        var logo = incomingLogo is null ? current?.LogoUrl : incomingLogo.Length == 0 ? null : incomingLogo;
+        if (logo is not null && logo != current?.LogoUrl && LogoProblem(logo) is { } logoProblem)
+            return Error.Validation("branding.logo_url", logoProblem);
         var footer = Trim(request.DocumentFooter, current?.DocumentFooter, 400);
         var dateFmt = Trim(request.DateFormat, current?.DateFormat, 20) ?? "dd/MM/yyyy";
         var numberLocale = Trim(request.NumberLocale, current?.NumberLocale, 12) ?? "fr-FR";
@@ -176,6 +181,23 @@ public sealed class SqlCompanyBrandingService(NexoraDbContext db, ITenantContext
                date_format AS "DateFormat", number_locale AS "NumberLocale", default_locale AS "DefaultLocale"
         FROM nexora.company_branding WHERE company_id = {Company}
         """).FirstOrDefaultAsync(ct);
+
+    private const int MaxLogoBytes = 200 * 1024;
+
+    private static string? LogoProblem(string logo)
+    {
+        var comma = logo.IndexOf(',');
+        if (!logo.StartsWith("data:image/", StringComparison.OrdinalIgnoreCase) || comma < 0
+            || !logo[..comma].EndsWith(";base64", StringComparison.OrdinalIgnoreCase))
+            return "Téléversez le logo (PNG, JPEG ou WebP) : une adresse externe n'est pas affichée par l'application.";
+        byte[] bytes;
+        try { bytes = Convert.FromBase64String(logo[(comma + 1)..]); }
+        catch (FormatException) { return "Image du logo illisible."; }
+        if (bytes.Length > MaxLogoBytes) return "Logo trop lourd (200 Ko au plus).";
+        return Nexora.Infrastructure.Common.ImageSignature.Detect(bytes) is null
+            ? "Le logo doit être une image PNG, JPEG ou WebP."
+            : null;
+    }
 
     private static string? Trim(string? incoming, string? fallback, int max)
     {

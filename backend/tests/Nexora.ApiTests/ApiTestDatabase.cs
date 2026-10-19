@@ -1,14 +1,15 @@
 namespace Nexora.ApiTests;
 
 /// <summary>
-/// Base visée par les tests d'API (audit 2026-10, T-002). Par défaut la base de développement <c>nexora</c>, comme
-/// avant ; <c>NEXORA_API_TEST_DB</c> désigne une autre base (un clone jetable) pour lancer la suite sans écrire dans la
-/// base de développement, qui sert aussi de modèle aux tests d'intégration. Les fabriques sans surcharge (sonde de
-/// santé, assistant d'installation, garde des secrets) n'écrivent rien et gardent leur propre configuration.
+/// Base visée par les tests d'API (audit 2026-10, T-002). Par défaut <c>nexora_api_it</c>, copie de la base de
+/// développement (<c>CREATE DATABASE nexora_api_it TEMPLATE nexora</c>) : la suite n'écrit plus dans <c>nexora</c>, qui
+/// sert de modèle aux tests d'intégration (audit 2026-10 éd. 2). <c>NEXORA_API_TEST_DB</c> désigne une autre base. Les
+/// fabriques sans surcharge (sonde de santé, assistant d'installation, garde des secrets) n'écrivent rien et gardent
+/// leur propre configuration.
 /// </summary>
 internal static class ApiTestDatabase
 {
-    public static string Name => Environment.GetEnvironmentVariable("NEXORA_API_TEST_DB") is { Length: > 0 } db ? db : "nexora";
+    public static string Name => Environment.GetEnvironmentVariable("NEXORA_API_TEST_DB") is { Length: > 0 } db ? db : "nexora_api_it";
 
     /// <summary>Rôle applicatif (sans BYPASSRLS), comme l'API en production.</summary>
     public static string App =>

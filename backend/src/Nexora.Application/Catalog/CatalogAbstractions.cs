@@ -22,15 +22,16 @@ public interface ICatalogQueries
     /// <summary>Scan POS (§38) : correspondance exacte d'un code-barres → 0 ou 1 résultat.</summary>
     Task<CatalogHitDto?> ScanAsync(string barcode, CancellationToken ct = default);
 
+    /// <summary>Page de produits (<paramref name="offset"/> : produits déjà affichés) — un catalogue de supermarché
+    /// dépasse la limite d'une page.</summary>
     Task<IReadOnlyList<ProductListItemDto>> ListProductsAsync(
-        string? term, Guid? categoryId, string? status, int limit, CancellationToken ct = default);
+        string? term, Guid? categoryId, string? status, int limit, CancellationToken ct = default, int offset = 0);
 
     Task<ProductDetailDto?> GetProductAsync(Guid productId, CancellationToken ct = default);
 
     Task<IReadOnlyList<CategoryDto>> ListCategoriesAsync(CancellationToken ct = default);
     Task<IReadOnlyList<PriceListDto>> ListPriceListsAsync(CancellationToken ct = default);
     Task<IReadOnlyList<TaxDto>> ListTaxesAsync(CancellationToken ct = default);
-    Task<IReadOnlyList<PromotionDto>> ListPromotionsAsync(CancellationToken ct = default);
 }
 
 /// <summary>

@@ -56,7 +56,9 @@ public sealed record DocumentSearchRequest(
     string? Type = null, string? Status = null, string? Number = null, Guid? PartyId = null,
     DateOnly? From = null, DateOnly? To = null, int Limit = 100,
     // Phase 4 : documents d'une source (vente, commande, devis, retour, paiement).
-    string? SourceType = null, Guid? SourceId = null);
+    string? SourceType = null, Guid? SourceId = null,
+    // Plusieurs types à la fois (ex. toutes les factures), filtrés en base avant la limite.
+    IReadOnlyList<string>? Types = null);
 
 /// <summary>Données publiques minimales renvoyées par la vérification QR (§27-28).</summary>
 public sealed record DocumentVerificationDto(

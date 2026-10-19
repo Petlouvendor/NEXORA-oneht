@@ -31,7 +31,7 @@ export function LoginPage() {
   // Résumé fonctionnel §20 : tant que l'application n'est pas installée, l'assistant remplace la connexion.
   useEffect(() => {
     getSetupStatus()
-      .then((s) => { if (s.setupRequired || s.restartRequired) navigate("/setup", { replace: true }); })
+      .then((s) => { if (s.setupRequired || s.restartRequired) void navigate("/setup", { replace: true }); })
       .catch(() => { /* serveur injoignable : l'erreur apparaîtra à la connexion */ });
   }, [navigate]);
 
@@ -65,7 +65,7 @@ export function LoginPage() {
       } else {
         await login(email, password);
       }
-      navigate("/", { replace: true });
+      void navigate("/", { replace: true });
     } catch (err) {
       if (err instanceof ApiError && err.problem.title === "session_expired") return;
       setError(message(err, mode === "login" ? "Échec de connexion" : "Opération impossible"));

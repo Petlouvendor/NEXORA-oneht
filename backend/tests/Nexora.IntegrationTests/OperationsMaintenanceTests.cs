@@ -121,6 +121,27 @@ public sealed class OperationsMaintenanceTests(FinanceEngineFixture fx)
         (await jobs.RunNowAsync($"unknown.job.{Guid.NewGuid():N}")).Error!.Code.Should().Be("job.not_found");
     }
 
+    // ---- Audit 2026-10 éd. 2 : l'exécution manuelle prend le verrou du planificateur ----
+    [Fact]
+    public async Task Manual_run_waits_for_the_scheduler_lock()
+    {
+        await using var holder = new NpgsqlConnection(fx.TestConnectionString);
+        await holder.OpenAsync();
+        await using (var take = new NpgsqlCommand($"SELECT pg_advisory_lock({Nexora.Infrastructure.Scheduling.PostgresAdvisoryLock.SchedulerLockKey})", holder))
+            await take.ExecuteScalarAsync();
+        try
+        {
+            await using var s = Scope();
+            (await For<IJobRegistry>(s.ServiceProvider, Direction).RunNowAsync("imports.resume_stalled"))
+                .Error!.Code.Should().Be("job.busy", "un passage du planificateur est en cours");
+        }
+        finally
+        {
+            await using var release = new NpgsqlCommand($"SELECT pg_advisory_unlock({Nexora.Infrastructure.Scheduling.PostgresAdvisoryLock.SchedulerLockKey})", holder);
+            await release.ExecuteScalarAsync();
+        }
+    }
+
     // ---- §10-12 : statistiques de file, rejeu et suppression contrôlée d'un message mort ----
     [Fact]
     public async Task Queue_stats_and_dead_letter_replay_and_delete()

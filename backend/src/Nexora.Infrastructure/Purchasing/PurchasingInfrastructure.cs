@@ -63,20 +63,28 @@ public sealed class SqlPurchasingQueries(NexoraDbContext db, ITenantContext tena
             """).FirstAsync(ct);
         var today = calendar.Today;
 
+        // Relevé dans la devise du fournisseur, pièces d'une autre devise converties au taux de leur date ; paiements
+        // brouillons ou annulés exclus (audit 2026-10 éd. 2 : tout était additionné tel quel, statut compris).
         var rows = await db.Database.SqlQuery<StmtRow>($"""
+            WITH sup AS (SELECT default_currency_id AS cur FROM nexora.supplier WHERE id = {supplierId})
             SELECT si.invoice_date AS "Date", 'invoice' AS "DocumentType", si.document_number AS "DocumentNumber",
-                   si.supplier_reference AS "Reference", si.total AS "Charge", 0::numeric AS "Payment"
-            FROM nexora.supplier_invoice si
+                   si.supplier_reference AS "Reference",
+                   COALESCE(nexora.convert_amount(si.total, si.currency_id, sup.cur, si.invoice_date::timestamptz), 0) AS "Charge",
+                   0::numeric AS "Payment"
+            FROM nexora.supplier_invoice si, sup
             WHERE si.company_id = {Company} AND si.supplier_id = {supplierId} AND si.status <> 'cancelled'
             UNION ALL
             SELECT pay.received_at::date AS "Date", 'payment' AS "DocumentType", pay.payment_number AS "DocumentNumber",
-                   pay.reference AS "Reference", 0::numeric AS "Charge", pay.amount AS "Payment"
-            FROM nexora.payment pay
+                   pay.reference AS "Reference", 0::numeric AS "Charge",
+                   COALESCE(nexora.convert_amount(pay.amount, pay.currency_id, sup.cur, pay.received_at), 0) AS "Payment"
+            FROM nexora.payment pay, sup
             WHERE pay.company_id = {Company} AND pay.supplier_id = {supplierId} AND pay.direction = 'outbound'
+              AND pay.status = 'completed'
             UNION ALL
             SELECT sr.returned_at::date AS "Date", 'return' AS "DocumentType", sr.document_number AS "DocumentNumber",
-                   sr.reason AS "Reference", 0::numeric AS "Charge", sr.total AS "Payment"
-            FROM nexora.supplier_return sr
+                   sr.reason AS "Reference", 0::numeric AS "Charge",
+                   COALESCE(nexora.convert_amount(sr.total, sr.currency_id, sup.cur, sr.returned_at), 0) AS "Payment"
+            FROM nexora.supplier_return sr, sup
             WHERE sr.company_id = {Company} AND sr.supplier_id = {supplierId} AND sr.status = 'posted'
             ORDER BY "Date"
             """).ToListAsync(ct);
@@ -93,9 +101,10 @@ public sealed class SqlPurchasingQueries(NexoraDbContext db, ITenantContext tena
         }
 
         var overdue = await db.Database.SqlQuery<decimal>($"""
-            SELECT COALESCE(SUM(remaining_amount), 0) AS "Value" FROM nexora.supplier_payable
-            WHERE company_id = {Company} AND supplier_id = {supplierId}
-              AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE') AND due_date < {today}
+            SELECT COALESCE(SUM(COALESCE(nexora.convert_amount(p.remaining_amount, p.currency_id, s.default_currency_id), 0)), 0) AS "Value"
+            FROM nexora.supplier_payable p JOIN nexora.supplier s ON s.id = p.supplier_id
+            WHERE p.company_id = {Company} AND p.supplier_id = {supplierId}
+              AND p.status IN ('OPEN','PARTIALLY_PAID','OVERDUE') AND p.due_date < {today}
             """).FirstAsync(ct);
 
         return new SupplierStatementDto(supplierId, sup, currency, Math.Round(opening, 2), Math.Round(running, 2),

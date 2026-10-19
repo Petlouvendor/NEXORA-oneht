@@ -78,7 +78,8 @@ public sealed class MobileFieldOpsTests(FinanceEngineFixture fx)
         await using var s = Scope();
         var attachments = For<IAttachmentService>(s.ServiceProvider, Direction);
 
-        var bytes = "signature-fictive"u8.ToArray();
+        // Signature PNG réelle (en-tête) suivie d'un contenu fictif : le format est désormais lu dans le contenu.
+        var bytes = Png("signature-fictive");
         var base64 = Convert.ToBase64String(bytes);
 
         var uploaded = await attachments.UploadAsync(new UploadAttachmentRequest("signature", "delivery_stop", Guid.NewGuid(), base64, "image/png"));
@@ -94,7 +95,19 @@ public sealed class MobileFieldOpsTests(FinanceEngineFixture fx)
             .Error!.Code.Should().Be("attachment.kind");
         (await attachments.UploadAsync(new UploadAttachmentRequest("photo", null, null, "not-base64!!", "image/png")))
             .Error!.Code.Should().Be("attachment.content");
+        // Audit 2026-10 éd. 2 : un contenu HTML n'est jamais accepté, quel que soit le type déclaré (avant : stocké et
+        // renvoyé « text/html », donc interprété par le navigateur).
+        (await attachments.UploadAsync(new UploadAttachmentRequest("photo", null, null,
+                Convert.ToBase64String("<script>alert(1)</script>"u8.ToArray()), "text/html")))
+            .Error!.Code.Should().Be("attachment.content_type");
     }
+
+    /// <summary>En-tête PNG puis texte : contenu reconnu comme image PNG.</summary>
+    internal static byte[] Png(string payload)
+        => [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, .. System.Text.Encoding.UTF8.GetBytes(payload)];
+
+    /// <summary>En-tête JPEG puis texte : contenu reconnu comme image JPEG.</summary>
+    internal static byte[] Jpeg(string payload) => [0xFF, 0xD8, 0xFF, .. System.Text.Encoding.UTF8.GetBytes(payload)];
 
     // ---- §12, §52 : tournée — étape sans commande + notification push du livreur ----
     [Fact]
@@ -118,9 +131,9 @@ public sealed class MobileFieldOpsTests(FinanceEngineFixture fx)
 
         var stop = created.Value.Stops[0];
         var photo = await For<IAttachmentService>(s.ServiceProvider, Direction).UploadAsync(
-            new UploadAttachmentRequest("photo", "delivery_stop", stop.Id, Convert.ToBase64String("photo"u8.ToArray()), "image/jpeg"));
+            new UploadAttachmentRequest("photo", "delivery_stop", stop.Id, Convert.ToBase64String(Jpeg("photo")), "image/jpeg"));
         var sig = await For<IAttachmentService>(s.ServiceProvider, Direction).UploadAsync(
-            new UploadAttachmentRequest("signature", "delivery_stop", stop.Id, Convert.ToBase64String("sign"u8.ToArray()), "image/png"));
+            new UploadAttachmentRequest("signature", "delivery_stop", stop.Id, Convert.ToBase64String(Png("sign")), "image/png"));
 
         var completed = await delivery.CompleteStopAsync(stop.Id, new CompleteDeliveryStopRequest(
             Guid.NewGuid(), 18.54m, -72.34m, sig.Value!.Id, photo.Value!.Id, null, null));
@@ -231,7 +244,8 @@ public sealed class MobileFieldOpsTests(FinanceEngineFixture fx)
 
     private async Task<Guid> Proof(IServiceProvider sp, string kind, Guid stopId)
         => (await For<IAttachmentService>(sp, Direction).UploadAsync(new UploadAttachmentRequest(kind, "delivery_stop", stopId,
-            Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes($"{kind}-{Guid.NewGuid()}")), kind == "photo" ? "image/jpeg" : "image/png"))).Value!.Id;
+            Convert.ToBase64String(kind == "photo" ? Jpeg($"{kind}-{Guid.NewGuid()}") : Png($"{kind}-{Guid.NewGuid()}")),
+            kind == "photo" ? "image/jpeg" : "image/png"))).Value!.Id;
 
     [Fact]
     public async Task Delivery_workflow_requires_proof_and_controls_collection_and_location()
@@ -327,5 +341,24 @@ public sealed class MobileFieldOpsTests(FinanceEngineFixture fx)
         done.Value!.Status.Should().Be("completed");
         done.Value.StartedAt.Should().NotBeNull("hors ligne, le début se déduit du temps passé");
         done.Value.TechnicianName.Should().NotBeNull();
+    }
+
+    // ---- Audit 2026-10 éd. 2 : seul le livreur de la tournée met à jour ses arrêts ----
+    [Fact]
+    public async Task Only_the_route_driver_updates_its_stops()
+    {
+        await using var s = Scope();
+        var created = await For<IDeliveryService>(s.ServiceProvider, Direction).CreateRouteAsync(new CreateDeliveryRouteRequest(
+            Direction, TestDates.Today, null, [new CreateDeliveryStopInput(null, null, "Adresse du livreur", null, null, null)]));
+        created.IsSuccess.Should().BeTrue(created.Error?.Message);
+        var stopId = created.Value!.Stops[0].Id;
+
+        var colleague = Guid.Parse("dce00000-0000-0000-0000-0000000000d2");
+        (await For<IDeliveryService>(s.ServiceProvider, colleague).AdvanceStopAsync(stopId, "en_route"))
+            .Error!.Code.Should().Be("delivery_stop.not_driver");
+        (await For<IDeliveryService>(s.ServiceProvider, colleague).FailStopAsync(stopId, new FailDeliveryStopRequest("Client absent")))
+            .Error!.Code.Should().Be("delivery_stop.not_driver");
+        (await For<IDeliveryService>(s.ServiceProvider, Direction).FailStopAsync(stopId, new FailDeliveryStopRequest("Client absent")))
+            .IsSuccess.Should().BeTrue();
     }
 }

@@ -62,13 +62,18 @@ public sealed class SqlPromotionService(NexoraDbContext db, ITenantContext tenan
         var check = await ValidateAsync(r, ct);
         if (!check.IsSuccess) return check.Error!;
         var id = Guid.NewGuid();
-        await db.Database.ExecuteSqlAsync($"""
-            INSERT INTO nexora.promotion (id, company_id, name, promo_type, value, priority, starts_at, ends_at, conditions, status)
-            VALUES ({id}, {Company}, {r.Name.Trim()}, {r.PromoType}, {r.Value}, {r.Priority}, {r.StartsAt}, {r.EndsAt},
-                    {ConditionsJson(r)}::jsonb, 'active')
-            """, ct);
-        await InsertTargetsAsync(id, r.Targets, ct);
-        await uow.SaveChangesAsync(ct);
+        // Promotion et cibles ensemble (audit 2026-10 éd. 2) : un échec sur les cibles laissait une promotion active sans
+        // cible, donc inerte, sans que personne ne le sache.
+        await uow.ExecuteInTransactionAsync(async token =>
+        {
+            await db.Database.ExecuteSqlAsync($"""
+                INSERT INTO nexora.promotion (id, company_id, name, promo_type, value, priority, starts_at, ends_at, conditions, status)
+                VALUES ({id}, {Company}, {r.Name.Trim()}, {r.PromoType}, {r.Value}, {r.Priority}, {r.StartsAt}, {r.EndsAt},
+                        {ConditionsJson(r)}::jsonb, 'active')
+                """, token);
+            await InsertTargetsAsync(id, r.Targets, token);
+            return 0;
+        }, ct);
         return Result.Success(id);
     }
 

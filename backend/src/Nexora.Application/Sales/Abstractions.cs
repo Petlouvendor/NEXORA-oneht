@@ -158,7 +158,8 @@ public interface ICashSessionStore
     /// <summary>Clôture comptée en attente de validation Manager (statut <c>closing</c>, guide §13).</summary>
     Task MarkCountedAsync(Guid sessionId, decimal expected, decimal counted, string? notes, CancellationToken ct = default);
     /// <summary>Clôture définitive ; <paramref name="validatedBy"/> renseigné quand un Manager a validé l'écart.</summary>
-    Task FinalizeCloseAsync(Guid sessionId, decimal expected, decimal counted, string? notes,
+    /// <returns><c>false</c> si la session n'était plus ouverte (clôturée entre-temps par une autre demande).</returns>
+    Task<bool> FinalizeCloseAsync(Guid sessionId, decimal expected, decimal counted, string? notes,
         Guid? validatedBy, string? validationNote, CancellationToken ct = default);
     Task<string> CurrencyCodeAsync(Guid currencyId, CancellationToken ct = default);
 }

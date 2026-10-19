@@ -39,8 +39,11 @@ public sealed class MetricsController(IPlatformMetrics metrics, Microsoft.Extens
     /// <summary>Adresse interne (après résolution des en-têtes du proxy), ou jeton de collecte valide.</summary>
     private bool Allowed()
     {
+        // Comparaison en temps constant (audit 2026-10 éd. 2) : la durée ne révèle pas le préfixe correct du jeton.
         if (configuration["Metrics:Token"] is { Length: >= 16 } token
-            && string.Equals(Request.Headers.Authorization.ToString(), $"Bearer {token}", StringComparison.Ordinal))
+            && System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
+                System.Text.Encoding.UTF8.GetBytes(Request.Headers.Authorization.ToString()),
+                System.Text.Encoding.UTF8.GetBytes($"Bearer {token}")))
             return true;
         var ip = HttpContext.Connection.RemoteIpAddress;
         return ip is null || !Nexora.Infrastructure.Integrations.WebhookTargetPolicy.IsPublic(ip);

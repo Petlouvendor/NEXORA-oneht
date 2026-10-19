@@ -238,6 +238,7 @@ public sealed class GedController(
 
     [HttpPost("signature-requests/{id:guid}/signers/{signerId:guid}/sign")]
     [RequirePermission(Permissions.Ged.Sign)]
+    [RequireStepUp(StepUpPurposes.Signature)]
     public async Task<IActionResult> Sign(Guid id, Guid signerId, [FromBody] SignDocumentRequest request, CancellationToken ct)
         => FromResult(await signatures.SignAsync(id, signerId, request, ct));
 

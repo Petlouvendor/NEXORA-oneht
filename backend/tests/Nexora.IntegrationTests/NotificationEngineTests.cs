@@ -31,13 +31,21 @@ public sealed class NotificationEngineTests(FinanceEngineFixture fx)
         return v is null or DBNull ? default : (T)v;
     }
 
-    private async Task<Guid> NewUser()
+    /// <summary>Utilisateur membre de l'entreprise (rôle sur celle-ci) ; <paramref name="member"/> = false : sans aucun rôle.</summary>
+    private async Task<Guid> NewUser(bool member = true)
     {
         var id = Guid.NewGuid();
         await Sql($"""
             INSERT INTO nexora.app_user (id, email, password_hash, full_name, status)
             VALUES ('{id}', 'notif-{id:N}@test.demo', crypt('x', gen_salt('bf', 4)), 'Notif test', 'active')
             """);
+        if (member)
+            await Sql($"""
+                INSERT INTO nexora.user_role (user_id, role_id, scope_id)
+                SELECT '{id}', r.id, sc.id FROM nexora.role r, nexora.access_scope sc
+                WHERE r.name = 'cashier' AND r.system_role AND sc.scope_type = 'COMPANY' AND sc.company_id = '{Company}'
+                LIMIT 1
+                """);
         return id;
     }
 
@@ -68,6 +76,24 @@ public sealed class NotificationEngineTests(FinanceEngineFixture fx)
         var page = await svc.ListAsync(new NotificationQuery("unread"));
         page.Items.Should().ContainSingle(n => n.Category == "low_stock" && n.Title.Contains("Paracétamol") && n.Message.Contains("3 en stock"));
         (await svc.UnreadCountAsync()).Should().Be(1);
+    }
+
+    // ---- Audit 2026-10 éd. 2 : un destinataire étranger à l'entreprise n'est pas notifié ----
+    [Fact]
+    public async Task A_recipient_outside_the_company_is_skipped()
+    {
+        await using var s = Scope();
+        var member = await NewUser();
+        var stranger = await NewUser(member: false);
+        AsUser(s.ServiceProvider, member);
+        var svc = s.ServiceProvider.GetRequiredService<INotificationService>();
+
+        var res = await svc.NotifyAsync(new NotifyRequest("system", [member, stranger], "stock.low",
+            Vars(("product.name", "P"), ("stock.on_hand", "0"), ("stock.reorder_point", "1"))));
+
+        res.NotificationsCreated.Should().Be(1, "seul le membre de l'entreprise reçoit la notification");
+        res.Skipped.Should().BeGreaterThanOrEqualTo(1);
+        (await Scalar<long>($"SELECT count(*) FROM nexora.notification WHERE user_id = '{stranger}'")).Should().Be(0);
     }
 
     // ---- §5 : un canal désactivé n'est pas mis en file ; un canal activé l'est ----
@@ -152,6 +178,24 @@ public sealed class NotificationEngineTests(FinanceEngineFixture fx)
         rendered.Value.Body.Should().NotContain("{{customer.name}}");
         rendered.Value.MissingVariables.Should().Contain("invoice.balance");   // non fournie → signalée
         rendered.Value.Body.Should().NotContain("{{evil}}");                   // jeton inconnu → vide, jamais la valeur
+    }
+
+    // Audit 2026-10 éd. 2 : dans un gabarit HTML, une valeur saisie (nom de client) injectait lien ou balise.
+    [Fact]
+    public async Task Values_inserted_in_an_html_template_are_escaped()
+    {
+        await using var s = Scope();
+        AsUser(s.ServiceProvider, await NewUser());
+        var templates = s.ServiceProvider.GetRequiredService<IMessageTemplateService>();
+        var key = $"test.html.{Guid.NewGuid():N}";
+        (await templates.UpsertAsync(new UpsertMessageTemplateRequest(key, "email", "fr", "Relance",
+            "<p>Bonjour {{customer.name}}</p>", null, ["customer.name"]))).IsSuccess.Should().BeTrue();
+
+        var rendered = await templates.RenderAsync(new RenderTemplateRequest(key, "email", "fr",
+            Vars(("customer.name", "<a href=\"https://piege.example\">Payer ici</a>"))));
+
+        rendered.IsSuccess.Should().BeTrue(rendered.Error?.Message);
+        rendered.Value!.Body.Should().Be("<p>Bonjour &lt;a href=&quot;https://piege.example&quot;&gt;Payer ici&lt;/a&gt;</p>");
     }
 
     // ---- §28-31 : le distributeur réessaie puis place en dead-letter ----
@@ -247,6 +291,15 @@ public sealed class NotificationEngineTests(FinanceEngineFixture fx)
             .Should().Be("notifications.test_address");
         var test = (await admin.SendTestAsync(new Nexora.Contracts.Notifications.SendTestMessageRequest("email", "admin@exemple.test"))).Value!;
         test.Status.Should().Be("not_configured", "un message de test sans fournisseur n'est pas « envoyé »");
+
+        // Plafond de messages de test par canal et par heure (audit 2026-10 éd. 2 : coût SMS sans limite).
+        await Sql($"""
+            INSERT INTO nexora.notification_outbox (company_id, user_id, channel, category, priority, subject, body, address, dedup_key, max_attempts, next_attempt_at, status)
+            SELECT '{Company}', NULL, 'sms', 'delivery_test', 3, 'Test', 'Test', '+50937000000', 'delivery_test:quota-' || g || '-' || gen_random_uuid(), 1, now(), 'dead'
+            FROM generate_series(1, 10) g
+            """);
+        (await admin.SendTestAsync(new Nexora.Contracts.Notifications.SendTestMessageRequest("sms", "+50937001234"))).Error!.Code
+            .Should().Be("notifications.test_quota");
     }
 
     // ---- §4 : marquer lu met à jour le compteur ; le périmètre par requête reste l'utilisateur ----
@@ -345,6 +398,48 @@ public sealed class NotificationEngineTests(FinanceEngineFixture fx)
         ["Notifications:Smtp:Password"] = password,
         ["Notifications:Smtp:FromAddress"] = "no-reply@exemple.test",
     });
+
+    // ---- Audit 2026-10 éd. 2 : l'échec d'envoi n'est escaladé qu'aux administrateurs de l'entreprise ou de son groupe ----
+    [Fact]
+    public async Task A_delivery_failure_is_escalated_only_within_the_company_group()
+    {
+        await using var server = new FakeSmtpServer();
+        var otherGroup = Guid.NewGuid();
+        var otherScope = Guid.NewGuid();
+        var inGroup = await NewUser(member: false);
+        var outsider = await NewUser(member: false);
+        await Sql($"""
+            INSERT INTO nexora.business_group (id, name, default_currency_id)
+            VALUES ('{otherGroup}', 'Autre groupe {otherGroup:N}', (SELECT id FROM nexora.currency WHERE code = 'HTG'));
+            INSERT INTO nexora.access_scope (id, scope_type, group_id) VALUES ('{otherScope}', 'GROUP', '{otherGroup}');
+            INSERT INTO nexora.user_role (user_id, role_id, scope_id)
+            SELECT '{outsider}', r.id, '{otherScope}' FROM nexora.role r WHERE r.name = 'group_administrator' AND r.system_role;
+            INSERT INTO nexora.user_role (user_id, role_id, scope_id)
+            SELECT '{inGroup}', r.id, sc.id FROM nexora.role r, nexora.access_scope sc
+            WHERE r.name = 'group_administrator' AND r.system_role AND sc.scope_type = 'GROUP'
+              AND sc.group_id = (SELECT group_id FROM nexora.company WHERE id = '{Company}')
+            LIMIT 1;
+            """);
+        var recipient = await NewUser();
+        var outboxId = Guid.NewGuid();
+        await Sql($"""
+            INSERT INTO nexora.notification_outbox (id, company_id, user_id, channel, category, subject, body, address, dedup_key, max_attempts, next_attempt_at)
+            VALUES ('{outboxId}', '{Company}', '{recipient}', 'email', 'low_stock', 'x', 'y', 'client@exemple.test', 'escalade-{outboxId:N}', 1, now() - interval '1 minute')
+            """);
+
+        await using (var bad = SmtpProvider(server.Port, "mauvais"))
+        await using (var s = bad.CreateAsyncScope())
+        {
+            AsUser(s.ServiceProvider, recipient);
+            await s.ServiceProvider.GetRequiredService<INotificationDispatcher>().DispatchOneAsync(outboxId);
+        }
+
+        (await Scalar<string>($"SELECT status FROM nexora.notification_outbox WHERE id = '{outboxId}'")).Should().Be("dead");
+        (await Scalar<long>($"SELECT COUNT(*) FROM nexora.notification WHERE category = 'delivery_failed' AND user_id = '{inGroup}'"))
+            .Should().Be(1, "l'administrateur du groupe de l'entreprise est prévenu");
+        (await Scalar<long>($"SELECT COUNT(*) FROM nexora.notification WHERE category = 'delivery_failed' AND user_id = '{outsider}'"))
+            .Should().Be(0, "l'administrateur d'un autre groupe ne reçoit rien de cette entreprise");
+    }
 
     [Fact]
     public async Task Email_channel_test_talks_to_a_real_smtp_server()

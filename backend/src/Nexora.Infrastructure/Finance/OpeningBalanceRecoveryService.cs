@@ -21,7 +21,7 @@ public sealed class OpeningBalanceRecoveryService(
     {
         List<Row> rows;
         using (tenant.BeginSystemScope())
-            // DatÃ© juste avant le premier mouvement (ou Ã  la crÃ©ation du compte) : l'ouverture prÃ©cÃ¨de tout le reste.
+            // Daté juste avant le premier mouvement (ou à la création du compte) : l'ouverture précède tout le reste.
             rows = await db.Database.SqlQuery<Row>($"""
                 SELECT co.id AS "CompanyId", co.name AS "CompanyName", co.group_id AS "GroupId",
                        fa.id AS "AccountId", fa.name AS "AccountName", cur.code AS "Currency",
@@ -48,9 +48,9 @@ public sealed class OpeningBalanceRecoveryService(
             {
                 var posted = await uow.ExecuteInTransactionAsync(async token =>
                 {
-                    // Le moteur ajoute la transaction Â« opening Â» au solde ; la colonne, dÃ©jÃ  comptÃ©e dans ce solde,
-                    // est ensuite retirÃ©e : le solde affichÃ© reste le mÃªme (ordre choisi pour qu'une caisse ne passe
-                    // jamais, mÃªme un instant, sous zÃ©ro).
+                    // Le moteur ajoute la transaction « opening » au solde ; la colonne, déjà comptée dans ce solde,
+                    // est ensuite retirée : le solde affiché reste le même (ordre choisi pour qu'une caisse ne passe
+                    // jamais, même un instant, sous zéro).
                     var result = await ops.RecordTreasuryOpeningAsync(new RecordTreasuryOpeningRequest(
                         OperationFor(r.AccountId), r.OpeningAt, r.AccountId, r.Amount, r.Currency), token);
                     if (!result.IsSuccess) throw new RecoveryRefused(result.Error!.Message);
@@ -59,7 +59,7 @@ public sealed class OpeningBalanceRecoveryService(
                         SET current_balance = current_balance - {r.Amount}, opening_balance = 0, updated_at = now()
                         WHERE id = {r.AccountId} AND opening_balance = {r.Amount}
                         """, token);
-                    if (moved != 1) throw new RecoveryRefused("Le compte a changÃ© pendant la reprise.");
+                    if (moved != 1) throw new RecoveryRefused("Le compte a changé pendant la reprise.");
                     return result.Value!;
                 }, ct);
                 lines.Add(line with { Status = "repris", EntryNumber = posted.EntryNumber });
@@ -73,7 +73,7 @@ public sealed class OpeningBalanceRecoveryService(
         return lines;
     }
 
-    /// <summary>Identifiant d'opÃ©ration stable par compte : une reprise relancÃ©e est reconnue comme un rejeu.</summary>
+    /// <summary>Identifiant d'opération stable par compte : une reprise relancée est reconnue comme un rejeu.</summary>
     private static Guid OperationFor(Guid accountId)
         => new(MD5.HashData(Encoding.UTF8.GetBytes($"nexora.opening-recovery:{accountId}")));
 

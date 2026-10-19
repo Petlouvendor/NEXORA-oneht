@@ -127,6 +127,13 @@ builder.Services.AddRateLimiter(options =>
     options.AddPolicy("public", ctx => RateLimitPartition.GetFixedWindowLimiter(
         ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
         _ => new FixedWindowRateLimiterOptions { PermitLimit = publicPerMinute, Window = TimeSpan.FromMinutes(1) }));
+    // Webhooks entrants anonymes (audit 2026-10 éd. 2) : la signature est vérifiée, mais chaque appel la calcule sur
+    // le corps entier — sans limite, une rafale de faux appels occupait l'API. Plus large que « public » : un
+    // fournisseur envoie des salves légitimes.
+    var webhookPerMinute = Math.Clamp(builder.Configuration.GetValue("Security:WebhookRateLimitPerMinute", 300), 1, 10_000);
+    options.AddPolicy("webhook", ctx => RateLimitPartition.GetFixedWindowLimiter(
+        ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = webhookPerMinute, Window = TimeSpan.FromMinutes(1) }));
 });
 
 // --- Proxy inverse (finalisation phase 18) : TLS terminé en amont. Sans reprise des en-têtes X-Forwarded-*,

@@ -215,5 +215,19 @@ public sealed class PurchaseThreeWayMatchTests(FinanceEngineFixture fx)
 
         var payables = await q.ListPayablesAsync(Supplier1, onlyOpen: true, 50);
         payables.Should().Contain(p => p.SupplierReference == "FA-ST-1" && p.RemainingAmount == 600m);
+
+        // Audit 2026-10 éd. 2 : un paiement annulé ne réduit plus le solde du relevé.
+        var db = s.ServiceProvider.GetRequiredService<NexoraDbContext>();
+        var paymentNumber = await db.Database.SqlQuery<string>($"""
+            SELECT payment_number AS "Value" FROM nexora.payment
+            WHERE supplier_id = {Supplier1} AND direction = 'outbound' AND status = 'completed' ORDER BY created_at DESC LIMIT 1
+            """).FirstAsync();
+        await db.Database.ExecuteSqlAsync($"""
+            UPDATE nexora.payment SET status = 'void', voided_at = now(), void_reason = 'Chèque rejeté (test)'
+            WHERE payment_number = {paymentNumber} AND supplier_id = {Supplier1}
+            """);
+        var after = await q.SupplierStatementAsync(Supplier1, null, null);
+        after!.Lines.Should().NotContain(l => l.DocumentNumber == paymentNumber, "un paiement annulé n'a rien réglé");
+        after.ClosingBalance.Should().Be(stmt.ClosingBalance + 400m);
     }
 }

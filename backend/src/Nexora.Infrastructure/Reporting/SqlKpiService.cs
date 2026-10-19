@@ -26,17 +26,22 @@ public sealed class SqlKpiService(
         // Montants convertis dans la devise de l'entreprise (audit 2026-10 éd. 2, A-046) : ventes et flux au taux de
         // leur date, soldes au taux du jour. Avant, un compte en dollars était additionné aux gourdes.
         var fc = await FunctionalCurrencyIdAsync(ct);
+        // Établissement (audit 2026-10 éd. 2) : appliqué aux indicateurs de vente, seuls à porter cette dimension —
+        // un objectif d'établissement était évalué sur les chiffres de toute l'entreprise.
+        var est = filter.EstablishmentId;
 
         var revenue = await Money($"""
             SELECT COALESCE(SUM(nexora.convert_amount(subtotal - discount_total, currency_id, {fc}, sold_at)),0) AS "Value" FROM nexora.sale
             WHERE company_id = {Company} AND status IN ('completed','partially_refunded','refunded')
               AND sold_at::date BETWEEN {from} AND {to}
+              AND ({est}::uuid IS NULL OR establishment_id = {est})
             """, ct);
         var returns = await Money($"""
             SELECT COALESCE(SUM(nexora.convert_amount(sr.refund_total - COALESCE(l.tax,0), sr.currency_id, {fc}, sr.returned_at)),0) AS "Value"
             FROM nexora.sale_return sr
             LEFT JOIN LATERAL (SELECT SUM(tax_amount) tax FROM nexora.sale_return_line WHERE sale_return_id = sr.id) l ON true
             WHERE sr.company_id = {Company} AND sr.status = 'completed' AND sr.returned_at::date BETWEEN {from} AND {to}
+              AND ({est}::uuid IS NULL OR EXISTS (SELECT 1 FROM nexora.sale s WHERE s.id = sr.sale_id AND s.establishment_id = {est}))
             """, ct);
         revenue -= returns;
 
@@ -45,6 +50,7 @@ public sealed class SqlKpiService(
             FROM nexora.sale_line sl JOIN nexora.sale s ON s.id = sl.sale_id
             WHERE s.company_id = {Company} AND s.status IN ('completed','partially_refunded','refunded')
               AND s.sold_at::date BETWEEN {from} AND {to}
+              AND ({est}::uuid IS NULL OR s.establishment_id = {est})
             """, ct);
         var expenses = await Money($"""
             SELECT COALESCE(SUM(nexora.convert_amount(amount, currency_id, {fc}, expense_date::timestamptz)),0) AS "Value" FROM nexora.expense
@@ -54,6 +60,7 @@ public sealed class SqlKpiService(
             SELECT COUNT(*)::bigint AS "Value" FROM nexora.sale
             WHERE company_id = {Company} AND status IN ('completed','partially_refunded','refunded')
               AND sold_at::date BETWEEN {from} AND {to}
+              AND ({est}::uuid IS NULL OR establishment_id = {est})
             """, ct);
         var cash = await Money($"""
             SELECT COALESCE(SUM(nexora.convert_amount(current_balance, currency_id, {fc})),0) AS "Value" FROM nexora.financial_account
@@ -76,6 +83,7 @@ public sealed class SqlKpiService(
             SELECT COALESCE(SUM(nexora.convert_amount(subtotal - discount_total, currency_id, {fc}, sold_at)),0) AS "Value" FROM nexora.sale
             WHERE company_id = {Company} AND status IN ('completed','partially_refunded','refunded')
               AND sold_at::date = {today}
+              AND ({est}::uuid IS NULL OR establishment_id = {est})
             """, ct);
         var inflows = await Money($"""
             SELECT COALESCE(SUM(nexora.convert_amount(amount, currency_id, {fc}, received_at)),0) AS "Value" FROM nexora.payment
@@ -119,7 +127,7 @@ public sealed class SqlKpiService(
             SELECT d::date AS "D",
                    COALESCE((SELECT SUM(nexora.convert_amount(subtotal - discount_total, currency_id, {fc}, sold_at)) FROM nexora.sale
                              WHERE company_id = {Company} AND status IN ('completed','partially_refunded','refunded')
-                               AND sold_at::date = d::date), 0) AS "V"
+                               AND sold_at::date = d::date AND ({est}::uuid IS NULL OR establishment_id = {est})), 0) AS "V"
             FROM generate_series({from}::date, {to}::date, interval '1 day') d
             """).ToListAsync(ct)).Select(r => new TrendPoint(r.D, Round(r.V))).ToList();
 

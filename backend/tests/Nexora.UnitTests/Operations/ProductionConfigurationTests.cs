@@ -13,6 +13,7 @@ public sealed class ProductionConfigurationTests
 {
     private static readonly string StrongJwt = new('k', 48);
     private static readonly string Key32 = Convert.ToBase64String(new byte[32]);
+    private static readonly string DataKey32 = Convert.ToBase64String(Enumerable.Repeat((byte)7, 32).ToArray());
     private const string Db = "Host=postgres;Database=nexora;Username=nexora_app;Password=s3cret-tres-long";
 
     private static IConfiguration Config(params (string Key, string? Value)[] values)
@@ -20,7 +21,8 @@ public sealed class ProductionConfigurationTests
             values.GroupBy(v => v.Key).ToDictionary(g => g.Key, g => g.Last().Value)).Build();
 
     private static IConfiguration Production(params (string Key, string? Value)[] extra)
-        => Config([("Jwt:SigningKey", StrongJwt), ("Security:MfaEncryptionKey", Key32), ("Database:ConnectionString", Db),
+        => Config([("Jwt:SigningKey", StrongJwt), ("Security:MfaEncryptionKey", Key32), ("Security:DataEncryptionKey", DataKey32),
+            ("Database:ConnectionString", Db),
             ("PublicUrl", "https://app.exemple.ht"), ("ReverseProxy:Enabled", "true"), ("Cors:Origins:0", "https://app.exemple.ht"),
             ("AllowedHosts", "app.exemple.ht"), ("Observability:OtlpEndpoint", "http://otel-collector:4317"),
             ("Scheduler:Enabled", "true"), ("Notifications:Smtp:Enabled", "true"), .. extra]);
@@ -28,6 +30,18 @@ public sealed class ProductionConfigurationTests
     [Fact]
     public void A_complete_production_configuration_passes_every_check()
         => ProductionConfiguration.Evaluate(Production(), "Production").Should().OnlyContain(c => c.Status == "pass");
+
+    /// <summary>Audit 2026-10 éd. 2 : une seule clé pour MFA et données personnelles est signalée (sans bloquer).</summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("mfa")]
+    public void A_data_key_missing_or_equal_to_the_mfa_key_is_a_warning(string? dataKey)
+    {
+        var check = ProductionConfiguration.Evaluate(Production(("Security:DataEncryptionKey", dataKey is null ? null : Key32)), "Production")
+            .Single(c => c.Key == "data_key");
+        check.Status.Should().Be("warn");
+        check.Detail.Should().NotContain(Key32, "jamais la valeur d'un secret dans un verdict");
+    }
 
     [Fact]
     public void The_default_application_role_password_is_refused()

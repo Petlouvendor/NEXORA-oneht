@@ -64,7 +64,7 @@ export function SetupPage() {
       .then((s) => {
         if (cancelled) return;
         if (s.restartRequired) setStep("done");
-        else if (!s.setupRequired) navigate("/login", { replace: true });
+        else if (!s.setupRequired) void navigate("/login", { replace: true });
       })
       .catch(() => { /* serveur injoignable : on laisse l'assistant afficher l'erreur à la première action */ })
       .finally(() => !cancelled && setChecking(false));

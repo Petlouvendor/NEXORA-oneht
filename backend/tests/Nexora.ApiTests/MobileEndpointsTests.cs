@@ -58,7 +58,9 @@ public sealed class MobileEndpointsTests(WebApplicationFactory<Program> factory)
         var upload = await client.PostAsJsonAsync("/api/v1/attachments", new
         {
             kind = "photo", referenceType = (string?)null, referenceId = (Guid?)null,
-            contentBase64 = Convert.ToBase64String("api-test"u8.ToArray()), contentType = "image/png",
+            // En-tête PNG réel : le format est lu dans le contenu (audit 2026-10 éd. 2).
+            contentBase64 = Convert.ToBase64String([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, .. "api-test"u8.ToArray()]),
+            contentType = "image/png",
         });
         upload.StatusCode.Should().Be(HttpStatusCode.OK);
         var id = (await upload.Content.ReadFromJsonAsync<JsonIdShape>())!.Id;

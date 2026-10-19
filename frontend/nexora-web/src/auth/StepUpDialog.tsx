@@ -13,6 +13,7 @@ export const STEP_UP_LABELS: Record<string, string> = {
   permission_change: "Changement de droits",
   deletion: "Suppression",
   sensitive_data: "Données sensibles",
+  signature: "Signature",
 };
 
 interface Pending { purpose: string; detail: string; resolve: (token: string | null) => void }

@@ -79,8 +79,10 @@ echo ">> pg_restore terminé"
 MIGRATIONS="$(psql_on "$TARGET" -c "SELECT count(*) || ' (' || max(version) || ')' FROM nexora.schema_migration")"
 OBJECTS="$(psql_on "$TARGET" -c "SELECT (SELECT count(*) FROM nexora.sale) + (SELECT count(*) FROM nexora.journal_entry)
   + (SELECT count(*) FROM nexora.product) + (SELECT count(*) FROM nexora.customer) + (SELECT count(*) FROM nexora.issued_document)")"
+# Équilibre en devise de référence (base_debit/base_credit, V023) : une écriture multidevise légitime n'est pas
+# équilibrée en devise de saisie (audit 2026-10 éd. 2 : elle faisait échouer la restauration).
 BALANCE="$(psql_on "$TARGET" -c "SELECT count(*) FROM (SELECT journal_entry_id FROM nexora.journal_entry_line
-  GROUP BY journal_entry_id HAVING sum(debit) <> sum(credit)) x")"
+  GROUP BY journal_entry_id HAVING sum(base_debit) <> sum(base_credit)) x")"
 DURATION=$(( $(date +%s) - START ))
 echo ">> migrations : $MIGRATIONS"
 echo ">> objets métier (ventes + écritures + produits + clients + documents) : $OBJECTS"

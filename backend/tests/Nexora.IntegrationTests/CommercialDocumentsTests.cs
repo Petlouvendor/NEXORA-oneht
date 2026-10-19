@@ -174,6 +174,15 @@ public sealed class CommercialDocumentsTests(FinanceEngineFixture fx)
         crn.Value!.DocumentNumber.Should().Contain("AVR");
         rcu.Value!.DocumentNumber.Should().Contain("RCU");
         new[] { inv.DocumentNumber, crn.Value.DocumentNumber, rcu.Value.DocumentNumber }.Distinct().Should().HaveCount(3);
+
+        // Filtre multi-types appliqué en base, avant la limite (audit 2026-10 éd. 2 : la liste des factures filtrait en
+        // mémoire 300 documents de tous types).
+        var invoices = await s.ServiceProvider.GetRequiredService<IDocumentQueries>().SearchAsync(
+            new DocumentSearchRequest(Limit: 1, Types: ["invoice", "final_invoice"], SourceType: "sale", SourceId: sale));
+        invoices.Should().ContainSingle().Which.Id.Should().Be(inv.Id);
+        (await s.ServiceProvider.GetRequiredService<IDocumentQueries>().SearchAsync(
+            new DocumentSearchRequest(Types: ["credit_note"], SourceType: "sale_return", SourceId: ret)))
+            .Should().ContainSingle().Which.DocumentType.Should().Be("credit_note");
     }
 
     // ---- §25 : rendu — HTML contenant le numéro du document ----

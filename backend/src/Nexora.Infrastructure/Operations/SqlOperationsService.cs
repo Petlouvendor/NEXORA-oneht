@@ -32,7 +32,8 @@ public sealed class SqlOperationsService(
     MigrationStatusProbe migrationProbe,
     Microsoft.Extensions.Configuration.IConfiguration configuration,
     RuntimeEnvironment runtime,
-    IPlatformOperationGuard guard) : IOperationsService
+    IPlatformOperationGuard guard,
+    IBusinessCalendar calendar) : IOperationsService
 {
     private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
@@ -169,6 +170,23 @@ public sealed class SqlOperationsService(
                 : migrations.Drifted.Count > 0 ? $"migration(s) appliquée(s) modifiée(s) depuis : {string.Join(", ", migrations.Drifted)}"
                 : migrations.Unknown.Count > 0 ? $"base plus récente que l'application : {string.Join(", ", migrations.Unknown)}"
                 : $"{migrations.Applied} migration(s) appliquée(s), dernière {migrations.LatestApplied} — conforme à l'application"));
+
+        // Audit 2026-10 éd. 2 (A-042) : l'exercice comptable couvre la mise en service et les semaines qui suivent — au
+        // changement d'année sans exercice suivant, toute écriture était refusée.
+        var today = await calendar.TodayAsync(ct);
+        var lastEnd = await db.Database.SqlQuery<DateOnly?>($"""
+            SELECT MAX(end_date) AS "Value" FROM nexora.accounting_period WHERE company_id = {company}
+            """).FirstOrDefaultAsync(ct);
+        var covered = lastEnd is { } end && await ScalarBoolAsync($"""
+            SELECT EXISTS(SELECT 1 FROM nexora.accounting_period
+                          WHERE company_id = {company} AND start_date <= {today} AND end_date >= {today}) AS "Value"
+            """, ct);
+        checks.Add(C("fiscal_year_ahead", "Exercice comptable en cours et suivant", "functional",
+            lastEnd is null ? "fail" : covered && lastEnd >= today.AddDays(60) ? "pass" : "warn", "auto",
+            lastEnd is null ? "aucun exercice comptable : aucune écriture ne peut être enregistrée"
+                : !covered ? $"aucun exercice ne couvre le {today:dd/MM/yyyy} (dernier : jusqu'au {lastEnd:dd/MM/yyyy}) — ouvrez l'exercice suivant"
+                : lastEnd < today.AddDays(60) ? $"le dernier exercice se termine le {lastEnd:dd/MM/yyyy} — ouvrez l'exercice suivant (Comptabilité → Périodes)"
+                : $"exercices ouverts jusqu'au {lastEnd:dd/MM/yyyy}"));
 
         // §31, §46 : qualité des données
         var dq = await TryAsync(() => dataQuality.EvaluateAsync(ct));

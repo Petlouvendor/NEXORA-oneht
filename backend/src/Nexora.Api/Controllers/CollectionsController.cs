@@ -103,6 +103,7 @@ public sealed class CollectionsController(CollectionsService collections, ICredi
 
     // --- Radiation de créance (§37) ----------------------------
     [HttpPost("receivables/{id:guid}/write-off")]
+    [RequireStepUp(StepUpPurposes.AccountingValidation)]
     [RequirePermission(Permissions.Credit.WriteOff)]
     [Idempotent]
     public async Task<IActionResult> WriteOff(Guid id, [FromBody] WriteOffReceivableRequest r, CancellationToken ct)

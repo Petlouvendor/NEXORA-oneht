@@ -770,4 +770,36 @@ public sealed class CustomerAccountTests(FinanceEngineFixture fx)
         var dup = await scope.ServiceProvider.GetRequiredService<ICustomerService>().CreateAsync(new CreateCustomerRequest("Doublon", CustomerNumber: customers[0]));
         dup.Error!.Code.Should().Be("customer.number_exists");
     }
+
+    // ---- Audit 2026-10 éd. 2 : arrondi bancaire, comme les ventes et le moteur financier ----
+    [Fact]
+    public async Task A_customer_payment_is_rounded_half_to_even_like_the_ledger()
+    {
+        var customer = await NewCustomer(50_000m);
+        var product = await Product(100m);
+        await CreditSale(customer.Id, product, 10m);
+
+        await using var s = Scope();
+        As(s.ServiceProvider, Direction);
+        var paid = await s.ServiceProvider.GetRequiredService<ICustomerAccountService>().RecordPaymentAsync(customer.Id,
+            new RecordCustomerPaymentRequest(Guid.NewGuid(), 100.125m, CashAccount, CashMethod));
+        paid.IsSuccess.Should().BeTrue(paid.Error?.Message);
+        (await Scalar<decimal>($"SELECT amount FROM nexora.payment WHERE customer_id = '{customer.Id}'"))
+            .Should().Be(100.12m, "100,125 s'arrondit au pair (100,12), comme partout ailleurs — pas à 100,13");
+    }
+
+    // ---- Audit 2026-10 éd. 2 : les signaux de la fiche convertissent les montants dans la devise du client ----
+    [Fact]
+    public async Task Customer_signals_convert_amounts_into_the_customer_currency()
+    {
+        // 1 000 HTG il y a deux mois (moyenne mensuelle ≈ 333), puis 10 USD aujourd'hui (≈ 1 300 HTG) : hausse du crédit.
+        // Additionnés tels quels, les 10 USD comptaient pour 10 et la hausse passait inaperçue.
+        var customer = await NewCustomer(50_000m);
+        await Exec($"""
+            INSERT INTO nexora.customer_receivable (company_id, customer_id, currency_id, original_amount, issue_date, credit_number, source_type)
+            VALUES ('{fx.CompanyId}', '{customer.Id}', (SELECT id FROM nexora.currency WHERE code = 'HTG'), 1000, current_date - 60, 'CRH-{Guid.NewGuid():N}', 'manual'),
+                   ('{fx.CompanyId}', '{customer.Id}', (SELECT id FROM nexora.currency WHERE code = 'USD'), 10, current_date, 'CRU-{Guid.NewGuid():N}', 'manual');
+            """);
+        (await Summary(customer.Id)).Signals.Should().Contain(x => x.Code == "credit_spike");
+    }
 }

@@ -108,9 +108,20 @@ public sealed class SqlJobRegistry(
             if (!exists) return Error.NotFound("job.not_found", "Job inconnu.");
         }
 
+        // Même verrou consultatif que le planificateur (audit 2026-10 éd. 2) : une exécution manuelle pendant un passage
+        // traitait les mêmes lignes en parallèle. Le verrou avale les exceptions de l'action : elles sont capturées ici
+        // pour ne pas être confondues avec un verrou déjà pris.
         var runner = services.GetRequiredService<SchedulerRunner>();
-        try { await runner.RunSingleJobAsync(key, tenant.UserId, ct); }
-        catch (InvalidOperationException ex) { return Error.Validation("job.invalid", ex.Message); }
+        Exception? failure = null;
+        var acquired = await services.GetRequiredService<Nexora.Infrastructure.Scheduling.PostgresAdvisoryLock>().TryExecuteAsync(async token =>
+        {
+            try { await runner.RunSingleJobAsync(key, tenant.UserId, token); }
+            catch (Exception ex) when (ex is not OperationCanceledException) { failure = ex; }
+        }, ct);
+        if (failure is InvalidOperationException invalid) return Error.Validation("job.invalid", invalid.Message);
+        if (failure is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(failure);
+        if (!acquired)
+            return Error.Conflict("job.busy", "Le planificateur est en cours d'exécution ; réessayez dans un instant.");
 
         using var __ = tenant.BeginSystemScope();
         var last = await db.Database.SqlQueryRaw<LastRunRow>(

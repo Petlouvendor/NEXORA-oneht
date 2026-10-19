@@ -207,7 +207,13 @@ public sealed class SqlMfaService(
             await ConsumeChallengeAsync(challenge.Id, ct);
             return Error.Unauthorized("auth.mfa_challenge_expired", "Défi expiré — reconnectez-vous.");
         }
-        if (challenge.Attempts >= MaxChallengeAttempts)
+        // Tentative réservée AVANT la vérification, par une mise à jour conditionnelle (audit 2026-10 éd. 2) : le
+        // compteur était lu puis incrémenté après coup — des essais parallèles dépassaient le plafond de 5.
+        var reserved = await db.Database.ExecuteSqlAsync($"""
+            UPDATE nexora.mfa_challenge SET attempts = attempts + 1
+            WHERE id = {challenge.Id} AND consumed_at IS NULL AND attempts < {MaxChallengeAttempts}
+            """, ct);
+        if (reserved == 0)
         {
             await ConsumeChallengeAsync(challenge.Id, ct);
             await events.RecordAsync("mfa.challenge_locked", challenge.UserId, challenge.CompanyId, ct: ct);
@@ -223,9 +229,6 @@ public sealed class SqlMfaService(
 
         if (!await VerifyCodeAsync(challenge.UserId, user.MfaSecret, code, ct))
         {
-            await db.Database.ExecuteSqlAsync($"""
-                UPDATE nexora.mfa_challenge SET attempts = attempts + 1 WHERE id = {challenge.Id}
-                """, ct);
             await events.RecordAsync("mfa.challenge_failed", challenge.UserId, challenge.CompanyId, ct: ct);
             return Error.Unauthorized("auth.mfa_invalid", "Code de vérification invalide.");
         }

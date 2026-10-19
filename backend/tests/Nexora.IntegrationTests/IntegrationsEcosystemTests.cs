@@ -327,6 +327,11 @@ public sealed class IntegrationsEcosystemTests(FinanceEngineFixture fx)
 
         (await ingest.IngestAsync(code, Hmac(s1, body2), body2)).Status.Should().Be("rejected");   // ancien secret
         (await ingest.IngestAsync(code, Hmac(s2, body2), body2)).Status.Should().Be("processed");  // nouveau secret
+
+        // Audit 2026-10 éd. 2 : le secret n'est plus lisible en base.
+        var stored = await s.ServiceProvider.GetRequiredService<Nexora.Infrastructure.Persistence.NexoraDbContext>().Database
+            .SqlQuery<string>($"SELECT webhook_secret AS \"Value\" FROM nexora.integration_connector WHERE id = {connId}").FirstAsync();
+        stored.Should().StartWith("enc:v1:").And.NotContain(s2);
     }
 
     // ---- §6, §43 : entreprise A fournisseur 1, entreprise B fournisseur 2 — isolées ----

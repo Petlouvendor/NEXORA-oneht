@@ -92,6 +92,16 @@ public static class ProductionConfiguration
                 ? "clé de signature, clés de chiffrement et connexion fournies par l'environnement"
                 : string.Join(" ; ", secrets)));
 
+        // Clé des données personnelles distincte de la clé MFA (audit 2026-10 éd. 2) : à défaut, une seule clé protège
+        // les secrets MFA et les identifiants bancaires et fiscaux. Avertissement seulement : une installation existante
+        // a chiffré ses données avec la clé MFA, et changer de clé exige de les rechiffrer.
+        var dataKey = NonEmpty(configuration["Security:DataEncryptionKey"]);
+        var separateDataKey = dataKey is not null && dataKey != NonEmpty(configuration["Security:MfaEncryptionKey"]);
+        checks.Add(new("data_key", "Clé des données personnelles", "security", separateDataKey ? "pass" : "warn",
+            separateDataKey
+                ? "clé distincte de la clé MFA"
+                : "Security:DataEncryptionKey absente ou égale à la clé MFA : la même clé protège MFA et données personnelles"));
+
         var publicUrl = NonEmpty(configuration["PublicUrl"]);
         var proxy = BehindReverseProxy(configuration);
         var urls = (configuration["ASPNETCORE_URLS"] ?? configuration["urls"] ?? "") + " "

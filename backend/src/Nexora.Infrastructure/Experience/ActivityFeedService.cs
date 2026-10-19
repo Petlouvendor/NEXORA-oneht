@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Nexora.Domain.Accounting;
 using Nexora.Application.Abstractions;
 using Nexora.Application.Experience;
 using Nexora.Application.Security;
@@ -111,12 +112,14 @@ public sealed class ActivityFeedService(
         if (granted.Contains(Permissions.Accounting.View))
         {
             rows.AddRange(await db.Database.SqlQuery<Row>($"""
-                SELECT 'journal_entry' AS "Kind", 'Écriture manuelle ' || je.entry_number AS "Title",
+                SELECT 'journal_entry' AS "Kind",
+                       'Écriture manuelle ' || je.entry_number || CASE WHEN je.status = 'reversed' THEN ' (extournée)' ELSE '' END AS "Title",
                        COALESCE(je.description, 'Sans libellé') AS "Detail",
                        NULL::numeric AS "Amount", NULL::text AS "Currency", je.posted_at AS "OccurredAt",
-                       '/accounting' AS "Route", 'info' AS "Tone"
+                       '/accounting' AS "Route", CASE WHEN je.status = 'reversed' THEN 'warning' ELSE 'info' END AS "Tone"
                 FROM nexora.journal_entry je
-                WHERE je.company_id = {Company} AND je.origin = 'manual' AND je.status = 'posted' AND je.posted_at IS NOT NULL
+                -- Une écriture extournée reste au grand livre (A-043) : elle reste aussi au fil, signalée comme telle.
+                WHERE je.company_id = {Company} AND je.origin = 'manual' AND je.status = ANY({LedgerStatuses.InLedger}) AND je.posted_at IS NOT NULL
                 ORDER BY je.posted_at DESC
                 LIMIT {take}
                 """).ToListAsync(ct));

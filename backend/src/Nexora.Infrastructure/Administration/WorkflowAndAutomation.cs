@@ -243,6 +243,9 @@ public sealed class SqlWorkflowService(
                     approvalId = outcome.Value!.RequestId;
                     message = outcome.Value.ApprovalRequired ? "Approbation requise — demande créée." : "Aucune approbation requise (politique absente).";
                 }
+                else
+                    // Un échec de la demande d'approbation n'est plus présenté comme un déclenchement réussi.
+                    return outcome.Error!;
             }
 
             await db.Database.ExecuteSqlAsync($"""
@@ -366,7 +369,7 @@ public sealed class SqlWorkflowService(
 /// (préférences + routage multi-canal + déduplication + file de remise fiable).</summary>
 public sealed class SqlAutomationService(
     NexoraDbContext db, ITenantContext tenant, IDateTimeProvider clock,
-    Nexora.Application.Notifications.INotificationService notifications)
+    Nexora.Application.Notifications.INotificationService notifications, IBusinessCalendar calendar)
     : IAutomationService
 {
     private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
@@ -407,7 +410,7 @@ public sealed class SqlAutomationService(
 
         var schedule = request.Schedule.ValueKind == JsonValueKind.Object ? request.Schedule.GetRawText() : "{}";
         var parameters = request.Parameters.ValueKind == JsonValueKind.Object ? request.Parameters.GetRawText() : "{}";
-        var next = ComputeNextRun(request.Schedule, clock.UtcNow);
+        var next = ComputeNextRun(request.Schedule, clock.UtcNow, await calendar.ZoneAsync(ct));
 
         var existing = await db.Database.SqlQuery<Guid>($"""
             SELECT id AS "Value" FROM nexora.automation WHERE company_id = {Company} AND code = {code}
@@ -470,10 +473,12 @@ public sealed class SqlAutomationService(
         }
         catch (Exception ex)
         {
+            // Le détail technique reste au journal d'exécution ; l'utilisateur reçoit un message lisible.
             await db.Database.ExecuteSqlAsync($"""
                 UPDATE nexora.automation_run SET status = 'failed', error = {ex.Message}, finished_at = now() WHERE id = {runId}
                 """, ct);
-            return Error.Unexpected("automation.run_failed", ex.Message);
+            return Error.Unexpected("automation.run_failed",
+                "L'automatisation a échoué ; le détail est consigné dans son historique d'exécution.");
         }
 
         await db.Database.ExecuteSqlAsync($"""
@@ -482,7 +487,7 @@ public sealed class SqlAutomationService(
             """, ct);
         if (!preview)
             await db.Database.ExecuteSqlAsync($"""
-                UPDATE nexora.automation SET last_run_at = now(), next_run_at = {ComputeNextRun(SafeJson(auto.Schedule), clock.UtcNow)}, updated_at = now()
+                UPDATE nexora.automation SET last_run_at = now(), next_run_at = {ComputeNextRun(SafeJson(auto.Schedule), clock.UtcNow, await calendar.ZoneAsync(ct))}, updated_at = now()
                 WHERE id = {automationId}
                 """, ct);
 
@@ -655,7 +660,11 @@ public sealed class SqlAutomationService(
         return (expiring.Count, new { expiringWithinDays = days, count = expiring.Count, preview });
     }
 
-    private static DateTimeOffset? ComputeNextRun(JsonElement schedule, DateTimeOffset from)
+    /// <summary>
+    /// Prochaine exécution, l'heure « atTime » étant celle de l'entreprise (audit 2026-10 éd. 2 : 08:00 était pris en
+    /// UTC, soit 04:00 à Port-au-Prince).
+    /// </summary>
+    internal static DateTimeOffset? ComputeNextRun(JsonElement schedule, DateTimeOffset from, TimeZoneInfo zone)
     {
         if (schedule.ValueKind != JsonValueKind.Object) return null;
         var frequency = schedule.TryGetProperty("frequency", out var f) && f.ValueKind == JsonValueKind.String ? f.GetString() : "daily";
@@ -664,15 +673,21 @@ public sealed class SqlAutomationService(
         var hour = parts.Length > 0 && int.TryParse(parts[0], out var h) ? Math.Clamp(h, 0, 23) : 8;
         var minute = parts.Length > 1 && int.TryParse(parts[1], out var m) ? Math.Clamp(m, 0, 59) : 0;
 
-        var baseDay = new DateTimeOffset(from.Year, from.Month, from.Day, hour, minute, 0, TimeSpan.Zero);
+        var local = TimeZoneInfo.ConvertTime(from, zone);
+        DateTimeOffset At(DateTime day)
+        {
+            var wall = new DateTime(day.Year, day.Month, day.Day, hour, minute, 0, DateTimeKind.Unspecified);
+            return new DateTimeOffset(wall, zone.GetUtcOffset(wall)).ToUniversalTime();   // Npgsql : UTC seulement
+        }
+        var baseDay = At(local.Date);
         return frequency switch
         {
             "once" => null,
             "hourly" => from.AddHours(1),
-            "daily" => baseDay > from ? baseDay : baseDay.AddDays(1),
-            "weekly" => baseDay.AddDays(7),
-            "monthly" => baseDay.AddMonths(1),
-            _ => baseDay.AddDays(1),
+            "daily" => baseDay > from ? baseDay : At(local.Date.AddDays(1)),
+            "weekly" => At(local.Date.AddDays(7)),
+            "monthly" => At(local.Date.AddMonths(1)),
+            _ => At(local.Date.AddDays(1)),
         };
     }
 

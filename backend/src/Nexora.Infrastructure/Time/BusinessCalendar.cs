@@ -52,18 +52,28 @@ public sealed class CompanyTimeZoneCache(IDateTimeProvider clock)
 public sealed class BusinessCalendar(
     NexoraDbContext db, ITenantContext tenant, IDateTimeProvider clock, CompanyTimeZoneCache cache) : IBusinessCalendar
 {
+    // Fuseau gardé pour l'entreprise qui l'a demandé (audit 2026-10 éd. 2) : le planificateur parcourt toutes les
+    // entreprises dans une même portée, et chacune recevait le fuseau de la première.
     private TimeZoneInfo? _zone;
+    private Guid? _zoneCompany;
 
     private sealed record ZoneRow(string Value);
+
+    private TimeZoneInfo Remember(Guid? company, TimeZoneInfo zone)
+    {
+        _zoneCompany = company;
+        return _zone = zone;
+    }
 
     public TimeZoneInfo Zone
     {
         get
         {
-            if (_zone is not null) return _zone;
-            if (CompanyId() is not { } id) return _zone = CompanyTimeZoneCache.Default;
-            if (cache.TryGet(id, out var cached)) return _zone = cached;
-            return _zone = cache.Store(id, Query(id).ToList().FirstOrDefault()?.Value);
+            var id = CompanyId();
+            if (_zone is not null && _zoneCompany == id) return _zone;
+            if (id is not { } company) return Remember(null, CompanyTimeZoneCache.Default);
+            if (cache.TryGet(company, out var cached)) return Remember(company, cached);
+            return Remember(company, cache.Store(company, Query(company).ToList().FirstOrDefault()?.Value));
         }
     }
 
@@ -73,10 +83,11 @@ public sealed class BusinessCalendar(
 
     public async Task<TimeZoneInfo> ZoneAsync(CancellationToken ct = default)
     {
-        if (_zone is not null) return _zone;
-        if (CompanyId() is not { } id) return _zone = CompanyTimeZoneCache.Default;
-        if (cache.TryGet(id, out var cached)) return _zone = cached;
-        return _zone = cache.Store(id, (await Query(id).ToListAsync(ct)).FirstOrDefault()?.Value);
+        var id = CompanyId();
+        if (_zone is not null && _zoneCompany == id) return _zone;
+        if (id is not { } company) return Remember(null, CompanyTimeZoneCache.Default);
+        if (cache.TryGet(company, out var cached)) return Remember(company, cached);
+        return Remember(company, cache.Store(company, (await Query(company).ToListAsync(ct)).FirstOrDefault()?.Value));
     }
 
     private Guid? CompanyId()

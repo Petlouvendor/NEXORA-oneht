@@ -59,7 +59,8 @@ public sealed record OpenSuspenseRequest(
     string Reason, string? Reference, DateOnly? ResolutionDueDate, Guid? ResponsibleUserId);
 
 /// <summary>Résout un suspens (§32). <c>outcome</c> ∈ resolved | written_off | cancelled.</summary>
-public sealed record ResolveSuspenseRequest(string Outcome, string Resolution);
+/// <summary><c>JournalEntryNumber</c> : écriture validée qui constate la perte ou le profit — obligatoire pour « written_off ».</summary>
+public sealed record ResolveSuspenseRequest(string Outcome, string Resolution, string? JournalEntryNumber = null);
 
 // --- §38 Clôture financière ---------------------------------------------
 

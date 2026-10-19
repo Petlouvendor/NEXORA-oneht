@@ -20,6 +20,23 @@ public sealed class SqlTreasuryManagementService(
 
     internal sealed record AccountRow(Guid Id, string Name, string AccountType, string Currency, string Status, decimal Balance, int Movements);
 
+    private sealed record LockedBalance(Guid Id, decimal Balance);
+
+    /// <summary>Soldes des comptes, lignes verrouillées jusqu'à la fin de la transaction, toujours dans l'ordre des identifiants.</summary>
+    internal async Task<Dictionary<Guid, decimal>> LockBalancesAsync(Guid[] ids, CancellationToken ct)
+        => (await db.Database.SqlQuery<LockedBalance>($"""
+                SELECT id AS "Id", current_balance AS "Balance" FROM nexora.financial_account
+                WHERE id = ANY({ids}) AND company_id = {Company}
+                ORDER BY id
+                FOR UPDATE
+                """).ToListAsync(ct))
+            .ToDictionary(x => x.Id, x => x.Balance);
+
+    private sealed class RefusedPosting(Error error) : InvalidOperationException(error.Message)
+    {
+        public Error Error { get; } = error;
+    }
+
     internal async Task<AccountRow?> AccountAsync(Guid id, CancellationToken ct)
         => await db.Database.SqlQuery<AccountRow>($"""
             SELECT fa.id AS "Id", fa.name AS "Name", fa.account_type AS "AccountType", c.code AS "Currency",
@@ -201,10 +218,25 @@ public sealed class SqlTreasuryManagementService(
             return Error.Validation("treasury.currency_mismatch",
                 $"Transfert entre devises ({from.Currency} → {to.Currency}) non pris en charge : passez par une opération de change.");
         var amount = Math.Round(r.Amount, 2, MidpointRounding.ToEven);
-        if (NoOverdraft.Contains(from.AccountType) && from.Balance < amount && !await IsReplayAsync(r.OperationUuid, ct))
-            return Error.Conflict("treasury.insufficient_balance", $"Solde insuffisant sur « {from.Name} » : {from.Balance} {from.Currency}.");
 
-        var posted = await ops.RecordTransferAsync(new RecordTransferRequest(r.OperationUuid, clock.UtcNow, from.Id, to.Id, amount, from.Currency), ct);
+        // Contrôle du découvert sous verrou (audit 2026-10 éd. 2) : lu sans verrou, deux transferts simultanés passaient
+        // chacun le contrôle et mettaient la caisse en négatif. Les deux comptes sont verrouillés dans un ordre fixe
+        // (deux transferts croisés A→B et B→A ne s'interbloquent pas).
+        Result<PostingResultResponse> posted;
+        try
+        {
+            posted = await uow.ExecuteInTransactionAsync(async token =>
+            {
+                var balances = await LockBalancesAsync([from.Id, to.Id], token);
+                if (NoOverdraft.Contains(from.AccountType) && balances[from.Id] < amount && !await IsReplayAsync(r.OperationUuid, token))
+                    throw new RefusedPosting(Error.Conflict("treasury.insufficient_balance",
+                        $"Solde insuffisant sur « {from.Name} » : {balances[from.Id]} {from.Currency}."));
+                var result = await ops.RecordTransferAsync(
+                    new RecordTransferRequest(r.OperationUuid, clock.UtcNow, from.Id, to.Id, amount, from.Currency), token);
+                return result.IsSuccess ? result : throw new RefusedPosting(result.Error!);
+            }, ct);
+        }
+        catch (RefusedPosting refused) { return refused.Error; }
         if (posted.IsSuccess && !string.IsNullOrWhiteSpace(r.Note))
             await DescribeAsync(r.OperationUuid, $"Transfert — {r.Note.Trim()}", ct);
         return posted;
@@ -497,8 +529,10 @@ public sealed class SqlExpenseService(
             if (!string.Equals(account.Currency, h.Currency, StringComparison.OrdinalIgnoreCase))
                 return Error.Validation("expense.currency_mismatch", $"Le compte « {account.Name} » est en {account.Currency}, la dépense en {h.Currency}.");
             var total = h.Amount + h.TaxAmount;
-            if (account.AccountType is "cash" or "mobile_money" or "wallet" && account.Balance < total)
-                return Error.Conflict("expense.insufficient_balance", $"Solde insuffisant sur « {account.Name} » : {account.Balance} {account.Currency}.");
+            // Solde relu sous verrou (audit 2026-10 éd. 2) : deux paiements simultanés sur la même caisse passaient chacun.
+            var balance = (await treasury.LockBalancesAsync([account.Id], token))[account.Id];
+            if (account.AccountType is "cash" or "mobile_money" or "wallet" && balance < total)
+                return Error.Conflict("expense.insufficient_balance", $"Solde insuffisant sur « {account.Name} » : {balance} {account.Currency}.");
 
             var ledgerCode = h.CategoryId is { } cat
                 ? await db.Database.SqlQuery<string?>($"""

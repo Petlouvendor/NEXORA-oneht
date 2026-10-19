@@ -173,6 +173,30 @@ public sealed class AdministrationTests(FinanceEngineFixture fx)
         quiet.Value!.Matched.Should().BeFalse();
     }
 
+    // ---- Audit 2026-10 éd. 2 : un workflow d'avance sur salaire crée réellement sa demande d'approbation ----
+    [Fact]
+    public async Task A_salary_advance_workflow_creates_its_approval_request()
+    {
+        await using var s = Scope();
+        var wf = s.ServiceProvider.GetRequiredService<IWorkflowService>();
+        var tc = (TestTenantContext)s.ServiceProvider.GetRequiredService<ITenantContext>();
+        var def = new WorkflowDefinitionDto("all", [new WorkflowConditionDto("amount", "gt", J("1000"))], new WorkflowApprovalDto(1, "manager"), [], []);
+        var id = (await wf.UpsertAsync(new UpsertWorkflowRequest($"avance-{Guid.NewGuid():N}"[..16], "Avance", "salary_advance", def))).Value;
+        (await wf.TestAsync(id, new WorkflowTestRequest(J("""{"amount":5000}""")))).IsSuccess.Should().BeTrue();
+        (await wf.ActivateAsync(id)).IsSuccess.Should().BeTrue();
+        try
+        {
+            tc.SetUser(Direction);
+            var fired = await wf.EvaluateAsync(new WorkflowTriggerRequest("salary_advance", J("""{"amount":5000}"""), "employee_advance", Guid.NewGuid()));
+            fired.IsSuccess.Should().BeTrue(fired.Error?.Message);
+            fired.Value!.ApprovalRequestId.Should().NotBeNull("la demande était refusée en silence (type inconnu du service)");
+        }
+        finally
+        {
+            await wf.SetStatusAsync(id, "inactive");
+        }
+    }
+
     // ---- §19, §47 : automatisation de relance — cible les retards, ignore les désinscrits ----
     [Fact]
     public async Task Dunning_automation_flags_overdue_and_skips_opted_out_customers()
@@ -195,6 +219,11 @@ public sealed class AdministrationTests(FinanceEngineFixture fx)
 
         var autoId = (await autos.UpsertAsync(new UpsertAutomationRequest(
             $"dun-{Guid.NewGuid():N}"[..14], "Relance test", "dunning", J("""{"frequency":"daily","atTime":"08:00"}"""), J("{}")))).Value;
+
+        // 08:00 est l'heure de l'entreprise (Port-au-Prince), pas 08:00 UTC (audit 2026-10 éd. 2).
+        (await db.Database.SqlQuery<int>($"""
+            SELECT extract(hour FROM next_run_at AT TIME ZONE 'America/Port-au-Prince')::int AS "Value" FROM nexora.automation WHERE id = {autoId}
+            """).FirstAsync()).Should().Be(8);
 
         var run = await autos.RunNowAsync(autoId, preview: false);
         run.IsSuccess.Should().BeTrue(run.Error?.Message);

@@ -54,6 +54,8 @@ export function CataloguePage() {
   );
 }
 
+const PAGE = 500;
+
 function ProductsPanel({ refs, refsLoading, onRefsChanged, initialQuery }: {
   refs: ReturnType<typeof useCatalogRefs>["refs"]; refsLoading: boolean; onRefsChanged: () => void; initialQuery: string;
 }) {
@@ -72,17 +74,35 @@ function ProductsPanel({ refs, refsLoading, onRefsChanged, initialQuery }: {
   }, [term]);
 
   // Recherche tolérante (accents, code-barres, PLU, alias) sans filtre ; liste filtrée sinon.
+  const searching = debounced.length >= 2 && !status && !categoryId;
   const products = useAsync<ProductListItem[]>(() => (
-    debounced.length >= 2 && !status && !categoryId
+    searching
       ? searchCatalog(debounced, 100).then((hits) => hits.map((h) => ({
           id: h.productId, sku: h.sku, name: h.name, shortName: h.shortName, productType: h.productType,
           status: h.status, categoryName: h.categoryName, brandName: h.brandName,
           primaryBarcode: h.barcode, salePrice: h.salePrice, currency: h.currency,
         })))
-      : listProducts({ q: debounced || undefined, status: status || undefined, categoryId: categoryId || undefined, limit: 500 })
+      : listProducts({ q: debounced || undefined, status: status || undefined, categoryId: categoryId || undefined, limit: PAGE })
   ), [debounced, status, categoryId]);
 
-  const rows = products.data ?? [];
+  // Pages suivantes (audit 2026-10 éd. 2) : la liste s'arrêtait aux 500 premiers produits, sans moyen de voir la suite.
+  const [more, setMore] = useState<ProductListItem[]>([]);
+  const [moreDone, setMoreDone] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  useEffect(() => { setMore([]); setMoreDone(false); }, [products.data]);
+  const rows = useMemo(() => [...(products.data ?? []), ...more], [products.data, more]);
+  const canLoadMore = !searching && !moreDone && (products.data?.length ?? 0) === PAGE && rows.length % PAGE === 0;
+  const loadMore = async () => {
+    setLoadingMore(true);
+    try {
+      const next = await listProducts({ q: debounced || undefined, status: status || undefined, categoryId: categoryId || undefined,
+                                        limit: PAGE, offset: rows.length });
+      setMore((m) => [...m, ...next]);
+      if (next.length < PAGE) setMoreDone(true);
+    } finally {
+      setLoadingMore(false);
+    }
+  };
   const noPrice = rows.filter((r) => r.salePrice == null && r.productType !== "service").length;
 
   const columns: Array<Column<ProductListItem>> = [
@@ -151,6 +171,13 @@ function ProductsPanel({ refs, refsLoading, onRefsChanged, initialQuery }: {
               ? "Aucun produit ne correspond à ces critères."
               : "Aucun produit. Créez le premier avec « Nouveau produit » ou importez un fichier (Migration & onboarding)."}
           />
+          {canLoadMore && (
+            <div style={{ marginTop: 10, display: "flex", justifyContent: "center" }}>
+              <Button variant="ghost" onClick={() => void loadMore()} loading={loadingMore}>
+                {loadingMore ? "Chargement…" : `Afficher les ${PAGE} produits suivants`}
+              </Button>
+            </div>
+          )}
         </div>
       </Card>
       {creating && (

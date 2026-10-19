@@ -139,7 +139,7 @@ public sealed class SqlPayrollReports(
         decimal Balance, DateOnly? NextDue, string Status, DateTimeOffset? PaidAt, DateTimeOffset? SettledAt);
     private sealed record AdvanceByEmployeeRow(string Employee, string Currency, int Count, decimal Paid, decimal Recovered, decimal Balance);
     private sealed record DebtRow(string EmployeeNumber, string Employee, string Currency, decimal Advances, decimal Loans);
-    private sealed record UnpaidRow(string RunNumber, string Period, string Employee, string Currency, decimal Net, DateTimeOffset? ApprovedAt);
+    private sealed record UnpaidRow(string RunNumber, string Period, string Employee, string Currency, decimal Net, decimal Paid, DateTimeOffset? ApprovedAt);
     private sealed record VarianceRow(string EmployeeNumber, string Employee, string Currency, decimal? Previous, decimal Current);
 
     public async Task<Result<PayrollReportDto>> ReportAsync(string key, PayrollReportQuery q, CancellationToken ct = default)
@@ -293,19 +293,26 @@ public sealed class SqlPayrollReports(
             case "unpaid":
             {
                 var rows = await db.Database.SqlQuery<UnpaidRow>($"""
+                    -- Reste à payer = net − paiements effectués (audit 2026-10 éd. 2 : un paiement partiel n'était pas déduit).
                     SELECT r.run_number AS "RunNumber", p.label AS "Period", i.employee_name AS "Employee", cur.code AS "Currency",
-                           i.net_amount AS "Net", r.approved_at AS "ApprovedAt"
+                           i.net_amount AS "Net", COALESCE(sp.paid, 0) AS "Paid", r.approved_at AS "ApprovedAt"
                     FROM nexora.payroll_item i
                     JOIN nexora.payroll_run r ON r.id = i.run_id
                     JOIN nexora.payroll_period p ON p.id = i.period_id
                     JOIN nexora.currency cur ON cur.id = i.currency_id
-                    WHERE i.company_id = {Company} AND i.status = 'approved' AND i.net_amount > 0
+                    LEFT JOIN LATERAL (SELECT SUM(amount) AS paid FROM nexora.salary_payment
+                                       WHERE payroll_item_id = i.id AND status = 'completed') sp ON true
+                    WHERE i.company_id = {Company} AND i.status = 'approved' AND i.net_amount - COALESCE(sp.paid, 0) > 0
                     ORDER BY r.approved_at, i.employee_name
                     """).ToListAsync(ct);
                 return Table(info, $"Au {today:dd/MM/yyyy}",
                     [Text("run", "Paie"), Text("period", "Période"), Text("employee", "Employé"), Text("currency", "Devise"),
-                     Money("net", "Net à payer"), new PayrollReportColumnDto("approved", "Approuvée le", PrintKinds.DateTime)],
-                    rows.Select(r => Row(r.RunNumber, r.Period, r.Employee, r.Currency, r.Net, r.ApprovedAt?.ToString("o"))).ToList(), null);
+                     Money("net", "Net de la paie"), Money("paid", "Déjà payé"), Money("remaining", "Reste à payer"),
+                     new PayrollReportColumnDto("approved", "Approuvée le", PrintKinds.DateTime)],
+                    rows.Select(r => Row(r.RunNumber, r.Period, r.Employee, r.Currency, r.Net, r.Paid, r.Net - r.Paid, r.ApprovedAt?.ToString("o"))).ToList(),
+                    rows.Select(r => r.Currency).Distinct().Count() == 1
+                        ? Row("Total", null, null, rows[0].Currency, rows.Sum(r => r.Net), rows.Sum(r => r.Paid), rows.Sum(r => r.Net - r.Paid), null)
+                        : null);
             }
             case "period_variance":
             {

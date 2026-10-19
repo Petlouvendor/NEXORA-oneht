@@ -260,10 +260,14 @@ public sealed class SqlImportService(
         var mapping = JsonSerializer.Deserialize<List<ColumnMappingDto>>(job.Mapping!, Web) ?? [];
         var ctx = new ImportContext(Company, id, tenant.UserId, job.Mode, DryRun: false);
 
-        await db.Database.ExecuteSqlAsync($"""
+        // Passage conditionnel au statut lu (audit 2026-10 éd. 2) : deux exécutions simultanées passaient toutes deux à
+        // « executing » et traitaient les mêmes lignes. Une seule l'emporte.
+        var expected = fresh ? "simulated" : "paused";
+        var started = await db.Database.ExecuteSqlAsync($"""
             UPDATE nexora.import_job SET status = 'executing', paused_at = NULL, error_message = NULL, updated_at = now()
-            WHERE id = {id} AND company_id = {Company}
+            WHERE id = {id} AND company_id = {Company} AND status = {expected}
             """, ct);
+        if (started == 0) return Error.Conflict("migration.state", "Cet import est déjà en cours d'exécution.");
         await LogAsync(id, fresh ? MigrationEvents.ImportStarted : MigrationEvents.ImportProgressed, new { }, ct);
         await uow.SaveChangesAsync(ct);
 
@@ -546,9 +550,12 @@ public sealed class SqlImportService(
             var createdBy = await db.Database.SqlQuery<Guid?>($"""SELECT created_by AS "Value" FROM nexora.import_job WHERE id = {id}""").FirstOrDefaultAsync(ct);
             tenant.SetUser(createdBy ?? Guid.Empty);
             tenant.SetScope([companyId], [], companyId);
-            await db.Database.ExecuteSqlAsync($"UPDATE nexora.import_job SET status = 'paused', paused_at = now() WHERE id = {id}", ct);
+            var paused = await db.Database.ExecuteSqlAsync($"""
+                UPDATE nexora.import_job SET status = 'paused', paused_at = now()
+                WHERE id = {id} AND status = 'executing' AND updated_at < now() - interval '10 minutes'
+                """, ct);
             await uow.SaveChangesAsync(ct);
-            await ResumeAsync(id, ct);
+            if (paused == 1) await ResumeAsync(id, ct);
         }
         return stalled.Count;
     }

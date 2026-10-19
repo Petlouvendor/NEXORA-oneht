@@ -137,6 +137,8 @@ public sealed partial class SqlPayrollService
                 var paymentId = await uow.ExecuteInTransactionAsync(async token =>
                 {
                     var id = Guid.NewGuid();
+                    if (await PayrollRules.CashShortfallAsync(db, Company, account.Id, item.Net, token) is { } shortfall)
+                        throw new PayrollRefusal(shortfall);
                     var number = await PayrollRules.NextNumberAsync(db, Company, "salary_payment", "VSAL-", paidAt.Year, token);
                     var posted = await engine.HandleAsync(new SalaryPaid(Company, operation, paidAt, id, item.EmployeeId,
                         new Money(item.Net, item.Currency), account.Id, number) { UserId = tenant.UserId }, token);

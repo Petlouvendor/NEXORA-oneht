@@ -126,11 +126,18 @@ public sealed class SqlForecastService(
     {
         var cf = await treasury.MaturityForecastAsync(ct);
         var today = calendar.Today;
-        var points = cf.Buckets.Select(b => new ForecastPointDto(today.AddDays(b.DayTo), b.ProjectedBalance)).ToList();
+        // La tranche ouverte « Au-delà » (91 → 100 000 jours) était datée de sa borne de fin : un point au 2300-07-22
+        // apparaissait sur le graphique (audit 2026-10 éd. 2). Elle est datée de son début.
+        var points = cf.Buckets
+            .Select(b => new ForecastPointDto(today.AddDays(b.DayTo >= OpenEndedBucketDays ? b.DayFrom : Math.Max(b.DayTo, 0)), b.ProjectedBalance))
+            .ToList();
         return ("manual", "medium",
             "Reprend la prévision de trésorerie par échéance (Phase 28) : encaissements/décaissements attendus depuis les créances, dettes et flux en attente déjà enregistrés — pas de nouvelle hypothèse statistique.",
             points);
     }
+
+    /// <summary>Borne des tranches ouvertes de la prévision par échéance (<c>SqlTreasury</c>).</summary>
+    private const int OpenEndedBucketDays = 100_000;
 
     private sealed record HistoryRow(DateOnly Day, decimal Value);
 

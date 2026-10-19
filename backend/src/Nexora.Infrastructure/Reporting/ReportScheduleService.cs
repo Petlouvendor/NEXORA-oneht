@@ -50,6 +50,11 @@ public sealed class SqlReportScheduleService(
         if (!Formats.Contains(format)) return Error.Validation("schedule.format", "Format invalide.");
         if (string.IsNullOrWhiteSpace(request.Name)) return Error.Validation("schedule.name", "Nom requis.");
         if (request.Recipients.Count == 0) return Error.Validation("schedule.recipients", "Au moins un destinataire requis.");
+        // Destinataires : des utilisateurs de l'entreprise (audit 2026-10 éd. 2 : identifiants non vérifiés).
+        var recipientIds = request.Recipients.Select(r => Guid.TryParse(r, out var g) ? g : Guid.Empty).ToList();
+        if (recipientIds.Contains(Guid.Empty)
+            || !await Nexora.Infrastructure.Common.CompanyMembers.AreMembersAsync(db, Company, recipientIds, ct))
+            return Error.Validation("schedule.recipients", "Chaque destinataire doit être un utilisateur de cette entreprise.");
 
         var filterJson = (request.Filter ?? JsonDocument.Parse("{}").RootElement).GetRawText();
         var recipientsJson = JsonSerializer.Serialize(request.Recipients, Web);
