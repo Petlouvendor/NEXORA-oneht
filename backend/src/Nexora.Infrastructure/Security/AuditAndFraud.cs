@@ -71,20 +71,39 @@ public sealed class SqlAuditQueryService(NexoraDbContext db, ITenantContext tena
 
     public async Task<Result<(string FileName, string Content)>> ExportAsync(AuditQueryFilter filter, CancellationToken ct = default)
     {
-        var page = await QueryAsync(filter with { Page = 1, PageSize = 200 }, ct);
+        // Jusqu'à 10 000 lignes, lues par pages, et une troncature toujours signalée (audit 2026-10 éd. 2 : l'export
+        // s'arrêtait en silence aux 200 lignes les plus récentes).
+        var events = new List<AuditEventDto>();
+        long total = 0;
+        for (var p = 1; events.Count < MaxExportRows; p++)
+        {
+            var page = await QueryAsync(filter with { Page = p, PageSize = 200 }, ct);
+            total = page.Total;
+            events.AddRange(page.Events);
+            if (page.Events.Count < 200) break;
+        }
         var sb = new StringBuilder("occurred_at;user_id;company_id;action;entity_type;entity_id;changes\n");
-        foreach (var e in page.Events)
+        foreach (var e in events)
             sb.Append(e.OccurredAt.ToString("o")).Append(';').Append(e.UserId).Append(';').Append(e.CompanyId)
-              .Append(';').Append(e.Action).Append(';').Append(e.EntityType).Append(';').Append(e.EntityId)
-              .Append(';').Append(e.Changes is null ? "" : string.Join("|", e.Changes.Select(kv => $"{kv.Key}={kv.Value}"))).Append('\n');
+              .Append(';').Append(Csv(e.Action)).Append(';').Append(Csv(e.EntityType)).Append(';').Append(e.EntityId)
+              .Append(';').Append(Csv(e.Changes is null ? "" : string.Join("|", e.Changes.Select(kv => $"{kv.Key}={kv.Value}")))).Append('\n');
+        if (total > events.Count)
+            sb.Append("# export tronqué : ").Append(events.Count).Append(" lignes sur ").Append(total)
+              .Append(" — réduisez la période pour obtenir le reste\n");
 
         await db.Database.ExecuteSqlAsync($"""
             INSERT INTO nexora.export_log (company_id, user_id, report_key, format, row_count, sensitivity)
-            VALUES ({tenant.ActiveCompanyId}, {tenant.UserId}, 'audit_log', 'csv', {page.Events.Count}, 'restricted')
+            VALUES ({tenant.ActiveCompanyId}, {tenant.UserId}, 'audit_log', 'csv', {events.Count}, 'restricted')
             """, ct);
 
         return Result.Success(($"audit_{DateTime.UtcNow:yyyyMMdd_HHmmss}.csv", sb.ToString()));
     }
+
+    private const int MaxExportRows = 10_000;
+
+    /// <summary>Champ CSV : entre guillemets s'il contient le séparateur, un guillemet ou un saut de ligne.</summary>
+    private static string Csv(string value)
+        => value.IndexOfAny([';', '"', '\n', '\r']) < 0 ? value : "\"" + value.Replace("\"", "\"\"") + "\"";
 
     private static AuditEventDto ToDto(Row r)
     {

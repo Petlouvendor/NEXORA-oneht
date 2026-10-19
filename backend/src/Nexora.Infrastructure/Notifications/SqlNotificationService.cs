@@ -18,7 +18,8 @@ public sealed class SqlNotificationService(
     ITenantContext tenant,
     IUnitOfWork uow,
     IDateTimeProvider clock,
-    SqlMessageTemplateService templates) : INotificationService
+    SqlMessageTemplateService templates,
+    IBusinessCalendar calendar) : INotificationService
 {
     private Guid UserId => tenant.UserId ?? throw new InvalidOperationException("Utilisateur requis.");
     private static readonly string[] ExternalChannels = ["email", "sms", "webhook"];
@@ -33,6 +34,23 @@ public sealed class SqlNotificationService(
         var priority = Math.Clamp(request.Priority, 1, 5);
         var recipients = request.Recipients.Distinct().ToArray();
         int created = 0, queued = 0, skipped = 0;
+
+        // Destinataires de l'entreprise (ou de son groupe), ou exploitants de la plateforme (audit 2026-10 éd. 2 :
+        // l'appartenance était laissée aux appelants — un identifiant quelconque recevait la notification).
+        if (tenant.ActiveCompanyId is { } company && recipients.Length > 0)
+        {
+            var allowed = await db.Database.SqlQuery<Guid>($"""
+                SELECT DISTINCT ur.user_id AS "Value"
+                FROM nexora.user_role ur JOIN nexora.access_scope sc ON sc.id = ur.scope_id
+                JOIN nexora.company co ON co.id = {company}
+                WHERE ur.user_id = ANY({recipients}) AND ur.revoked_at IS NULL
+                  AND (sc.company_id = co.id OR sc.scope_type = 'PLATFORM'
+                       OR (sc.group_id IS NOT NULL AND sc.group_id = co.group_id))
+                """).ToListAsync(ct);
+            skipped += recipients.Length - allowed.Count;
+            recipients = recipients.Where(allowed.Contains).ToArray();
+        }
+        var zone = await calendar.ZoneAsync(ct);
 
         var inAppTpl = await templates.LoadAsync(request.TemplateKey, "in_app", request.Locale, ct);
         var externalTpl = new Dictionary<string, SqlMessageTemplateService.Row?>();
@@ -79,7 +97,7 @@ public sealed class SqlNotificationService(
                     created++;
                 }
 
-                var quiet = InQuietHours(clock.UtcNow, pref.QuietFrom, pref.QuietTo, out var quietEnd);
+                var quiet = InQuietHours(clock.UtcNow, zone, pref.QuietFrom, pref.QuietTo, out var quietEnd);
                 var digestHoldsExternal = pref.Digest != "instant";   // daily/weekly/off — le batch de résumé est un backlog
 
                 if (!digestHoldsExternal)
@@ -167,16 +185,21 @@ public sealed class SqlNotificationService(
         static TimeOnly? Parse(string? s) => TimeOnly.TryParse(s, out var t) ? t : null;
     }
 
-    private static bool InQuietHours(DateTimeOffset now, TimeOnly? from, TimeOnly? to, out DateTimeOffset quietEnd)
+    /// <summary>
+    /// Heures de silence lues dans le fuseau de l'entreprise (audit 2026-10 éd. 2 : elles l'étaient en UTC — « 22 h-7 h »
+    /// réglé en Haïti tombait de 18 h à 3 h, heure locale).
+    /// </summary>
+    internal static bool InQuietHours(DateTimeOffset now, TimeZoneInfo zone, TimeOnly? from, TimeOnly? to, out DateTimeOffset quietEnd)
     {
         quietEnd = now;
         if (from is not { } f || to is not { } t || f == t) return false;
-        var current = TimeOnly.FromDateTime(now.UtcDateTime);
+        var local = TimeZoneInfo.ConvertTime(now, zone);
+        var current = TimeOnly.FromDateTime(local.DateTime);
         var quiet = f < t ? current >= f && current < t : current >= f || current < t;
         if (!quiet) return false;
-        var end = now.Date.Add(t.ToTimeSpan());
-        if (end <= now.UtcDateTime) end = end.AddDays(1);
-        quietEnd = new DateTimeOffset(end, TimeSpan.Zero);
+        var end = local.Date.Add(t.ToTimeSpan());
+        if (end <= local.DateTime) end = end.AddDays(1);
+        quietEnd = new DateTimeOffset(end, zone.GetUtcOffset(end)).ToUniversalTime();
         return true;
     }
 

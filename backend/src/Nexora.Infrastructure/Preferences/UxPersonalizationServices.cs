@@ -121,9 +121,18 @@ public sealed class SqlDashboardLayoutService(NexoraDbContext db, ITenantContext
 
     public async Task<Result> DeleteAsync(Guid id, CancellationToken ct = default)
     {
+        // Une disposition partagée (entreprise, rôle : user_id NULL) ne se supprime qu'avec le droit de la créer
+        // (audit 2026-10 éd. 2 : tout utilisateur pouvait supprimer le tableau de bord par défaut de l'entreprise).
+        var mayDeleteShared = (await permissions.LoadProfileAsync(User, ct))
+            .HasPermission(Nexora.Application.Security.Permissions.Admin.ConfigureCompany, Company);
+        var shared = await db.Database.SqlQuery<bool>($"""
+            SELECT EXISTS(SELECT 1 FROM nexora.dashboard_layout WHERE id = {id} AND company_id = {Company} AND user_id IS NULL) AS "Value"
+            """).FirstAsync(ct);
+        if (shared && !mayDeleteShared)
+            return Error.Forbidden("layout.shared", "Seul un administrateur de l'entreprise supprime une disposition partagée.");
         var n = await db.Database.ExecuteSqlAsync($"""
             DELETE FROM nexora.dashboard_layout WHERE id = {id} AND company_id = {Company}
-              AND (user_id = {User} OR user_id IS NULL)
+              AND (user_id = {User} OR (user_id IS NULL AND {mayDeleteShared}))
             """, ct);
         await uow.SaveChangesAsync(ct);
         return n == 0 ? Error.NotFound("layout", "Disposition introuvable.") : Result.Success();

@@ -154,7 +154,8 @@ public sealed class SqlManualJournalService(
     IAccountingPeriods periods,
     IDocumentNumberGenerator numbers,
     ICompanyCurrencyContext currency,
-    IExchangeRateProvider fx, IBusinessCalendar calendar) : IManualJournalService
+    IExchangeRateProvider fx, IBusinessCalendar calendar,
+    Nexora.Application.Administration.ISettingsService settings) : IManualJournalService
 {
     private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
@@ -312,6 +313,11 @@ public sealed class SqlManualJournalService(
             .FirstOrDefaultAsync(e => e.Id == id && e.CompanyId == Company, ct);
         if (entry is null) return Error.NotFound("accounting.entry_not_found", "Écriture introuvable.");
         if (entry.Status != JournalEntryStatus.Draft) return Error.Conflict("accounting.entry_not_draft", "Seul un brouillon peut être validé.");
+        // Quatre yeux sur l'écriture manuelle (audit 2026-10 éd. 2) : réglage d'entreprise, désactivé par défaut pour les
+        // structures à un seul comptable ; activé, l'auteur du brouillon ne peut pas le valider lui-même.
+        if (entry.CreatedBy is { } author && author == tenant.UserId && await ManualEntryFourEyesAsync(ct))
+            return Error.Forbidden("accounting.four_eyes",
+                "Cette entreprise exige qu'une autre personne valide une écriture manuelle.");
 
         var journalCode = await db.Database.SqlQuery<string>($"""
             SELECT code AS "Value" FROM nexora.journal WHERE id = {entry.JournalId}
@@ -484,6 +490,19 @@ public sealed class SqlManualJournalService(
         => db.Database.SqlQuery<Guid>($"""
             SELECT id AS "Value" FROM nexora.journal WHERE company_id = {Company} AND code = {code}
             """).FirstAsync(ct);
+
+    private async Task<bool> ManualEntryFourEyesAsync(CancellationToken ct)
+    {
+        try
+        {
+            var effective = await settings.ResolveAsync("accounting.manual_entry_four_eyes", null, ct);
+            return effective.Value.ValueKind == System.Text.Json.JsonValueKind.True;
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+    }
 
     private Task<EntryHead?> HeadAsync(Guid id, CancellationToken ct)
         => db.Database.SqlQuery<EntryHead>($"""

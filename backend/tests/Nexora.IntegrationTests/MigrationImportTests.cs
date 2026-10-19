@@ -63,6 +63,38 @@ public sealed class MigrationImportTests(FinanceEngineFixture fx)
         return done.Value!;
     }
 
+    // ---- Audit 2026-10 éd. 2 : deux exécutions simultanées d'un même import — une seule l'emporte ----
+    [Fact]
+    public async Task Two_simultaneous_executions_of_one_import_run_it_once()
+    {
+        Guid id;
+        var tag = Guid.NewGuid().ToString("N")[..8];
+        var csv = "code,name\n" + string.Join("\n", Enumerable.Range(1, 150).Select(i => $"MIG-RACE-{tag}-{i},Course {i}"));
+        await using (var s = Scope())
+        {
+            var (imports, _) = Svcs(s.ServiceProvider);
+            id = (await imports.CreateAsync(new CreateImportRequest("customers", "csv", csv, "race.csv", "upsert"))).Value!.Id;
+            (await imports.ProfileAsync(id)).IsSuccess.Should().BeTrue();
+            (await imports.SetMappingAsync(id, new SetMappingRequest(Map(("code", "code", "trim"), ("name", "name", "trim")), null))).IsSuccess.Should().BeTrue();
+            (await imports.ValidateAsync(id)).IsSuccess.Should().BeTrue();
+            (await imports.SimulateAsync(id)).IsSuccess.Should().BeTrue();
+        }
+
+        var start = new TaskCompletionSource();
+        async Task<bool> Execute()
+        {
+            await start.Task;
+            await using var s = Scope();
+            var r = await Svcs(s.ServiceProvider).Imports.ExecuteAsync(id);
+            if (!r.IsSuccess) r.Error!.Code.Should().Be("migration.state");
+            return r.IsSuccess;
+        }
+        var runs = new[] { Execute(), Execute() };
+        start.SetResult();
+        (await Task.WhenAll(runs)).Count(ok => ok).Should().Be(1, "un import ne s'exécute qu'une fois");
+        (await Scalar<long>($"SELECT COUNT(*) FROM nexora.customer WHERE customer_number LIKE 'MIG-RACE-{tag}-%'")).Should().Be(150);
+    }
+
     // ---- §6 : le CSV est parsé, profilé, les types détectés ----
     [Fact]
     public async Task Csv_is_parsed_profiled_and_types_detected()

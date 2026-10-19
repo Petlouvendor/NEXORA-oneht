@@ -211,6 +211,7 @@ public sealed class SqlDeliveryService(
         var stop = await db.Database.SqlQuery<StopRow>(Stops(null, stopId, null)).FirstOrDefaultAsync(ct);
         if (stop is null) return Error.NotFound("delivery_stop.not_found", "Arrêt introuvable.");
         if (Closed.Contains(stop.Status)) return Error.Conflict("delivery_stop.already_closed", "Arrêt déjà livré.");
+        if (NotTheDriver(stop) is { } notDriver) return notDriver;
         if (s == "en_route" && stop.Status == "arrived") return Error.Conflict("delivery_stop.order", "Déjà sur place.");
         if (s == stop.Status) return Result.Success(ToStopDto(stop));
 
@@ -230,6 +231,16 @@ public sealed class SqlDeliveryService(
         return await GetStopDtoAsync(stopId, ct);
     }
 
+    /// <summary>
+    /// Un arrêt d'une tournée attribuée ne se fait avancer ou clôturer que par son livreur (audit 2026-10 éd. 2 : tout
+    /// détenteur de field_ops.manage clôturait la livraison d'un autre — preuve et encaissement compris). Une tournée
+    /// sans livreur reste ouverte à l'équipe ; pour reprendre la tournée d'un autre, on la réattribue.
+    /// </summary>
+    private Error? NotTheDriver(StopRow stop)
+        => stop.DriverUserId is { } driver && driver != tenant.UserId
+            ? Error.Forbidden("delivery_stop.not_driver", "Seul le livreur de la tournée met à jour cet arrêt.")
+            : null;
+
     /// <summary>La tournée passe « en cours » au premier mouvement d'un de ses arrêts (elle restait « planifiée »).</summary>
     private Task StartRouteAsync(Guid routeId, CancellationToken ct) => db.Database.ExecuteSqlAsync($"""
         UPDATE nexora.delivery_route SET status = 'in_progress', started_at = COALESCE(started_at, now()), updated_at = now()
@@ -241,6 +252,7 @@ public sealed class SqlDeliveryService(
         var stop = await db.Database.SqlQuery<StopRow>(Stops(null, stopId, null)).FirstOrDefaultAsync(ct);
         if (stop is null) return Error.NotFound("delivery_stop.not_found", "Arrêt introuvable.");
         if (Closed.Contains(stop.Status)) return Error.Conflict("delivery_stop.already_closed", "Arrêt déjà livré.");
+        if (NotTheDriver(stop) is { } notDriver) return notDriver;
 
         if (request.SignatureAttachmentId is null && request.PhotoAttachmentId is null)
             return Error.Validation("delivery_stop.proof", "Preuve de livraison requise : signature du client ou photo.");
@@ -308,6 +320,7 @@ public sealed class SqlDeliveryService(
         var stop = await db.Database.SqlQuery<StopRow>(Stops(null, stopId, null)).FirstOrDefaultAsync(ct);
         if (stop is null) return Error.NotFound("delivery_stop.not_found", "Arrêt introuvable.");
         if (Closed.Contains(stop.Status)) return Error.Conflict("delivery_stop.already_closed", "Arrêt déjà livré.");
+        if (NotTheDriver(stop) is { } notDriver) return notDriver;
 
         await uow.ExecuteInTransactionAsync(async token =>
         {

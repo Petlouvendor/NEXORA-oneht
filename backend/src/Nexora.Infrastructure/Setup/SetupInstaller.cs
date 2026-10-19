@@ -295,11 +295,15 @@ public sealed partial class SetupInstaller(
 
         // ---- Entreprise + référentiel prêt à vendre (V072) ----------------------------------
         var companyId = Guid.NewGuid();
-        var year = DateTime.UtcNow.Year;
         await ExecAsync(conn, tx, """
             INSERT INTO nexora.company (id, name, main_activity_type, default_currency_id, complexity_level, deployment_mode)
             VALUES (@p0, @p1, @p2, @p3, 'STANDARD', 'HYBRID')
             """, ct, companyId, company.Name.Trim(), activity, currencyId.Value);
+        // Année du premier exercice dans le fuseau de l'entreprise (audit 2026-10 éd. 2 : en UTC, une installation faite
+        // le 31 décembre au soir à Port-au-Prince ouvrait l'exercice de l'année suivante).
+        var zoneId = await ScalarAsync<string>(conn, tx, "SELECT timezone FROM nexora.company WHERE id = @p0", ct, companyId);
+        var zone = TimeZoneInfo.TryFindSystemTimeZoneById(zoneId ?? "", out var found) ? found : TimeZoneInfo.Utc;
+        var year = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, zone).Year;
         await ExecAsync(conn, tx, "INSERT INTO nexora.company_activity (company_id, activity_type, is_primary) VALUES (@p0, @p1, true)",
             ct, companyId, activity);
         await ExecAsync(conn, tx, """
@@ -404,7 +408,12 @@ public sealed partial class SetupInstaller(
         {
             ["Database"] = new Dictionary<string, string> { ["ConnectionString"] = runtime.ConnectionString },
             ["Jwt"] = new Dictionary<string, string> { ["SigningKey"] = Convert.ToBase64String(RandomNumberGenerator.GetBytes(48)) },
-            ["Security"] = new Dictionary<string, string> { ["MfaEncryptionKey"] = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)) },
+            // Deux clés distinctes : secrets MFA d'un côté, données personnelles (paie, banque) de l'autre (audit 2026-10 éd. 2).
+            ["Security"] = new Dictionary<string, string>
+            {
+                ["MfaEncryptionKey"] = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)),
+                ["DataEncryptionKey"] = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)),
+            },
             ["Install"] = new Dictionary<string, string>
             {
                 ["CompletedAt"] = DateTimeOffset.UtcNow.ToString("O"),

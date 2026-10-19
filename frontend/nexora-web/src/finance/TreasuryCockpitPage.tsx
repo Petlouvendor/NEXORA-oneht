@@ -214,11 +214,17 @@ function OpenSuspenseDialog({ currency, onClose, onDone }: { currency: string; o
 function ResolveSuspenseDialog({ item, onClose, onDone }: { item: SuspenseItem; onClose: () => void; onDone: () => void }) {
   const [outcome, setOutcome] = useState("resolved");
   const [note, setNote] = useState("");
+  const [entryNumber, setEntryNumber] = useState("");
   const { busy, error, fieldErrors, submit, fail } = useSubmit();
 
   async function save() {
     if (note.trim().length < 3) return fail("note", "Expliquez comment le suspens est réglé.");
-    const ok = await submit(async () => { await resolveSuspense(item.id, outcome, note.trim()); return true; });
+    if (outcome === "written_off" && !entryNumber.trim())
+      return fail("entry", "Indiquez le numéro de l'écriture qui constate la perte ou le profit.");
+    const ok = await submit(async () => {
+      await resolveSuspense(item.id, outcome, note.trim(), outcome === "written_off" ? entryNumber.trim() : undefined);
+      return true;
+    });
     if (ok) onDone();
   }
 
@@ -235,6 +241,12 @@ function ResolveSuspenseDialog({ item, onClose, onDone }: { item: SuspenseItem; 
             <option value="cancelled">Annulé (ouvert par erreur)</option>
           </Select>
         </Field>
+        {outcome === "written_off" && (
+          <Field label="N° de l'écriture de perte ou profit" required error={fieldErrors.entry}
+                 hint="Saisissez d'abord l'écriture en Comptabilité (opération diverse), puis son numéro ici.">
+            <TextInput value={entryNumber} maxLength={40} placeholder="2026-000123" onChange={(e) => setEntryNumber(e.target.value)} />
+          </Field>
+        )}
         <Field label="Note de résolution" required error={fieldErrors.note}>
           <textarea className="nx-textarea" rows={3} value={note} onChange={(e) => setNote(e.target.value)} />
         </Field>

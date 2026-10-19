@@ -84,7 +84,8 @@ exécutés par les tests ou parcourus), dont l'essentiel des écrans frontend et
 
 Après l'audit, les corrections (lots 0 à 5) ont appliqué V103, V104 et V105 à `nexora`, `nexora_recette` et `nexora_api_it`,
 et deux écritures correctives à `nexora_recette`, après sauvegarde (`C:\Users\Rener\nexora-sauvegardes\2026-10-17-avant-V103`
-`…-avant-V104` et `…-avant-V105`). Détail : `docs/corrections-audit-2026-10-ed2.md`.
+`…-avant-V104` et `…-avant-V105`). Le lot 7 (constats faibles) a appliqué V106 à V108 de la même façon
+(`2026-10-18-avant-V106`, `…-avant-V107`, `2026-10-19-avant-V108`). Détail : `docs/corrections-audit-2026-10-ed2.md`.
 
 ## Décisions du propriétaire (2026-10-17) et questions restantes
 

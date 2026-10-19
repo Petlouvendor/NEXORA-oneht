@@ -68,4 +68,18 @@ public sealed class SchedulerTests(FinanceEngineFixture fx)
         var second = await runner.RunOnceAsync();
         second.AutomationsRun.Should().Be(0);
     }
+
+    // ---- Audit 2026-10 éd. 2 : le suivi des entités ne passe pas d'une entreprise à la suivante ----
+    [Fact]
+    public async Task Each_company_starts_with_an_empty_change_tracker()
+    {
+        await using var s = Scope();
+        var db = s.ServiceProvider.GetRequiredService<NexoraDbContext>();
+        await db.Companies.FirstAsync();   // une entité suivie, comme le reste d'un traitement interrompu
+        db.ChangeTracker.Entries().Should().NotBeEmpty();
+
+        await s.ServiceProvider.GetRequiredService<SchedulerRunner>().RunSingleJobAsync("lots.sweep_expired", null);
+
+        db.ChangeTracker.Entries().Should().BeEmpty("chaque entreprise repart d'un contexte sans entité suivie");
+    }
 }

@@ -38,8 +38,37 @@ public sealed class PayrollTests(FinanceEngineFixture fx)
         tc.SetScope([company ?? Company], [], company ?? Company);
     }
 
+    private static readonly SemaphoreSlim FundingLock = new(1, 1);
+    private static readonly HashSet<string> Funded = [];
+
+    /// <summary>
+    /// Les paiements en espèces contrôlent le solde de la caisse (audit 2026-10 éd. 2). La caisse de démonstration est
+    /// alimentée une fois par base de test, comme en exploitation : banque ouverte puis transfert comptabilisé.
+    /// </summary>
+    private async Task FundCashAsync()
+    {
+        await FundingLock.WaitAsync();
+        try
+        {
+            if (!Funded.Add(fx.TestConnectionString)) return;
+            await using var s = Scope();
+            As(s.ServiceProvider, Direction);
+            var tm = s.ServiceProvider.GetRequiredService<Nexora.Application.Finance.ITreasuryManagementService>();
+            var bank = (await tm.CreateAccountAsync(new Nexora.Contracts.Finance.SaveFinancialAccountRequest(
+                $"Fonds paie {Guid.NewGuid():N}"[..20], "bank", "HTG", null, null))).Value;
+            Ok(await tm.RecordOpeningBalanceAsync(bank, new Nexora.Contracts.Finance.TreasuryOpeningBalanceRequest(Guid.NewGuid(), 5_000_000m)));
+            Ok(await tm.TransferAsync(new Nexora.Contracts.Finance.TreasuryTransferRequest(Guid.NewGuid(), bank, CashAccount, 5_000_000m,
+                "Fonds de paie des tests")));
+        }
+        finally
+        {
+            FundingLock.Release();
+        }
+    }
+
     private async Task<T> Act<T>(Guid user, Func<IServiceProvider, Task<T>> action, Guid? company = null)
     {
+        await FundCashAsync();
         await using var s = Scope();
         As(s.ServiceProvider, user, company);
         return await action(s.ServiceProvider);
@@ -378,7 +407,16 @@ public sealed class PayrollTests(FinanceEngineFixture fx)
         var octRun = await Calculate(hr, oct.Id);
         ItemOf(octRun, e.Id).AdvanceRecovery.Should().Be(10_000m);
         await ApproveCycle(octRun.Id, hr, chief, Direction);
+        // Paies impayées : net, déjà payé, reste à payer (audit 2026-10 éd. 2 : les paiements n'étaient pas déduits).
+        var unpaid = Ok(await Act(Direction, sp => sp.GetRequiredService<IPayrollReports>().ReportAsync("unpaid",
+            new PayrollReportQuery(null, null, null, null, null))));
+        unpaid.Columns.Select(c => c.Key).Should().ContainInOrder("net", "paid", "remaining");
+        var line = unpaid.Rows.Single(r => Equals(r[0], octRun.RunNumber));
+        line[5].Should().Be(0m);
+        line[6].Should().Be(ItemOf(octRun, e.Id).Net);
         (await Pay(chief, octRun.Id, Guid.NewGuid())).Paid.Should().Be(1);
+        Ok(await Act(Direction, sp => sp.GetRequiredService<IPayrollReports>().ReportAsync("unpaid",
+            new PayrollReportQuery(null, null, null, null, null)))).Rows.Should().NotContain(r => Equals(r[0], octRun.RunNumber));
         var settled = Ok(await Act(hr, sp => advances(sp).HistoryAsync(advance.Id)));
         settled.Advance.Status.Should().Be("settled");
         settled.Advance.Balance.Should().Be(0m);
@@ -592,6 +630,12 @@ public sealed class PayrollTests(FinanceEngineFixture fx)
         var visible = await Act(managerUser, sp => sp.GetRequiredService<IEmployeeService>().ListAsync(null, null, null));
         visible.Select(x => x.Id).Should().Contain(teamMember.Id).And.NotContain(outsider.Id);
         visible.Single(x => x.Id == teamMember.Id).CurrentSalary.Should().BeNull("le Manager ne voit pas le salaire de son équipe (§5)");
+        // La recherche globale applique le même périmètre (audit 2026-10 éd. 2 : elle cherchait dans toute l'entreprise).
+        async Task<List<Guid>> Found(string name) => (await Act(managerUser, sp => sp
+                .GetRequiredService<Nexora.Application.Experience.IGlobalSearchService>().SearchAsync(name, 10)))
+            .Groups.Where(g => g.Kind == "employee").SelectMany(g => g.Hits).Select(h => h.Id).ToList();
+        (await Found(teamMember.LastName)).Should().Contain(teamMember.Id);
+        (await Found(outsider.LastName)).Should().NotContain(outsider.Id);
         var leave = Ok(await Act(hr, sp => sp.GetRequiredService<IHrTimeService>().RequestLeaveAsync(
             new RequestLeaveRequest(outsider.Id, "annual", new DateOnly(2026, 8, 3), new DateOnly(2026, 8, 4), null, null, null))));
         (await Act(managerUser, sp => sp.GetRequiredService<IHrTimeService>().DecideLeaveAsync(leave.Id, true, new DecisionRequest(null))))
@@ -615,5 +659,68 @@ public sealed class PayrollTests(FinanceEngineFixture fx)
             "les approbateurs sont identifiés (§22)");
         (await Scalar<long>($"SELECT count(*) FROM nexora.audit_log WHERE entity_type = 'payroll_run' AND entity_id = '{run.Id}'"))
             .Should().BeGreaterThanOrEqualTo(4);
+    }
+
+    // ---- Audit 2026-10 éd. 2 : date d'entrée, document remplacé, solde de caisse, date de versement ------------------
+    [Fact]
+    public async Task Hire_date_documents_cash_balance_and_payment_date_are_controlled()
+    {
+        var hr = await UserWithRole("hr_manager");
+        var chief = await UserWithRole("chief_accountant");
+        var apr1 = new DateOnly(2026, 4, 1);
+        var e = await Hire(hr, "Contrôles", apr1, Contract(apr1, null, 60_000m, "monthly", "permanent"));
+
+        // La date d'entrée ne passe pas après le début du contrat.
+        (await Act(hr, sp => sp.GetRequiredService<IEmployeeService>().UpdateAsync(e.Id, new SaveEmployeeRequest(
+            EmployeeNumber: null, FirstName: e.FirstName, LastName: e.LastName, BirthDate: e.BirthDate, Phone: e.Phone, Email: null,
+            Address: null, City: e.City, EmergencyContactName: null, EmergencyContactPhone: null, JobTitle: e.JobTitle, DepartmentId: null,
+            ManagerEmployeeId: null, EstablishmentId: null, HireDate: apr1.AddDays(10), PaymentMethod: "cash", BankName: null,
+            BankAccount: null, MobileMoney: null, TaxId: null, SocialId: null, TaxParameters: null, Notes: null))))
+            .Error!.Code.Should().Be("hr.hire_date");
+
+        // Le document remplacé appartient au même dossier.
+        (await Act(hr, sp => sp.GetRequiredService<IEmployeeService>().UploadDocumentAsync(e.Id, new UploadEmployeeDocumentRequest(
+            "contract", "Avenant", "avenant.txt", "text/plain", Convert.ToBase64String("Avenant"u8.ToArray()), SupersedesId: Guid.NewGuid()))))
+            .Error!.Code.Should().Be("hr.document_supersedes");
+
+        // Une caisse vide ne verse pas une avance ; une date future est refusée.
+        Guid emptyCash;
+        await using (var s = Scope())
+        {
+            As(s.ServiceProvider, Direction);
+            emptyCash = (await s.ServiceProvider.GetRequiredService<Nexora.Application.Finance.ITreasuryManagementService>().CreateAccountAsync(
+                new Nexora.Contracts.Finance.SaveFinancialAccountRequest($"Caisse vide {Guid.NewGuid():N}"[..20], "cash", "HTG", null, null))).Value;
+        }
+        var advances = (IServiceProvider sp) => sp.GetRequiredService<ISalaryAdvanceService>();
+        var advance = Ok(await Act(hr, sp => advances(sp).RequestAsync(e.Id, new RequestAdvanceRequest("salary_advance", 4_000m, "Loyer", "next_payroll", null, null, null, null))));
+        Ok(await Act(Direction, sp => advances(sp).ApproveAsync(advance.Id, new ApproveAdvanceRequest(null, null, null, null, null, null))));
+        (await Act(chief, sp => advances(sp).PayAsync(advance.Id, new PayAdvanceRequest(emptyCash, "cash", null, null, null, Guid.NewGuid()))))
+            .Error!.Code.Should().Be("payroll.insufficient_balance");
+        (await Act(chief, sp => advances(sp).PayAsync(advance.Id, new PayAdvanceRequest(CashAccount, "cash", null, null,
+                DateOnly.FromDateTime(DateTime.UtcNow).AddDays(5), Guid.NewGuid()))))
+            .Error!.Code.Should().Be("payroll.paid_on");
+        Ok(await Act(chief, sp => advances(sp).PayAsync(advance.Id, new PayAdvanceRequest(CashAccount, "cash", null, null, null, Guid.NewGuid()))));
+    }
+
+    // ---- Audit 2026-10 éd. 2 : deux demandes d'absence simultanées sur les mêmes dates — une seule passe ----------
+    [Fact]
+    public async Task Two_simultaneous_leave_requests_on_the_same_dates_record_one()
+    {
+        var hr = await UserWithRole("hr_manager");
+        var may1 = new DateOnly(2026, 5, 1);
+        var e = await Hire(hr, "Absences", may1, Contract(may1, null, 40_000m, "monthly", "permanent"));
+        var start = new TaskCompletionSource();
+        async Task<bool> Request()
+        {
+            await start.Task;
+            var r = await Act(hr, sp => sp.GetRequiredService<IHrTimeService>().RequestLeaveAsync(
+                new RequestLeaveRequest(e.Id, "annual", new DateOnly(2026, 5, 18), new DateOnly(2026, 5, 20), null, null, null)));
+            if (!r.IsSuccess) r.Error!.Code.Should().Be("hr.leave_overlap");
+            return r.IsSuccess;
+        }
+        var requests = Enumerable.Range(0, 4).Select(_ => Request()).ToList();
+        start.SetResult();
+        (await Task.WhenAll(requests)).Count(ok => ok).Should().Be(1);
+        (await Scalar<long>($"SELECT COUNT(*) FROM nexora.leave_record WHERE employee_id = '{e.Id}'")).Should().Be(1);
     }
 }

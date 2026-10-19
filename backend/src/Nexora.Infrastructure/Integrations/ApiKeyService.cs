@@ -98,14 +98,38 @@ public sealed class SqlApiKeyService(
         if (existing.RevokedAt is not null) return Error.Conflict("api_key.revoked", "Clé déjà révoquée.");
 
         var scopes = JsonSerializer.Deserialize<string[]>(existing.Scopes) ?? [];
+
+        // La nouvelle clé ne recopie que des droits encore détenus (audit 2026-10 éd. 2) : le propriétaire a pu perdre
+        // une permission, ou l'application son installation, depuis l'émission.
+        var ownerProfile = await permissions.LoadProfileAsync(existing.OwnerUserId, ct);
+        var stillOwned = ownerProfile.PermissionsFor(Company).ToHashSet(StringComparer.Ordinal);
+        var lost = scopes.Where(s => !stillOwned.Contains(s)).ToArray();
+        if (lost.Length > 0)
+            return Error.Forbidden("api_key.scope_excess",
+                $"Le propriétaire de la clé ne détient plus : {string.Join(", ", lost)}. Créez une nouvelle clé.");
+        if (existing.AppInstallationId is { } installationId)
+        {
+            var granted = await db.Database.SqlQuery<string>($"""
+                SELECT granted_scopes::text AS "Value" FROM nexora.app_installation
+                WHERE id = {installationId} AND company_id = {Company} AND status = 'installed'
+                """).FirstOrDefaultAsync(ct);
+            if (granted is null) return Error.NotFound("api_key.app_installation_not_found", "Installation d'application introuvable ou inactive.");
+            var grantedSet = JsonSerializer.Deserialize<HashSet<string>>(granted) ?? [];
+            if (scopes.Any(s => !grantedSet.Contains(s)))
+                return Error.Forbidden("api_key.scope_excess_app", "Le périmètre accordé à l'application a été réduit. Créez une nouvelle clé.");
+        }
+
         var (prefix, secret) = NewSecret(existing.Environment);
         var newId = Guid.NewGuid();
 
-        await uow.ExecuteInTransactionAsync(async token =>
+        var rotated = await uow.ExecuteInTransactionAsync(async token =>
         {
-            await db.Database.ExecuteSqlAsync($"""
-                UPDATE nexora.api_key SET revoked_at = now(), revoked_by = {CurrentUser}, updated_at = now() WHERE id = {id}
+            // Une seule rotation l'emporte : deux rotations simultanées ne créent pas deux clés actives.
+            var revoked = await db.Database.ExecuteSqlAsync($"""
+                UPDATE nexora.api_key SET revoked_at = now(), revoked_by = {CurrentUser}, updated_at = now()
+                WHERE id = {id} AND revoked_at IS NULL
                 """, token);
+            if (revoked == 0) return false;
             await db.Database.ExecuteSqlAsync($"""
                 INSERT INTO nexora.api_key
                     (id, company_id, name, key_prefix, key_hash, environment, scopes, rate_limit_per_minute,
@@ -114,8 +138,9 @@ public sealed class SqlApiKeyService(
                         {JsonSerializer.Serialize(scopes)}::jsonb, {existing.RateLimitPerMinute}, {existing.OwnerUserId},
                         {existing.ExpiresAt}, {id}, {CurrentUser}, {existing.AppInstallationId})
                 """, token);
-            return 0;
+            return true;
         }, ct);
+        if (!rotated) return Error.Conflict("api_key.revoked", "Clé déjà révoquée.");
 
         return Result.Success(new ApiKeyCreatedDto(await GetAsync(newId, ct), secret));
     }

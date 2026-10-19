@@ -69,9 +69,9 @@ export function CommandPalette() {
   function run(item: PaletteItem | undefined, to?: string) {
     if (!item) return;
     setOpen(false);
-    if (to) { navigate(to); return; }
+    if (to) { void navigate(to); return; }
     const e = item.effect;
-    if (e.type === "route") navigate(e.to);
+    if (e.type === "route") void navigate(e.to);
     else if (e.type === "ask") openNexoraAi(e.question);
     else toggleTheme();
   }

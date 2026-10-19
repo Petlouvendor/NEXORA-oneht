@@ -25,6 +25,12 @@ public sealed class ExceptionHandlingMiddleware(
         {
             await WriteProblem(context, dex.Error);
         }
+        catch (Exception ex) when (!context.Response.HasStarted && DatabaseRefusal(ex) is { } refusal)
+        {
+            // Refus de la base (déclencheur métier, contrainte, conflit de concurrence) levé hors d'une unité de travail
+            // (audit 2026-10 éd. 2) : rendu comme un refus explicite plutôt qu'une « erreur inattendue » 500.
+            await WriteProblem(context, refusal);
+        }
         catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
         {
             // Client parti : rien à répondre, ce n'est pas une panne du serveur.
@@ -47,6 +53,26 @@ public sealed class ExceptionHandlingMiddleware(
             context.Response.StatusCode = problem.Status.Value;
             await context.Response.WriteAsJsonAsync(problem);
         }
+    }
+
+    /// <summary>Erreur métier pour une <see cref="Npgsql.PostgresException"/> attendue ; <c>null</c> pour une vraie panne.</summary>
+    public static Error? DatabaseRefusal(Exception ex)
+    {
+        var pg = ex as Npgsql.PostgresException ?? ex.InnerException as Npgsql.PostgresException;
+        if (pg is null) return null;
+        var message = Nexora.Infrastructure.Persistence.DatabaseErrors.ClientMessage(pg);
+        if (Nexora.Infrastructure.Persistence.DatabaseErrors.IsBusinessRefusal(pg)) return Error.Conflict("database.refused", message);
+        return pg.SqlState switch
+        {
+            Npgsql.PostgresErrorCodes.UniqueViolation or Npgsql.PostgresErrorCodes.ForeignKeyViolation
+                or Npgsql.PostgresErrorCodes.ExclusionViolation => Error.Conflict("database.conflict", message),
+            Npgsql.PostgresErrorCodes.CheckViolation or Npgsql.PostgresErrorCodes.NotNullViolation
+                => Error.Validation("database.invalid", message),
+            Npgsql.PostgresErrorCodes.SerializationFailure or Npgsql.PostgresErrorCodes.DeadlockDetected
+                or Npgsql.PostgresErrorCodes.LockNotAvailable => Error.Conflict("database.retry", message),
+            Npgsql.PostgresErrorCodes.InsufficientPrivilege => Error.Forbidden("database.forbidden", message),
+            _ => null,
+        };
     }
 
     /// <summary>Clé de <see cref="HttpContext.Items"/> portant le code d'erreur, repris par le journal des requêtes.</summary>

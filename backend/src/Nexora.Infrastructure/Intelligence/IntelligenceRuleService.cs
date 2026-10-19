@@ -40,12 +40,35 @@ public sealed class SqlIntelligenceRuleService(NexoraDbContext db, ITenantContex
         return rows.Select(ToDto).ToList();
     }
 
+    /// <summary>
+    /// Seuils lisibles par le moteur (audit 2026-10 éd. 2) : un seuil mal formé (texte, nombre décimal pour un nombre de
+    /// jours) faisait échouer toute la génération de recommandations de l'entreprise. Objet de nombres positifs ; les
+    /// durées (« …Days ») et les nombres de commandes ou de lignes sont des entiers.
+    /// </summary>
+    private static readonly HashSet<string> IntegerKeys = ["topN", "minPriorOrders", "minOrdersEachSide"];
+
+    internal static string? ThresholdProblem(JsonElement threshold)
+    {
+        if (threshold.ValueKind != JsonValueKind.Object) return "Le seuil doit être un objet JSON (ex. {\"safetyDays\": 7}).";
+        foreach (var p in threshold.EnumerateObject())
+        {
+            if (p.Value.ValueKind != JsonValueKind.Number || !p.Value.TryGetDecimal(out var v) || v < 0m || v > 1_000_000_000m)
+                return $"« {p.Name} » : nombre positif attendu.";
+            var integer = p.Name.EndsWith("Days", StringComparison.Ordinal) || IntegerKeys.Contains(p.Name);
+            if (integer && (!p.Value.TryGetInt32(out var n) || n > 3650))
+                return $"« {p.Name} » : nombre entier attendu (3 650 au plus).";
+        }
+        return null;
+    }
+
     public async Task<Result<IntelligenceRuleDto>> SaveAsync(SaveIntelligenceRuleRequest request, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(request.Key)) return Error.Validation("intelligence_rule.key", "Clé requise.");
         if (string.IsNullOrWhiteSpace(request.Label)) return Error.Validation("intelligence_rule.label", "Libellé requis.");
 
         var key = request.Key.Trim().ToLowerInvariant();
+        if (ThresholdProblem(request.Threshold) is { } problem) return Error.Validation("intelligence_rule.threshold", problem);
+        if (request.PeriodDays is < 1 or > 3650) return Error.Validation("intelligence_rule.period", "Période entre 1 et 3 650 jours.");
         var thresholdJson = request.Threshold.GetRawText();
 
         await db.Database.ExecuteSqlAsync($"""

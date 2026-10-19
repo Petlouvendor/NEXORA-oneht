@@ -31,8 +31,8 @@ public sealed class CatalogController(
     [RequirePermission(Permissions.Catalog.View)]
     public async Task<IActionResult> ListProducts(
         [FromQuery] string? q, [FromQuery] Guid? categoryId, [FromQuery] string? status,
-        [FromQuery] int limit = 100, CancellationToken ct = default)
-        => Ok(await queries.ListProductsAsync(q, categoryId, status, limit, ct));
+        [FromQuery] int limit = 100, [FromQuery] int offset = 0, CancellationToken ct = default)
+        => Ok(await queries.ListProductsAsync(q, categoryId, status, limit, ct, offset));
 
     [HttpGet("products/{id:guid}")]
     [RequirePermission(Permissions.Catalog.View)]

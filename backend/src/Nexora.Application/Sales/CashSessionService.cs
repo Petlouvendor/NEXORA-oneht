@@ -179,7 +179,10 @@ public sealed class CashSessionService(
         var currency = await store.CurrencyCodeAsync(register.CurrencyId, ct);
         return await uow.ExecuteInTransactionAsync<Result<SessionSummary>>(async token =>
         {
-            await store.FinalizeCloseAsync(session.Id, expected, counted, notes, validatedBy, validationNote, token);
+            // Deux clôtures simultanées (audit 2026-10 éd. 2) : la seconde ne sort plus le tiroir ni ne comptabilise
+            // l'écart une seconde fois.
+            if (!await store.FinalizeCloseAsync(session.Id, expected, counted, notes, validatedBy, validationNote, token))
+                return Error.Conflict("pos.session_already_closed", "Cette session vient d'être clôturée par une autre demande.");
             // Sortie du tiroir à la clôture. Attendu nul (sans fond de caisse ni vente en espèces) :
             // rien ne sort — et un mouvement de caisse n'est jamais nul (cash_movement_amount_chk).
             if (expected != 0m)

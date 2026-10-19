@@ -233,6 +233,9 @@ public sealed class SqlCatalogReferenceService(
         catch (FormatException) { return Error.Validation("catalog.image_content", "Contenu d'image invalide."); }
         if (bytes.Length == 0 || bytes.Length > MaxImageBytes)
             return Error.Validation("catalog.image_size", "L'image doit peser 2 Mo au plus.");
+        // Le contenu doit être l'image annoncée (audit 2026-10 éd. 2) : le type déclaré n'était pas vérifié.
+        if (Nexora.Infrastructure.Common.ImageSignature.Detect(bytes) is not { } detected || detected != type)
+            return Error.Validation("catalog.image_content", "Le fichier n'est pas une image PNG, JPEG ou WebP conforme à son type.");
 
         var exists = await db.Database.SqlQuery<bool>($"""
             SELECT EXISTS(SELECT 1 FROM nexora.product WHERE id = {productId} AND company_id = {Company}) AS "Value"

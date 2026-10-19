@@ -50,19 +50,19 @@ public static class KpiCatalog
 
     public static readonly IReadOnlyList<KpiDefinition> All =
     [
-        new(Revenue, "Chiffre d'affaires", "HTG", "sale (completed)", "Σ (subtotal − discount_total) − retours nets", "actual"),
+        new(Revenue, "Chiffre d'affaires", "HTG", "sale (completed)", "Σ (subtotal − discount_total) − retours nets, convertis en devise de l'entreprise au taux de la date de vente", "actual"),
         new(GrossMargin, "Marge brute", "HTG", "sale_line", "CA − Σ (unit_cost × quantité)", "actual"),
         new(MarginRate, "Taux de marge", "%", "dérivé", "marge brute / CA × 100", "actual"),
         new(Profit, "Bénéfice", "HTG", "dérivé", "marge brute − dépenses de la période", "actual"),
-        new(Expenses, "Dépenses", "HTG", "expense", "Σ amount (période, statut approuvé/payé)", "actual"),
-        new(Cash, "Trésorerie", "HTG", "financial_account", "Σ current_balance (comptes actifs caisse/banque/mobile)", "actual"),
-        new(OpenReceivables, "Créances ouvertes", "HTG", "customer_receivable", "Σ remaining_amount (OPEN/PARTIALLY_PAID/OVERDUE)", "actual"),
-        new(OpenPayables, "Dettes ouvertes", "HTG", "supplier_payable", "Σ remaining_amount (OPEN/PARTIALLY_PAID/OVERDUE)", "actual"),
+        new(Expenses, "Dépenses", "HTG", "expense", "Σ amount (période, statut approuvé/payé), converti en devise de l'entreprise au taux de la date de la dépense", "actual"),
+        new(Cash, "Trésorerie", "HTG", "financial_account", "Σ current_balance (comptes actifs caisse/banque/mobile), convertis en devise de l'entreprise au taux du jour", "actual"),
+        new(OpenReceivables, "Créances ouvertes", "HTG", "customer_receivable", "Σ remaining_amount (OPEN/PARTIALLY_PAID/OVERDUE), convertis en devise de l'entreprise au taux du jour", "actual"),
+        new(OpenPayables, "Dettes ouvertes", "HTG", "supplier_payable", "Σ remaining_amount (OPEN/PARTIALLY_PAID/OVERDUE), convertis en devise de l'entreprise au taux du jour", "actual"),
         new(StockValue, "Stock valorisé", "HTG", "stock_balance", "Σ quantity_on_hand × average_cost", "actual"),
         new(Transactions, "Nombre de ventes", "n", "sale (completed)", "count(*)", "actual"),
         new(AverageBasket, "Panier moyen", "HTG", "dérivé", "CA / nombre de ventes", "actual"),
         new(TodayRevenue, "Ventes du jour", "HTG", "sale", "CA where sold_at::date = current_date", "actual"),
-        new(CashInflows, "Encaissements", "HTG", "payment (inbound)", "Σ amount (période)", "actual"),
-        new(CashOutflows, "Décaissements", "HTG", "payment (outbound)", "Σ amount (période)", "actual"),
+        new(CashInflows, "Encaissements", "HTG", "payment (inbound)", "Σ amount (période), converti en devise de l'entreprise au taux de la date du paiement", "actual"),
+        new(CashOutflows, "Décaissements", "HTG", "payment (outbound)", "Σ amount (période), converti en devise de l'entreprise au taux de la date du paiement", "actual"),
     ];
 }

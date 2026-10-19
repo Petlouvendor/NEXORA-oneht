@@ -106,9 +106,10 @@ public sealed class CatalogQueries(NexoraDbContext db, ITenantContext tenant, IP
         string? CategoryName, string? BrandName, string? PrimaryBarcode, decimal? SalePrice, string? Currency);
 
     public async Task<IReadOnlyList<ProductListItemDto>> ListProductsAsync(
-        string? term, Guid? categoryId, string? status, int limit, CancellationToken ct = default)
+        string? term, Guid? categoryId, string? status, int limit, CancellationToken ct = default, int offset = 0)
     {
         limit = Math.Clamp(limit, 1, 500);
+        offset = Math.Max(0, offset);
         var like = string.IsNullOrWhiteSpace(term) ? null : "%" + term!.Trim().Replace("%", "") + "%";
 
         var rows = await db.Database.SqlQuery<ListRow>($"""
@@ -134,8 +135,8 @@ public sealed class CatalogQueries(NexoraDbContext db, ITenantContext tenant, IP
               AND ({like}::text IS NULL OR p.sku ILIKE {like} OR p.name ILIKE {like} OR COALESCE(p.short_name,'') ILIKE {like})
               AND ({categoryId}::uuid IS NULL OR p.category_id = {categoryId})
               AND ({status}::text IS NULL OR p.status = {status})
-            ORDER BY p.name
-            LIMIT {limit}
+            ORDER BY p.name, p.id
+            OFFSET {offset} LIMIT {limit}
             """).ToListAsync(ct);
 
         return rows.Select(r => new ProductListItemDto(
@@ -243,13 +244,6 @@ public sealed class CatalogQueries(NexoraDbContext db, ITenantContext tenant, IP
             SELECT id AS "Id", code AS "Code", name AS "Name", rate AS "Rate", type AS "Type",
                    is_inclusive AS "IsInclusive", status AS "Status"
             FROM nexora.tax WHERE company_id = {Company} ORDER BY rate, code
-            """).ToListAsync(ct);
-
-    public async Task<IReadOnlyList<PromotionDto>> ListPromotionsAsync(CancellationToken ct = default)
-        => await db.Database.SqlQuery<PromotionDto>($"""
-            SELECT id AS "Id", name AS "Name", promo_type AS "PromoType", value AS "Value",
-                   priority AS "Priority", starts_at AS "StartsAt", ends_at AS "EndsAt", status AS "Status"
-            FROM nexora.promotion WHERE company_id = {Company} ORDER BY status, priority DESC, name
             """).ToListAsync(ct);
 
     private static CatalogHitDto Map(HitRow r) => new(

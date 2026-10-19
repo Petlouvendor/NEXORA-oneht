@@ -156,16 +156,25 @@ public sealed class SqlBankReconciliationService(NexoraDbContext db, IUnitOfWork
             if (best is null) continue;
 
             used.Add(best.Id);
-            await db.Database.ExecuteSqlAsync($"""
-                UPDATE nexora.bank_statement_line SET matched_transaction_id = {best.Id}, status = 'matched', updated_at = now()
-                WHERE id = {line.Id}
-                """, ct);
+            try
+            {
+                await db.Database.ExecuteSqlAsync($"""
+                    UPDATE nexora.bank_statement_line SET matched_transaction_id = {best.Id}, status = 'matched', updated_at = now()
+                    WHERE id = {line.Id}
+                    """, ct);
+            }
+            catch (Npgsql.PostgresException pg) when (pg.SqlState == "23505" && pg.ConstraintName == MatchedTransactionUnique)
+            {
+                continue;   // rapproché entre-temps par un autre relevé : la ligne reste à rapprocher
+            }
             matched++;
         }
 
         await RefreshStatementStatusAsync(statementId, ct);
         return Result.Success(matched);
     }
+
+    private const string MatchedTransactionUnique = "bank_statement_line_matched_transaction_uk";
 
     private sealed record LineInfo(Guid StatementId, Guid FinancialAccountId, decimal Amount, string Status, string StatementStatus);
     private sealed record TxnInfo(Guid FinancialAccountId, decimal Amount, bool AlreadyMatched);
@@ -199,10 +208,21 @@ public sealed class SqlBankReconciliationService(NexoraDbContext db, IUnitOfWork
             return Error.Validation("integrations.match_amount", $"Montants différents : relevé {line.Amount}, mouvement {txn.Amount}.");
         if (txn.AlreadyMatched) return Error.Conflict("integrations.transaction_matched", "Ce mouvement est déjà rapproché d'une autre ligne.");
 
-        await db.Database.ExecuteSqlAsync($"""
-            UPDATE nexora.bank_statement_line SET matched_transaction_id = {request.TransactionId}, status = 'matched', updated_at = now()
-            WHERE id = {lineId}
-            """, ct);
+        // Un mouvement n'est rapproché qu'une fois, même par deux demandes simultanées : l'index unique en base tranche
+        // (audit 2026-10 éd. 2 : seul un contrôle préalable, sans verrou, l'empêchait).
+        int updated;
+        try
+        {
+            updated = await db.Database.ExecuteSqlAsync($"""
+                UPDATE nexora.bank_statement_line SET matched_transaction_id = {request.TransactionId}, status = 'matched', updated_at = now()
+                WHERE id = {lineId} AND status <> 'matched'
+                """, ct);
+        }
+        catch (Npgsql.PostgresException pg) when (pg.SqlState == "23505" && pg.ConstraintName == MatchedTransactionUnique)
+        {
+            return Error.Conflict("integrations.transaction_matched", "Ce mouvement est déjà rapproché d'une autre ligne.");
+        }
+        if (updated == 0) return Error.Conflict("integrations.line_matched", "Cette ligne est déjà rapprochée : défaites d'abord le rapprochement.");
         await RefreshStatementStatusAsync(line.StatementId, ct);
         await uow.SaveChangesAsync(ct);
         return Result.Success();

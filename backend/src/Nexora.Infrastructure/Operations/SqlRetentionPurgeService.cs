@@ -95,6 +95,16 @@ public sealed class SqlRetentionPurgeService(NexoraDbContext db, ITenantContext 
             """).FirstAsync(ct);
     }
 
+    private async Task<string> EffectiveActionAsync(string dataType, Guid? companyId, CancellationToken ct)
+    {
+        using var _ = tenant.BeginSystemScope();
+        return await db.Database.SqlQuery<string>($"""
+            SELECT action AS "Value" FROM nexora.retention_policy
+            WHERE data_type = {dataType} AND (company_id = {companyId} OR company_id IS NULL)
+            ORDER BY company_id NULLS LAST LIMIT 1
+            """).FirstAsync(ct);
+    }
+
     // ------------------------------------------------------------- Purge (§16-19)
 
     private sealed record RunRow(Guid Id, string DataType, Guid? CompanyId, bool DryRun, DateTimeOffset CutoffDate,
@@ -132,7 +142,11 @@ public sealed class SqlRetentionPurgeService(NexoraDbContext db, ITenantContext 
         var dataType = request.DataType.Trim().ToLowerInvariant();
         using var _ = tenant.BeginSystemScope();
 
-        var cutoff = request.CutoffDate ?? clock.UtcNow.AddDays(-await EffectiveDurationDaysAsync(dataType, request.CompanyId, ct));
+        // La date limite ne dépasse jamais celle de la politique (audit 2026-10 éd. 2) : une date future fournie par
+        // l'appelant purgeait tout ce qui était expiré ou archivé, en deçà de la durée de conservation.
+        var policyCutoff = clock.UtcNow.AddDays(-await EffectiveDurationDaysAsync(dataType, request.CompanyId, ct));
+        var cutoff = request.CutoffDate is { } asked && asked < policyCutoff ? asked : policyCutoff;
+        var action = await EffectiveActionAsync(dataType, request.CompanyId, ct);
         var companyId = request.CompanyId;
 
         var (objectCount, protectedCount) = dataType switch
@@ -174,12 +188,24 @@ public sealed class SqlRetentionPurgeService(NexoraDbContext db, ITenantContext 
         var status = "previewed";
         if (!dryRun)
         {
-            await ExecuteDeleteAsync(dataType, cutoff, companyId, ct);
+            // Politique « archive » (avant : ignorée, tout était supprimé) : les notifications sont archivées, jamais
+            // supprimées ; pour les autres données techniques, archiver n'a pas de sens — rien n'est supprimé.
+            if (action == "archive")
+            {
+                if (dataType == "resolved_notifications")
+                    await db.Database.ExecuteSqlAsync($"""
+                        UPDATE nexora.notification SET archived_at = now()
+                        WHERE archived_at IS NULL AND ((expires_at IS NOT NULL AND expires_at < {cutoff}) OR (read_at IS NOT NULL AND created_at < {cutoff}))
+                          AND ({companyId}::uuid IS NULL OR company_id = {companyId})
+                        """, ct);
+            }
+            else
+                await ExecuteDeleteAsync(dataType, cutoff, companyId, ct);
             status = "executed";
         }
 
         var id = Guid.NewGuid();
-        var journal = JsonSerializer.Serialize(new { dataType, cutoff, objectCount, protectedCount, companyId }, Web);
+        var journal = JsonSerializer.Serialize(new { dataType, cutoff, action, objectCount, protectedCount, companyId }, Web);
         Guid? executedBy = dryRun ? null : tenant.UserId;
         DateTimeOffset? executedAt = dryRun ? null : clock.UtcNow;
         await db.Database.ExecuteSqlAsync($"""

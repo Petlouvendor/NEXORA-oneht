@@ -285,13 +285,18 @@ public sealed class SqlCustomerAccountQueries(
                     $"Règle : encours ≥ {nearPercent.ToString(inv)} % de la limite (réglage credit.near_limit_percent).", data));
         }
 
+        // Montants convertis dans la devise du client, comme la décision de crédit (audit 2026-10 éd. 2 : les signaux
+        // additionnaient les montants de toutes les devises tels quels).
+        var currencyId = await db.Database.SqlQuery<Guid>($"""
+            SELECT default_currency_id AS "Value" FROM nexora.customer WHERE id = {customerId} AND company_id = {Company}
+            """).FirstAsync(ct);
         var t = await db.Database.SqlQuery<TrendRow>($"""
-            SELECT COALESCE((SELECT SUM(original_amount) FROM nexora.customer_receivable WHERE customer_id = {customerId}
+            SELECT COALESCE((SELECT SUM(nexora.convert_amount(original_amount, currency_id, {currencyId}, issue_date::timestamptz)) FROM nexora.customer_receivable WHERE customer_id = {customerId}
                              AND company_id = {Company} AND status <> 'CANCELLED' AND issue_date > {today.AddDays(-30)}), 0) AS "CreditLast30",
-                   COALESCE((SELECT SUM(original_amount) FROM nexora.customer_receivable WHERE customer_id = {customerId}
+                   COALESCE((SELECT SUM(nexora.convert_amount(original_amount, currency_id, {currencyId}, issue_date::timestamptz)) FROM nexora.customer_receivable WHERE customer_id = {customerId}
                              AND company_id = {Company} AND status <> 'CANCELLED'
                              AND issue_date <= {today.AddDays(-30)} AND issue_date > {today.AddDays(-120)}), 0) AS "CreditPrev90",
-                   COALESCE((SELECT SUM(remaining_amount) FROM nexora.customer_receivable WHERE customer_id = {customerId}
+                   COALESCE((SELECT SUM(nexora.convert_amount(remaining_amount, currency_id, {currencyId})) FROM nexora.customer_receivable WHERE customer_id = {customerId}
                              AND company_id = {Company} AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE','IN_DISPUTE')
                              AND due_date BETWEEN {today} AND {today.AddDays(7)}), 0) AS "DueSoonAmount",
                    COALESCE((SELECT COUNT(*) FROM nexora.customer_receivable WHERE customer_id = {customerId}
@@ -299,9 +304,9 @@ public sealed class SqlCustomerAccountQueries(
                              AND due_date BETWEEN {today} AND {today.AddDays(7)}), 0)::int AS "DueSoonCount",
                    COALESCE((SELECT COUNT(*) FROM nexora.payment WHERE customer_id = {customerId} AND company_id = {Company}
                              AND status = 'void' AND voided_at >= now() - interval '90 days'), 0)::int AS "VoidedPayments90",
-                   COALESCE((SELECT SUM(total) FROM nexora.sale WHERE customer_id = {customerId} AND company_id = {Company}
+                   COALESCE((SELECT SUM(nexora.convert_amount(total, currency_id, {currencyId}, sold_at)) FROM nexora.sale WHERE customer_id = {customerId} AND company_id = {Company}
                              AND status IN ('completed','partially_refunded','refunded') AND sold_at >= now() - interval '90 days'), 0) AS "PurchasesLast90",
-                   COALESCE((SELECT SUM(total) FROM nexora.sale WHERE customer_id = {customerId} AND company_id = {Company}
+                   COALESCE((SELECT SUM(nexora.convert_amount(total, currency_id, {currencyId}, sold_at)) FROM nexora.sale WHERE customer_id = {customerId} AND company_id = {Company}
                              AND status IN ('completed','partially_refunded','refunded')
                              AND sold_at < now() - interval '90 days' AND sold_at >= now() - interval '180 days'), 0) AS "PurchasesPrev90"
             """).FirstAsync(ct);

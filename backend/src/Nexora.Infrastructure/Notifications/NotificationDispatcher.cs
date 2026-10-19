@@ -149,7 +149,11 @@ public sealed class NotificationDispatcher(
             JOIN nexora.permission p ON p.id = rp.permission_id
             JOIN nexora.access_scope sc ON sc.id = ur.scope_id
             WHERE ur.revoked_at IS NULL AND p.code = 'notifications.manage_templates'
-              AND (sc.company_id = {company} OR sc.scope_type IN ('GROUP','PLATFORM'))
+              -- Administrateurs de l'entreprise ou de SON groupe (audit 2026-10 éd. 2 : tous les rôles de groupe et de
+              -- plateforme de l'installation recevaient l'échec d'envoi d'une autre entreprise).
+              AND (sc.company_id = {company}
+                   OR (sc.scope_type = 'GROUP' AND sc.group_id IS NOT NULL
+                       AND sc.group_id = (SELECT group_id FROM nexora.company WHERE id = {company})))
             LIMIT 20
             """).ToListAsync(ct);
         if (admins.Count == 0) return;

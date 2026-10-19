@@ -209,6 +209,40 @@ public sealed class MfaAuthenticationTests(FinanceEngineFixture fx)
         afterLockout.Error!.Code.Should().Be("auth.mfa_too_many_attempts");
     }
 
+    // ---- Audit 2026-10 éd. 2 : des essais parallèles ne dépassent pas les cinq tentatives ----
+    [Fact]
+    public async Task Parallel_wrong_codes_never_exceed_five_attempts()
+    {
+        var uid = await NewUser("pw-parallel");
+        await using (var s = Scope())
+        {
+            AsUser(s.ServiceProvider, uid);
+            var mfa = s.ServiceProvider.GetRequiredService<IMfaService>();
+            var begin = await mfa.BeginEnrollmentAsync();
+            await mfa.ConfirmEnrollmentAsync(new MfaConfirmRequest(Totp.Generate(begin.Value!.Secret, DateTimeOffset.UtcNow)));
+        }
+        string token;
+        await using (var s = Scope())
+        {
+            var email = await Scalar<string>($"SELECT email FROM nexora.app_user WHERE id = '{uid}'");
+            token = (await s.ServiceProvider.GetRequiredService<LoginHandler>().HandleAsync(new LoginRequest(email!, "pw-parallel", null))).Value!.MfaToken!;
+        }
+
+        var start = new TaskCompletionSource();
+        async Task<string> Try()
+        {
+            await start.Task;
+            await using var s = Scope();
+            return (await s.ServiceProvider.GetRequiredService<MfaVerifyHandler>().HandleAsync(new MfaVerifyLoginRequest(token, "000000"))).Error!.Code;
+        }
+        var tries = Enumerable.Range(0, 12).Select(_ => Try()).ToList();
+        start.SetResult();
+        var codes = await Task.WhenAll(tries);
+
+        codes.Count(c => c == "auth.mfa_invalid").Should().BeLessThanOrEqualTo(5, "au plus cinq codes sont réellement vérifiés");
+        (await Scalar<short>($"SELECT max(attempts) FROM nexora.mfa_challenge WHERE user_id = '{uid}'")).Should().BeLessThanOrEqualTo((short)5);
+    }
+
     // ---- §4, §7, §48 : cinq mots de passe erronés verrouillent le compte temporairement ----
     [Fact]
     public async Task Five_bad_passwords_lock_the_account_temporarily()
@@ -226,7 +260,8 @@ public sealed class MfaAuthenticationTests(FinanceEngineFixture fx)
 
         // Même le bon mot de passe est refusé pendant le verrouillage.
         var locked = await login.HandleAsync(new LoginRequest(email!, "correct-horse", null));
-        locked.Error!.Code.Should().Be("auth.account_locked");
+        locked.IsSuccess.Should().BeFalse();
+        locked.Error!.Code.Should().Be("auth.invalid_credentials", "un compte verrouillé répond comme un mot de passe faux");
     }
 
     // ---- §9, §39 : un administrateur réinitialise la MFA d'un utilisateur ----

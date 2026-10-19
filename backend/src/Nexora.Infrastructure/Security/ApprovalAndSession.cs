@@ -14,7 +14,10 @@ public sealed class SqlApprovalWorkflowService(NexoraDbContext db, IUnitOfWork u
 {
     private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
     private static readonly string[] Types =
-        ["expense", "discount", "refund", "purchase", "credit_sale", "stock_adjustment", "price_change", "void", "period_close", "other"];
+        // Avances et prêts (audit 2026-10 éd. 2) : la base les accepte, la liste les ignorait — un workflow d'avance
+        // échouait en silence en annonçant « Workflow déclenché ».
+        ["expense", "discount", "refund", "purchase", "credit_sale", "stock_adjustment", "price_change", "void", "period_close",
+         "salary_advance", "employee_loan", "other"];
 
     private sealed record PolicyRow(decimal MinAmount, short RequiredLevels);
     private sealed record RequestRow(
@@ -57,6 +60,8 @@ public sealed class SqlApprovalWorkflowService(NexoraDbContext db, IUnitOfWork u
             policy.RequiredLevels > 1 ? "Double approbation requise (§5)." : "Approbation requise."));
     }
 
+    private sealed record LockedRow(string Status, short CurrentLevel);
+
     public async Task<Result<ApprovalRequestDto>> DecideAsync(Guid requestId, ApprovalDecisionRequest decision, CancellationToken ct = default)
     {
         var req = await db.Database.SqlQuery<RequestRow>($"""
@@ -97,8 +102,21 @@ public sealed class SqlApprovalWorkflowService(NexoraDbContext db, IUnitOfWork u
                 """).FirstAsync(ct))
             return Error.Forbidden("security.approver_role", $"Cette demande doit être décidée par un utilisateur ayant le rôle « {requiredRole.RoleName} ».");
 
-        await uow.ExecuteInTransactionAsync(async token =>
+        var stillPending = await uow.ExecuteInTransactionAsync(async token =>
         {
+            // Sous verrou, état relu (audit 2026-10 éd. 2) : deux décisions simultanées lisaient le même niveau et
+            // l'incrémentaient chacune — un niveau d'approbation pouvait être sauté.
+            var locked = (await db.Database.SqlQuery<LockedRow>($"""
+                SELECT status AS "Status", current_level AS "CurrentLevel" FROM nexora.approval_request
+                WHERE id = {requestId} FOR UPDATE
+                """).ToListAsync(token)).FirstOrDefault();
+            if (locked is null || locked.Status != "pending" || locked.CurrentLevel != req.CurrentLevel) return false;
+            if (decision.Approve && await db.Database.SqlQuery<bool>($"""
+                    SELECT EXISTS(SELECT 1 FROM nexora.approval_action
+                                  WHERE approval_request_id = {requestId} AND approver_id = {tenant.UserId} AND action = 'approve') AS "Value"
+                    """).FirstAsync(token))
+                return false;
+
             await db.Database.ExecuteSqlAsync($"""
                 INSERT INTO nexora.approval_action (company_id, approval_request_id, approver_id, level, action, comment)
                 VALUES ({Company}, {requestId}, {tenant.UserId}, {req.CurrentLevel}, {(decision.Approve ? "approve" : "reject")}, {decision.Note})
@@ -125,8 +143,10 @@ public sealed class SqlApprovalWorkflowService(NexoraDbContext db, IUnitOfWork u
                     WHERE id = {requestId}
                     """, token);
             }
-            return 0;
+            return true;
         }, ct);
+        if (!stillPending)
+            return Error.Conflict("security.approval_changed", "La demande a été décidée entre-temps : rechargez-la.");
 
         return await GetAsync(requestId, ct);
     }
@@ -174,7 +194,7 @@ public sealed class SqlStepUpAuthService(
     private Guid UserId => tenant.UserId ?? throw new InvalidOperationException("Utilisateur requis.");
     private static readonly string[] Purposes =
         ["payment", "cancellation", "accounting_validation", "permission_change", "deletion", "sensitive_data",
-         "period_close", "period_reopen", "financial_exceptional", "consolidation_publish", "device_revoke", "sensitive_export", "other"];
+         "period_close", "period_reopen", "financial_exceptional", "consolidation_publish", "device_revoke", "sensitive_export", "signature", "other"];
     private const int MaxFailures = 5;
     private static readonly TimeSpan FailureWindow = TimeSpan.FromMinutes(15);
 

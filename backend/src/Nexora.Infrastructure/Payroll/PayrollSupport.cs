@@ -17,6 +17,25 @@ namespace Nexora.Infrastructure.Payroll;
 /// <summary>Règles et lectures partagées par les services de paie.</summary>
 public static class PayrollRules
 {
+    private sealed record CashAccountRow(string AccountType, decimal Balance);
+
+    /// <summary>
+    /// Sortie d'argent physique sous verrou du compte (audit 2026-10 éd. 2) : notes de frais, avances et salaires payés
+    /// en espèces ou en porte-monnaie ne contrôlaient pas le solde — la caisse passait en négatif. À appeler DANS la
+    /// transaction du paiement : la ligne du compte reste verrouillée jusqu'à sa fin.
+    /// </summary>
+    public static async Task<Error?> CashShortfallAsync(NexoraDbContext db, Guid company, Guid accountId, decimal amount, CancellationToken ct)
+    {
+        var account = await db.Database.SqlQuery<CashAccountRow>($"""
+            SELECT account_type AS "AccountType", current_balance AS "Balance" FROM nexora.financial_account
+            WHERE id = {accountId} AND company_id = {company}
+            FOR UPDATE
+            """).FirstOrDefaultAsync(ct);
+        return account is { AccountType: "cash" or "mobile_money" or "wallet" } && account.Balance < amount
+            ? Error.Conflict("payroll.insufficient_balance", $"Solde insuffisant sur le compte de paiement : {account.Balance:N2}.")
+            : null;
+    }
+
     public static readonly IReadOnlySet<string> PaymentMethods = new HashSet<string>(["bank_transfer", "cash", "mobile_money", "check", "other"]);
     public static readonly IReadOnlySet<string> ContractTypes = new HashSet<string>(
         ["permanent", "fixed_term", "temporary", "internship", "apprenticeship", "consultant", "daily"]);

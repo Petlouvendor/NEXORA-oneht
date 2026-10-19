@@ -21,7 +21,7 @@ namespace Nexora.Infrastructure.Printing;
 public sealed partial class SqlReceiptService(
     NexoraDbContext db, ITenantContext tenant, IPermissionService permissions, IPrintService print,
     ICustomerAccountQueries customers, ICustomerRefundService refunds, ICustomerExpenseService expenses,
-    IPurchasingQueries purchasing, IDateTimeProvider clock) : IReceiptService
+    IPurchasingQueries purchasing, IDateTimeProvider clock, IUnitOfWork uow) : IReceiptService
 {
     private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
@@ -56,16 +56,22 @@ public sealed partial class SqlReceiptService(
 
         // Toute nouvelle sortie d'une même pièce est une copie : elle le dit (anti-fraude).
         var logKey = $"receipt:{kind}";
-        var previous = await print.PreviousPrintsAsync(logKey, id, ct);
-        // Réimprimer un ticket de vente est un geste sensible (ticket rejoué pour un retour ou un remboursement) :
-        // il exige pos.reprint, que portent les rôles de caisse et d'encadrement, pas l'auditeur ni le vendeur.
-        if (kind == PrintableKinds.Sale && previous > 0 && !await HasAsync(Permissions.Pos.Reprint, ct))
-            return Error.Forbidden("print.reprint_forbidden",
-                "Ce ticket a déjà été imprimé : sa réimpression exige le droit « Réimprimer un ticket » (pos.reprint).");
-        var doc = built.Doc;
-        if (previous > 0)
-            doc = doc with { Stamp = doc.Stamp is null ? $"DUPLICATA — copie n° {previous}" : $"{doc.Stamp} · DUPLICATA n° {previous}" };
-        return Result.Success(await print.RenderAsync(doc, f, logKey, built.FileName, built.Sensitivity, id, built.EstablishmentId, ct));
+        // Comptage et journalisation d'une même pièce sérialisés (audit 2026-10 éd. 2) : deux impressions simultanées
+        // lisaient toutes deux « aucune impression » et sortaient toutes deux comme original.
+        return await uow.ExecuteInTransactionAsync<Result<RenderedFile>>(async token =>
+        {
+            await db.Database.ExecuteSqlAsync($"SELECT pg_advisory_xact_lock(hashtextextended({logKey + ":" + id}, 0))", token);
+            var previous = await print.PreviousPrintsAsync(logKey, id, token);
+            // Réimprimer un ticket de vente est un geste sensible (ticket rejoué pour un retour ou un remboursement) :
+            // il exige pos.reprint, que portent les rôles de caisse et d'encadrement, pas l'auditeur ni le vendeur.
+            if (kind == PrintableKinds.Sale && previous > 0 && !await HasAsync(Permissions.Pos.Reprint, token))
+                return Error.Forbidden("print.reprint_forbidden",
+                    "Ce ticket a déjà été imprimé : sa réimpression exige le droit « Réimprimer un ticket » (pos.reprint).");
+            var doc = built.Doc;
+            if (previous > 0)
+                doc = doc with { Stamp = doc.Stamp is null ? $"DUPLICATA — copie n° {previous}" : $"{doc.Stamp} · DUPLICATA n° {previous}" };
+            return Result.Success(await print.RenderAsync(doc, f, logKey, built.FileName, built.Sensitivity, id, built.EstablishmentId, token));
+        }, ct);
     }
 
     private async Task<bool> HasAsync(string permission, CancellationToken ct)

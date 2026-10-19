@@ -60,6 +60,9 @@ public sealed class SqlInsightService(
 
     public async Task<Result<InsightDto>> AssignAsync(Guid id, AssignInsightRequest request, CancellationToken ct = default)
     {
+        // L'assigné doit appartenir à l'entreprise (audit 2026-10 éd. 2 : identifiant non vérifié).
+        if (!await Nexora.Infrastructure.Common.CompanyMembers.AreMembersAsync(db, Company, [request.UserId], ct))
+            return Error.Validation("insight.assignee", "La personne assignée n'appartient pas à cette entreprise.");
         var rows = await db.Database.ExecuteSqlAsync($"""
             UPDATE nexora.insight SET status = 'actioned', assigned_to = {request.UserId}, due_at = {request.DueAt}, updated_at = now()
             WHERE id = {id} AND company_id = {Company} AND status = 'open'
@@ -119,14 +122,21 @@ public sealed class SqlInsightService(
     {
         var weekAgo = today.AddDays(-7);
         var twoWeeksAgo = today.AddDays(-14);
+        // Chiffre d'affaires HORS TAXE converti en devise de l'entreprise, comme le coût (audit 2026-10 éd. 2) : la marge
+        // était calculée sur le montant TTC des lignes, donc surestimée, et additionnait les devises (A-046).
         var row = await db.Database.SqlQuery<MarginRow>($"""
+            WITH l AS (
+                SELECT s.sold_at::date AS day,
+                       nexora.convert_amount(sl.line_total - sl.tax_amount, s.currency_id, co.default_currency_id, s.sold_at) AS revenue,
+                       sl.unit_cost * sl.quantity AS cost
+                FROM nexora.sale_line sl JOIN nexora.sale s ON s.id = sl.sale_id JOIN nexora.company co ON co.id = s.company_id
+                WHERE sl.company_id = {Company} AND s.status = 'completed' AND s.sold_at::date > {twoWeeksAgo})
             SELECT
-              COALESCE(SUM(sl.line_total) FILTER (WHERE s.sold_at::date > {weekAgo} AND s.sold_at::date <= {today}), 0)::numeric AS "RevenueCurrent",
-              COALESCE(SUM(sl.unit_cost * sl.quantity) FILTER (WHERE s.sold_at::date > {weekAgo} AND s.sold_at::date <= {today}), 0)::numeric AS "CostCurrent",
-              COALESCE(SUM(sl.line_total) FILTER (WHERE s.sold_at::date > {twoWeeksAgo} AND s.sold_at::date <= {weekAgo}), 0)::numeric AS "RevenuePrior",
-              COALESCE(SUM(sl.unit_cost * sl.quantity) FILTER (WHERE s.sold_at::date > {twoWeeksAgo} AND s.sold_at::date <= {weekAgo}), 0)::numeric AS "CostPrior"
-            FROM nexora.sale_line sl JOIN nexora.sale s ON s.id = sl.sale_id
-            WHERE sl.company_id = {Company} AND s.status = 'completed' AND s.sold_at::date > {twoWeeksAgo}
+              COALESCE(SUM(revenue) FILTER (WHERE day > {weekAgo} AND day <= {today}), 0)::numeric AS "RevenueCurrent",
+              COALESCE(SUM(cost) FILTER (WHERE day > {weekAgo} AND day <= {today}), 0)::numeric AS "CostCurrent",
+              COALESCE(SUM(revenue) FILTER (WHERE day > {twoWeeksAgo} AND day <= {weekAgo}), 0)::numeric AS "RevenuePrior",
+              COALESCE(SUM(cost) FILTER (WHERE day > {twoWeeksAgo} AND day <= {weekAgo}), 0)::numeric AS "CostPrior"
+            FROM l
             """).FirstAsync(ct);
         if (row.RevenueCurrent <= 0 || row.RevenuePrior <= 0) return 0;
 

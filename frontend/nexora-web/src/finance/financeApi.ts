@@ -128,10 +128,11 @@ export const openSuspense = (input: {
     body: JSON.stringify({ responsibleUserId: null, ...input }),
   });
 
-export const resolveSuspense = (id: string, outcome: string, resolution: string) =>
+/** `journalEntryNumber` : écriture validée qui constate la perte ou le profit (obligatoire pour « written_off »). */
+export const resolveSuspense = (id: string, outcome: string, resolution: string, journalEntryNumber?: string) =>
   apiFetch<void>(`/treasury/suspense/${id}/resolve`, {
     method: "POST",
-    body: JSON.stringify({ outcome, resolution }),
+    body: JSON.stringify({ outcome, resolution, journalEntryNumber: journalEntryNumber || null }),
   });
 
 export const previewFinancialClose = (periodId: string) =>

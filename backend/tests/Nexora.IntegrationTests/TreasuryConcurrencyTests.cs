@@ -133,4 +133,51 @@ public sealed class TreasuryConcurrencyTests(FinanceEngineFixture fx)
         (await tm.SetAccountStatusAsync(a, new FinancialAccountStatusRequest("closed", "Fin de test"))).IsSuccess.Should().BeTrue();
         (await tm.SetAccountStatusAsync(b, new FinancialAccountStatusRequest("closed", "Fin de test"))).IsSuccess.Should().BeTrue();
     }
+
+    /// <summary>
+    /// Audit 2026-10 éd. 2 : le contrôle de découvert d'une caisse était lu sans verrou. Six transferts simultanés de 40
+    /// depuis une caisse de 100 passaient tous le contrôle ; seuls deux doivent passer et la caisse ne devient jamais
+    /// négative.
+    /// </summary>
+    [Fact]
+    public async Task Simultaneous_transfers_never_overdraw_a_cash_account()
+    {
+        Guid a, b;
+        await using (var s = Scope())
+        {
+            var tm = s.ServiceProvider.GetRequiredService<ITreasuryManagementService>();
+            a = (await tm.CreateAccountAsync(new SaveFinancialAccountRequest($"Découvert A {Guid.NewGuid():N}"[..30], "cash", "HTG", null, null))).Value;
+            b = (await tm.CreateAccountAsync(new SaveFinancialAccountRequest($"Découvert B {Guid.NewGuid():N}"[..30], "cash", "HTG", null, null))).Value;
+            (await tm.RecordOpeningBalanceAsync(a, new TreasuryOpeningBalanceRequest(Guid.NewGuid(), 100m))).IsSuccess.Should().BeTrue();
+        }
+
+        var start = new TaskCompletionSource();
+        async Task<bool> Transfer()
+        {
+            await start.Task;
+            await using var s = Scope();
+            var r = await s.ServiceProvider.GetRequiredService<ITreasuryManagementService>()
+                .TransferAsync(new TreasuryTransferRequest(Guid.NewGuid(), a, b, 40m, null));
+            if (!r.IsSuccess) r.Error!.Code.Should().Be("treasury.insufficient_balance");
+            return r.IsSuccess;
+        }
+        var tasks = Enumerable.Range(0, 6).Select(_ => Transfer()).ToList();
+        start.SetResult();
+        var results = await Task.WhenAll(tasks);
+
+        results.Count(ok => ok).Should().Be(2, "100 permet deux transferts de 40, pas davantage");
+        await using var check = Scope();
+        (await check.ServiceProvider.GetRequiredService<NexoraDbContext>().Database.SqlQuery<decimal>($"""
+            SELECT current_balance AS "Value" FROM nexora.financial_account WHERE id = {a}
+            """).FirstAsync()).Should().Be(20m);
+        (await Drift(a)).Should().Be(0m);
+
+        // Fin de test : les deux caisses sont vidées dans la caisse partagée et clôturées (la position de trésorerie
+        // d'autres tests compte les comptes actifs).
+        var cleanup = check.ServiceProvider.GetRequiredService<ITreasuryManagementService>();
+        (await cleanup.TransferAsync(new TreasuryTransferRequest(Guid.NewGuid(), a, CashAccount, 20m, "Fin de test"))).IsSuccess.Should().BeTrue();
+        (await cleanup.TransferAsync(new TreasuryTransferRequest(Guid.NewGuid(), b, CashAccount, 80m, "Fin de test"))).IsSuccess.Should().BeTrue();
+        (await cleanup.SetAccountStatusAsync(a, new FinancialAccountStatusRequest("closed", "Fin de test"))).IsSuccess.Should().BeTrue();
+        (await cleanup.SetAccountStatusAsync(b, new FinancialAccountStatusRequest("closed", "Fin de test"))).IsSuccess.Should().BeTrue();
+    }
 }

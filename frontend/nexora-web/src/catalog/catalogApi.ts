@@ -208,7 +208,7 @@ export const searchCatalog = (q: string, limit = 20) =>
 export const scanBarcode = (barcode: string) =>
   apiFetch<CatalogHit>(`/catalog/scan${qs({ barcode })}`);
 
-export const listProducts = (opts: { q?: string; categoryId?: string; status?: string; limit?: number } = {}) =>
+export const listProducts = (opts: { q?: string; categoryId?: string; status?: string; limit?: number; offset?: number } = {}) =>
   apiFetch<ProductListItem[]>(`/catalog/products${qs(opts)}`);
 
 export const getProduct = (id: string) => apiFetch<ProductDetail>(`/catalog/products/${id}`);

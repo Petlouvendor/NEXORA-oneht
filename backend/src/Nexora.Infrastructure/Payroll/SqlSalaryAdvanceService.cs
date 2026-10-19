@@ -115,6 +115,9 @@ public sealed class SqlSalaryAdvanceService(
         if (!string.IsNullOrWhiteSpace(status))
             q = status == "open" ? q.Where(x => x.Status == "paid" || x.Status == "in_repayment") : q.Where(x => x.Status == status);
         if (!string.IsNullOrWhiteSpace(kind)) q = q.Where(x => x.Kind == kind);
+        // Périmètre appliqué AVANT la limite (audit 2026-10 éd. 2) : tronquée d'abord, la liste pouvait
+        // cacher une partie de l'équipe d'un Manager.
+        if (!scope.All) { var inScope = scope.Ids.ToArray(); q = q.Where(x => inScope.Contains(x.EmployeeId)); }
         var rows = (await q.OrderByDescending(x => x.RequestedAt).Take(500).ToListAsync(ct)).Where(x => scope.Allows(x.EmployeeId)).ToList();
         var result = new List<AdvanceDto>();
         foreach (var r in rows) result.Add(await ToDtoAsync(r, ct));
@@ -235,6 +238,12 @@ public sealed class SqlSalaryAdvanceService(
         {
             await uow.ExecuteInTransactionAsync(async token =>
             {
+                // Contrôles de politique rejoués sous verrou du dossier (audit 2026-10 éd. 2) : deux demandes simultanées
+                // passaient chacune le plafond du nombre d'avances en cours.
+                await db.Database.ExecuteSqlAsync($"SELECT 1 FROM nexora.employee WHERE id = {employeeId} AND company_id = {Company} FOR UPDATE", token);
+                var locked = (await ChecksAsync(employeeId, r.Kind, amount, null, token)).Where(c => c.Blocking && !c.Passed).ToList();
+                if (locked.Count > 0)
+                    throw new PayrollRefusal(Error.Validation("payroll.advance_policy", string.Join(" ", locked.Select(c => c.Message))));
                 var prefix = r.Kind switch { "loan" => "PRT-", "acompte" => "ACP-", _ => "AVS-" };
                 number = await PayrollRules.NextNumberAsync(db, Company, "employee_" + r.Kind, prefix, today.Year, token);
                 await db.Database.ExecuteSqlAsync($"""
@@ -257,6 +266,10 @@ public sealed class SqlSalaryAdvanceService(
                 await EventAsync(id, "requested", amount, null, number, r.Reason?.Trim(), token);
                 return 0;
             }, ct);
+        }
+        catch (PayrollRefusal refusal)
+        {
+            return refusal.Error;
         }
         catch (InvalidOperationException ex)
         {
@@ -433,8 +446,18 @@ public sealed class SqlSalaryAdvanceService(
         if (account is null || account.Status != "active") return Error.Validation("payroll.financial_account", "Compte de versement introuvable ou inactif.");
         if (account.Currency != row.Currency)
             return Error.Validation("payroll.financial_account", $"Le compte est en {account.Currency}, l'avance en {row.Currency}.");
+        // Date de versement : jamais dans le futur (audit 2026-10 éd. 2 : elle était libre).
+        if (r.PaidOn is { } paidOn && paidOn > await PayrollRules.TodayAsync(db, ct))
+            return Error.Validation("payroll.paid_on", "La date de versement ne peut pas être dans le futur.");
+        // Versement en espèces depuis une caisse dont une session est ouverte : rattaché à cette session, sinon la sortie
+        // n'apparaissait pas dans l'attendu de la clôture (écart de caisse inexpliqué).
+        var cashSessionId = r.CashSessionId ?? await db.Database.SqlQuery<Guid?>($"""
+            SELECT cs.id AS "Value" FROM nexora.cash_session cs JOIN nexora.cash_register cr ON cr.id = cs.cash_register_id
+            WHERE cr.financial_account_id = {account.Id} AND cs.company_id = {Company} AND cs.status = 'open'
+            ORDER BY cs.opened_at DESC LIMIT 1
+            """).FirstOrDefaultAsync(ct);
         Guid? sessionAccount = null;
-        if (r.CashSessionId is { } sid)
+        if (cashSessionId is { } sid)
         {
             sessionAccount = await db.Database.SqlQuery<Guid?>($"""
                 SELECT cr.financial_account_id AS "Value" FROM nexora.cash_session cs JOIN nexora.cash_register cr ON cr.id = cs.cash_register_id
@@ -450,6 +473,8 @@ public sealed class SqlSalaryAdvanceService(
         {
             await uow.ExecuteInTransactionAsync(async token =>
             {
+                if (await PayrollRules.CashShortfallAsync(db, Company, account.Id, amount, token) is { } shortfall)
+                    throw new PayrollRefusal(shortfall);
                 // Créance sur l'employé, jamais une charge salariale (§14, §39) : Dr avances/prêts au personnel / Cr trésorerie.
                 var posted = await engine.HandleAsync(new EmployeeAdvancePaid(Company, r.OperationUuid, paidAt, row.Id, row.EmployeeId,
                     new Money(amount, row.Currency), row.Kind == "loan", account.Id, row.AdvanceNumber) { UserId = tenant.UserId }, token);
@@ -457,7 +482,7 @@ public sealed class SqlSalaryAdvanceService(
                 var n = await db.Database.ExecuteSqlAsync($"""
                     UPDATE nexora.employee_advance
                        SET status = 'paid', amount_paid = {amount}, paid_by = {UserId}, paid_at = {paidAt}, financial_account_id = {account.Id},
-                           payment_method = {r.PaymentMethod}, payment_reference = {r.Reference}, cash_session_id = {r.CashSessionId},
+                           payment_method = {r.PaymentMethod}, payment_reference = {r.Reference}, cash_session_id = {cashSessionId},
                            journal_entry_id = {posted.Value!.JournalEntryId}, payment_operation_uuid = {r.OperationUuid}
                      WHERE id = {row.Id} AND company_id = {Company} AND status = 'approved'
                     """, token);
@@ -470,7 +495,7 @@ public sealed class SqlSalaryAdvanceService(
                         INSERT INTO nexora.advance_installment (company_id, advance_id, seq_no, schedule_version, due_date, amount, created_by)
                         VALUES ({Company}, {row.Id}, {seq}, 1, {due}, {value}, {UserId})
                         """, token);
-                if (r.CashSessionId is { } session && sessionAccount == account.Id)
+                if (cashSessionId is { } session && sessionAccount == account.Id)
                     await db.Database.ExecuteSqlAsync($"""
                         INSERT INTO nexora.cash_movement
                             (company_id, cash_session_id, movement_type, amount, currency_id, reference_type, reference_id, note, occurred_at, user_id)

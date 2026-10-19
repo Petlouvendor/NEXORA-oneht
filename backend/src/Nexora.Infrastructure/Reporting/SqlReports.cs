@@ -33,12 +33,18 @@ public sealed class SqlSalesReports(NexoraDbContext db, ITenantContext tenant) :
             OFFSET {(page - 1) * size} LIMIT {size}
             """).ToListAsync(ct);
 
+        // Totaux sur les MÊMES ventes que les lignes (audit 2026-10 éd. 2 : client, vendeur et établissement filtraient
+        // les lignes mais pas les totaux), convertis en devise de l'entreprise (A-046).
         var totals = await db.Database.SqlQuery<JournalTotals>($"""
-            SELECT COUNT(*)::bigint AS "Count", COALESCE(SUM(subtotal - discount_total),0) AS "Revenue",
-                   COALESCE(SUM(tax_total),0) AS "Tax"
-            FROM nexora.sale
-            WHERE company_id = {Company} AND status IN ('completed','partially_refunded','refunded')
-              AND sold_at::date BETWEEN {from} AND {to}
+            SELECT COUNT(*)::bigint AS "Count",
+                   COALESCE(SUM(nexora.convert_amount(s.subtotal - s.discount_total, s.currency_id, co.default_currency_id, s.sold_at)),0) AS "Revenue",
+                   COALESCE(SUM(nexora.convert_amount(s.tax_total, s.currency_id, co.default_currency_id, s.sold_at)),0) AS "Tax"
+            FROM nexora.sale s JOIN nexora.company co ON co.id = s.company_id
+            WHERE s.company_id = {Company} AND s.status IN ('completed','partially_refunded','refunded')
+              AND s.sold_at::date BETWEEN {from} AND {to}
+              AND ({filter.CustomerId}::uuid IS NULL OR s.customer_id = {filter.CustomerId})
+              AND ({filter.SalespersonUserId}::uuid IS NULL OR s.salesperson_user_id = {filter.SalespersonUserId})
+              AND ({filter.EstablishmentId}::uuid IS NULL OR s.establishment_id = {filter.EstablishmentId})
             """).FirstAsync(ct);
 
         var currency = await Currency(ct);
@@ -115,7 +121,9 @@ public sealed class SqlStockReports(NexoraDbContext db, ITenantContext tenant) :
         var rows = await db.Database.SqlQuery<StockValuationRow>($"""
             SELECT p.id AS "ProductId", p.sku AS "Sku", p.name AS "Name",
                    SUM(sb.quantity_on_hand) AS "OnHand",
-                   AVG(sb.average_cost) AS "AverageCost",
+                   -- Coût moyen pondéré par les quantités (audit 2026-10 éd. 2 : moyenne simple des emplacements — un
+                   -- dépôt de 2 unités pesait autant qu'un dépôt de 2 000).
+                   COALESCE(SUM(sb.quantity_on_hand * sb.average_cost) / NULLIF(SUM(sb.quantity_on_hand), 0), 0) AS "AverageCost",
                    SUM(sb.quantity_on_hand * sb.average_cost) AS "Value"
             FROM nexora.stock_balance sb JOIN nexora.product p ON p.id = sb.product_id
             WHERE sb.company_id = {Company}
@@ -133,7 +141,14 @@ public sealed class SqlStockReports(NexoraDbContext db, ITenantContext tenant) :
             SELECT p.id AS "ProductId", p.sku AS "Sku", p.name AS "Name", sb.inventory_location_id AS "LocationId",
                    sb.quantity_on_hand AS "OnHand", COALESCE(r.reorder_point, 0) AS "ReorderPoint"
             FROM nexora.stock_balance sb JOIN nexora.product p ON p.id = sb.product_id
-            LEFT JOIN nexora.product_reorder_rule r ON r.product_id = p.id
+            -- Une seule règle par emplacement : la sienne, sinon la règle générale du produit (audit 2026-10 éd. 2 :
+            -- chaque règle dupliquait la ligne de rupture).
+            LEFT JOIN LATERAL (
+                SELECT rr.reorder_point FROM nexora.product_reorder_rule rr
+                WHERE rr.product_id = p.id AND rr.company_id = {Company} AND rr.status = 'active'
+                  AND (rr.inventory_location_id = sb.inventory_location_id OR rr.inventory_location_id IS NULL)
+                ORDER BY rr.inventory_location_id NULLS LAST LIMIT 1
+            ) r ON true
             WHERE sb.company_id = {Company} AND (sb.quantity_on_hand - sb.quantity_reserved) <= 0
             ORDER BY sb.quantity_on_hand ASC
             """).ToListAsync(ct);

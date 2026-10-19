@@ -71,6 +71,9 @@ public sealed class SqlExpenseClaimService(
         var q = Query();
         if (employeeId is { } e) q = q.Where(x => x.EmployeeId == e);
         if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.Status == status);
+        // Périmètre appliqué AVANT la limite (audit 2026-10 éd. 2) : tronquée d'abord, la liste pouvait
+        // cacher une partie de l'équipe d'un Manager.
+        if (!scope.All) { var inScope = scope.Ids.ToArray(); q = q.Where(x => inScope.Contains(x.EmployeeId)); }
         return (await q.OrderByDescending(x => x.SubmittedAt).Take(500).ToListAsync(ct)).Where(x => scope.Allows(x.EmployeeId)).Select(ToDto).ToList();
     }
 
@@ -246,6 +249,8 @@ public sealed class SqlExpenseClaimService(
         {
             await uow.ExecuteInTransactionAsync(async token =>
             {
+                if (await PayrollRules.CashShortfallAsync(db, Company, account.Id, row.Amount, token) is { } shortfall)
+                    throw new PayrollRefusal(shortfall);
                 var posted = await engine.HandleAsync(new EmployeeExpensePaid(Company, r.OperationUuid, now, row.Id, row.EmployeeId,
                     new Money(row.Amount, row.Currency), account.Id, row.ClaimNumber) { UserId = tenant.UserId }, token);
                 if (!posted.IsSuccess) throw new PayrollRefusal(posted.Error!);
@@ -329,6 +334,9 @@ public sealed class SqlPayrollAdjustmentService(
         var q = Query();
         if (employeeId is { } e) q = q.Where(x => x.EmployeeId == e);
         if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.Status == status);
+        // Périmètre appliqué AVANT la limite (audit 2026-10 éd. 2) : tronquée d'abord, la liste pouvait
+        // cacher une partie de l'équipe d'un Manager.
+        if (!scope.All) { var inScope = scope.Ids.ToArray(); q = q.Where(x => inScope.Contains(x.EmployeeId)); }
         return (await q.OrderByDescending(x => x.RequestedAt).Take(500).ToListAsync(ct)).Where(x => scope.Allows(x.EmployeeId)).Select(ToDto).ToList();
     }
 

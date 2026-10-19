@@ -77,8 +77,10 @@ public sealed class LoginHandlerTests
 
         var result = await CreateSut().HandleAsync(new LoginRequest("u@x", "whatever", null));
 
-        result.Error!.Code.Should().Be("auth.account_locked");
-        _hasher.DidNotReceive().Verify(Arg.Any<string>(), Arg.Any<string>());
+        // Audit 2026-10 éd. 2 : même réponse et même calcul qu'un mot de passe faux — le verrouillage ne désigne plus
+        // un compte existant.
+        result.Error!.Code.Should().Be("auth.invalid_credentials");
+        _hasher.Received(1).Verify("whatever", "hash");
     }
 
     [Fact]

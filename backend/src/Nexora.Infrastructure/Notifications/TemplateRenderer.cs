@@ -18,12 +18,15 @@ internal static partial class TemplateRenderer
     {
         if (string.IsNullOrEmpty(template)) return ("", []);
         var missing = new List<string>();
+        // Gabarit HTML (même règle que l'envoi SMTP : corps commençant par « < ») : les valeurs — noms, libellés saisis
+        // par des utilisateurs — sont échappées (audit 2026-10 éd. 2 : elles injectaient liens et balises dans l'e-mail).
+        var html = template.TrimStart().StartsWith('<');
 
         var result = TokenRegex().Replace(template, m =>
         {
             var key = m.Groups[1].Value;
             if (context.TryGetValue(key, out var value) && value is not null)
-                return value;
+                return html ? System.Net.WebUtility.HtmlEncode(value) : value;
             if (!missing.Contains(key)) missing.Add(key);
             return "";
         });

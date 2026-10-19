@@ -13,6 +13,8 @@ public static class StepUpPurposes
     public const string PermissionChange = "permission_change";
     public const string Deletion = "deletion";
     public const string SensitiveData = "sensitive_data";
+    /// <summary>Signature interne d'un document (audit 2026-10 éd. 2 : elle reposait sur la seule session).</summary>
+    public const string Signature = "signature";
 
     public static string Label(string purpose) => purpose switch
     {
@@ -22,6 +24,7 @@ public static class StepUpPurposes
         PermissionChange => "ce changement de droits",
         Deletion => "cette suppression",
         SensitiveData => "l'accès à ces données sensibles",
+        Signature => "cette signature",
         _ => "cette action",
     };
 }

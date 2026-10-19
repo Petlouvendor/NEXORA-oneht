@@ -40,6 +40,9 @@ public sealed class SqlTaskService(NexoraDbContext db, ITenantContext tenant, IU
     public async Task<Result<TaskDto>> CreateAsync(CreateTaskRequest request, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(request.Title)) return Error.Validation("task.title", "Titre requis.");
+        // L'assigné doit être un membre de l'entreprise (audit 2026-10 éd. 2 : l'identifiant n'était pas vérifié).
+        if (request.AssignedTo is { } assignee && !await IsMemberAsync(assignee, ct))
+            return Error.Validation("task.assignee", "La personne assignée n'appartient pas à cette entreprise.");
 
         var id = Guid.NewGuid();
         await db.Database.ExecuteSqlAsync($"""
@@ -53,13 +56,28 @@ public sealed class SqlTaskService(NexoraDbContext db, ITenantContext tenant, IU
 
     public async Task<Result<TaskDto>> CompleteAsync(Guid id, CancellationToken ct = default)
     {
+        // Une tâche assignée se termine par la personne assignée ou par son auteur ; une tâche non assignée, par tout
+        // détenteur de la permission (audit 2026-10 éd. 2 : n'importe qui terminait n'importe quelle tâche).
         var rows = await db.Database.ExecuteSqlAsync($"""
-            UPDATE nexora.task SET status = 'done', updated_at = now() WHERE id = {id} AND company_id = {Company} AND status <> 'done'
+            UPDATE nexora.task SET status = 'done', updated_at = now()
+            WHERE id = {id} AND company_id = {Company} AND status <> 'done'
+              AND (assigned_to IS NULL OR assigned_to = {tenant.UserId} OR created_by = {tenant.UserId})
             """, ct);
-        if (rows == 0) return Error.NotFound("task.not_found", "Tâche introuvable ou déjà terminée.");
+        if (rows == 0)
+        {
+            var exists = await db.Database.SqlQuery<bool>($"""
+                SELECT EXISTS(SELECT 1 FROM nexora.task WHERE id = {id} AND company_id = {Company} AND status <> 'done') AS "Value"
+                """).FirstAsync(ct);
+            return exists
+                ? Error.Forbidden("task.not_assignee", "Seule la personne assignée (ou l'auteur) termine cette tâche.")
+                : Error.NotFound("task.not_found", "Tâche introuvable ou déjà terminée.");
+        }
         await uow.SaveChangesAsync(ct);
         return await GetAsync(id, ct);
     }
+
+    private Task<bool> IsMemberAsync(Guid userId, CancellationToken ct)
+        => Nexora.Infrastructure.Common.CompanyMembers.AreMembersAsync(db, Company, [userId], ct);
 
     private async Task<Result<TaskDto>> GetAsync(Guid id, CancellationToken ct)
     {
