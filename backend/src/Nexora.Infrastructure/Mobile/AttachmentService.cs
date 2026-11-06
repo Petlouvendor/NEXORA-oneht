@@ -29,20 +29,25 @@ public sealed class SqlAttachmentService(NexoraDbContext db, ITenantContext tena
         catch (FormatException) { return Error.Validation("attachment.content", "Contenu base64 invalide."); }
         if (bytes.Length == 0 || bytes.Length > 5 * 1024 * 1024)
             return Error.Validation("attachment.size", "Taille invalide (1 octet à 5 Mo — capture mobile seulement, §22-23).");
+        // Le type enregistré est celui du contenu réel (audit 2026-10 éd. 2) : avant, le type déclaré était stocké puis
+        // renvoyé tel quel — un contenu HTML déclaré « text/html » était servi et interprété par le navigateur.
+        var contentType = Nexora.Infrastructure.Common.ImageSignature.Detect(bytes);
+        if (contentType is null)
+            return Error.Validation("attachment.content_type", "Photo ou signature attendue au format PNG, JPEG ou WebP.");
 
         var hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
         var id = Guid.NewGuid();
         await db.Database.ExecuteSqlAsync($"""
             INSERT INTO nexora.attachment
                 (id, company_id, kind, reference_type, reference_id, content, content_type, size_bytes, sha256_hash, captured_by)
-            VALUES ({id}, {Company}, {kind}, {request.ReferenceType}, {request.ReferenceId}, {bytes}, {request.ContentType}, {bytes.Length}, {hash}, {tenant.UserId})
+            VALUES ({id}, {Company}, {kind}, {request.ReferenceType}, {request.ReferenceId}, {bytes}, {contentType}, {bytes.Length}, {hash}, {tenant.UserId})
             """, ct);
         await uow.SaveChangesAsync(ct);
 
         var capturedAt = await db.Database.SqlQuery<DateTimeOffset>($"""
             SELECT captured_at AS "Value" FROM nexora.attachment WHERE id = {id}
             """).FirstAsync(ct);
-        return Result.Success(new AttachmentDto(id, kind, request.ReferenceType, request.ReferenceId, request.ContentType, bytes.Length, hash, capturedAt));
+        return Result.Success(new AttachmentDto(id, kind, request.ReferenceType, request.ReferenceId, contentType, bytes.Length, hash, capturedAt));
     }
 
     public async Task<Result<(byte[] Content, string ContentType)>> GetContentAsync(Guid id, CancellationToken ct = default)

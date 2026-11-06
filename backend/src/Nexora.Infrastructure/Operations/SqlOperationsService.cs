@@ -31,7 +31,9 @@ public sealed class SqlOperationsService(
     IDataQualityService dataQuality,
     MigrationStatusProbe migrationProbe,
     Microsoft.Extensions.Configuration.IConfiguration configuration,
-    RuntimeEnvironment runtime) : IOperationsService
+    RuntimeEnvironment runtime,
+    IPlatformOperationGuard guard,
+    IBusinessCalendar calendar) : IOperationsService
 {
     private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
@@ -169,6 +171,23 @@ public sealed class SqlOperationsService(
                 : migrations.Unknown.Count > 0 ? $"base plus récente que l'application : {string.Join(", ", migrations.Unknown)}"
                 : $"{migrations.Applied} migration(s) appliquée(s), dernière {migrations.LatestApplied} — conforme à l'application"));
 
+        // Audit 2026-10 éd. 2 (A-042) : l'exercice comptable couvre la mise en service et les semaines qui suivent — au
+        // changement d'année sans exercice suivant, toute écriture était refusée.
+        var today = await calendar.TodayAsync(ct);
+        var lastEnd = await db.Database.SqlQuery<DateOnly?>($"""
+            SELECT MAX(end_date) AS "Value" FROM nexora.accounting_period WHERE company_id = {company}
+            """).FirstOrDefaultAsync(ct);
+        var covered = lastEnd is { } end && await ScalarBoolAsync($"""
+            SELECT EXISTS(SELECT 1 FROM nexora.accounting_period
+                          WHERE company_id = {company} AND start_date <= {today} AND end_date >= {today}) AS "Value"
+            """, ct);
+        checks.Add(C("fiscal_year_ahead", "Exercice comptable en cours et suivant", "functional",
+            lastEnd is null ? "fail" : covered && lastEnd >= today.AddDays(60) ? "pass" : "warn", "auto",
+            lastEnd is null ? "aucun exercice comptable : aucune écriture ne peut être enregistrée"
+                : !covered ? $"aucun exercice ne couvre le {today:dd/MM/yyyy} (dernier : jusqu'au {lastEnd:dd/MM/yyyy}) — ouvrez l'exercice suivant"
+                : lastEnd < today.AddDays(60) ? $"le dernier exercice se termine le {lastEnd:dd/MM/yyyy} — ouvrez l'exercice suivant (Comptabilité → Périodes)"
+                : $"exercices ouverts jusqu'au {lastEnd:dd/MM/yyyy}"));
+
         // §31, §46 : qualité des données
         var dq = await TryAsync(() => dataQuality.EvaluateAsync(ct));
         checks.Add(C("data_quality", "Qualité des données acceptable", "functional",
@@ -285,6 +304,8 @@ public sealed class SqlOperationsService(
 
     public async Task<Result<DeploymentDto>> RecordDeploymentAsync(RecordDeploymentRequest request, CancellationToken ct = default)
     {
+        // Journal des déploiements de l'installation entière (table plateforme) — audit 2026-10, A-031.
+        if (await guard.RequirePlatformWideAsync(Nexora.Application.Security.Permissions.Operations.Manage, ct) is { } refused) return refused;
         if (string.IsNullOrWhiteSpace(request.Version) || request.Version.Trim().Length > 100)
             return Error.Validation("operations.version", "Version invalide (1–100 caractères).");
         var env = request.Environment?.Trim().ToLowerInvariant() ?? "production";
@@ -306,6 +327,7 @@ public sealed class SqlOperationsService(
     public async Task<Result<DeploymentDto>> RollBackAsync(Guid deploymentId, RollbackRequest request, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(request.Reason)) return Error.Validation("operations.reason", "Motif de rollback requis.");
+        if (await guard.RequirePlatformWideAsync(Nexora.Application.Security.Permissions.Operations.Manage, ct) is { } refused) return refused;
 
         var orig = await db.Database.SqlQuery<DeploymentRow>($"""
             SELECT id AS "Id", version AS "Version", environment AS "Environment", status AS "Status",

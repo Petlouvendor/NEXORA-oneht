@@ -51,7 +51,10 @@ public sealed class CatalogPricingEngine(NexoraDbContext db, ITenantContext tena
         var basePrice = baseRow?.Amount ?? 0m;
 
         // --- 2. Liste tarifaire / tarif client + palier quantité --------------
-        var scoped = await ResolveAsync(req.ProductId, currencyId.Value, at, qty, req.PriceListId, customerGroupId, ct)
+        // Même règle que l'encaissement (A-013) : liste choisie, sinon celle du groupe du client.
+        var priceListId = req.PriceListId
+            ?? await PriceListResolver.ForCustomerGroupAsync(db, Company, customerGroupId, currencyId.Value, ct);
+        var scoped = await ResolveAsync(req.ProductId, currencyId.Value, at, qty, priceListId, customerGroupId, ct)
                      ?? baseRow;
         var winning = scoped ?? new PriceRow(0m, false, null, 0m, null, null);
         var unit = winning.Amount;
@@ -123,12 +126,19 @@ public sealed class CatalogPricingEngine(NexoraDbContext db, ITenantContext tena
             else if (coupon.UsageLimit is { } lim && coupon.UsedCount >= lim)
                 steps.Add(new PriceStepDto("coupon", $"Coupon « {req.CouponCode} » épuisé", 0m,
                     R4((lineNet - discountTotal) / qty), "ignoré"));
+            else if (coupon.DiscountType != "percentage" && discountTotal > 0m)
+                // Même règle que la caisse (SqlSalesPricing) : un coupon à montant fixe ne se cumule pas avec une promotion.
+                steps.Add(new PriceStepDto("coupon", $"Coupon « {req.CouponCode} » non cumulable avec la promotion", 0m,
+                    R4((lineNet - discountTotal) / qty), "ignoré"));
             else
             {
-                var remaining = lineNet - discountTotal;
+                // Audit 2026-10 éd. 2, A-039 : le simulateur appliquait le pourcentage après la promotion, la caisse sur le
+                // montant de la ligne avant promotion (102,96 annoncés, 100,10 encaissés). Le simulateur suit la caisse,
+                // qui fait foi : pourcentage sur le montant de la ligne, cumulé à la promotion, remise plafonnée à la ligne.
                 var d = coupon.DiscountType == "percentage"
-                    ? R2(remaining * coupon.DiscountValue / 100m)
-                    : Math.Min(remaining, R2(coupon.DiscountValue));
+                    ? R2(lineNet * coupon.DiscountValue / 100m)
+                    : R2(coupon.DiscountValue);
+                d = Math.Min(d, lineNet - discountTotal);
                 if (d > 0m)
                 {
                     discountTotal += d;
@@ -180,7 +190,7 @@ public sealed class CatalogPricingEngine(NexoraDbContext db, ITenantContext tena
             WHERE product_id = {productId} AND price_type = 'sale' AND currency_id = {currencyId}
               AND quantity_min <= {qty} AND valid_from <= {at}
               AND (valid_to IS NULL OR valid_to > {at})
-              AND (price_list_id = {priceListId}::uuid OR (price_list_id IS NULL AND {priceListId}::uuid IS NULL))
+              AND (price_list_id IS NULL OR price_list_id = {priceListId}::uuid)
               AND (customer_group_id = {customerGroupId}::uuid OR customer_group_id IS NULL)
             ORDER BY (price_list_id IS NOT NULL) DESC,
                      (customer_group_id IS NOT NULL) DESC,

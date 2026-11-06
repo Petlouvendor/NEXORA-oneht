@@ -16,13 +16,15 @@ namespace Nexora.Api.Controllers;
 [ApiVersion("1.0")]
 [Route("api/v{version:apiVersion}/sales")]
 public sealed class SalesController(
-    SalesService sales, SalesReturnService returns, ISalesQueries queries, IFinanceOperations finance) : ApiControllerBase
+    SalesService sales, SalesReturnService returns, ISalesQueries queries,
+    Nexora.Application.Customers.ICustomerAccountService accounts) : ApiControllerBase
 {
     [HttpPost]
     [RequirePermission(Permissions.Pos.Sell)]
     [Idempotent]
     public async Task<IActionResult> Create([FromBody] CheckoutCommand cmd, CancellationToken ct)
-        => FromResult(await sales.CheckoutAsync(cmd, ct));
+        // Datée par le serveur, comme /pos/checkout (audit 2026-10, A-003).
+        => FromResult(await sales.CheckoutAsync(cmd with { SoldAt = null }, ct));
 
     [HttpGet("{id:guid}")]
     [RequirePermission(Permissions.Pos.View)]
@@ -32,8 +34,14 @@ public sealed class SalesController(
         return s is null ? NotFound() : Ok(s);
     }
 
+    /// <summary>
+    /// Règlement d'une vente à crédit. Passe par le service des comptes clients (audit 2026-10, A-014) : même droit
+    /// (<c>credit.receive_payment</c>), mêmes contrôles (session de caisse ouverte, devise du compte, mouvement de
+    /// caisse pour des espèces) qu'un versement saisi sur la fiche client. Avant, <c>pos.sell</c> suffisait et les
+    /// espèces n'entraient pas dans le tiroir de la session.
+    /// </summary>
     [HttpPost("{id:guid}/payments")]
-    [RequirePermission(Permissions.Pos.Sell)]
+    [RequirePermission(Permissions.Credit.ReceivePayment)]
     [Idempotent]
     public async Task<IActionResult> Pay(Guid id, [FromBody] SalePaymentBody body, CancellationToken ct)
     {
@@ -43,9 +51,9 @@ public sealed class SalesController(
         if (receivableId is not { } receivable)
             throw new DomainException(Error.Conflict("sales.no_open_receivable", "Aucune créance ouverte pour cette vente."));
 
-        return FromResult(await finance.RecordCustomerPaymentAsync(new RecordPaymentRequest(
-            body.OperationUuid, DateTimeOffset.UtcNow, customer, body.Amount, currency, body.TenderFinancialAccountId,
-            [new AllocationInput(receivable, body.Amount, IsReceivable: true)], body.Reference), ct));
+        return FromResult(await accounts.RecordPaymentAsync(customer, new Nexora.Contracts.Customers.RecordCustomerPaymentRequest(
+            body.OperationUuid, body.Amount, body.TenderFinancialAccountId, body.PaymentMethodId, body.CashSessionId, body.Reference,
+            null, [new Nexora.Contracts.Customers.PaymentAllocationInput(receivable, body.Amount)], currency), ct));
     }
 
     /// <summary>Retour exécuté immédiatement — réservé à <c>pos.refund</c> (guide §10) ; le caissier
@@ -61,6 +69,7 @@ public sealed class SalesController(
     public async Task<IActionResult> Cancel(Guid id, [FromBody] ReasonBody body, CancellationToken ct)
         => FromResult(await sales.VoidAsync(id, body.Reason, ct));
 
-    public sealed record SalePaymentBody(Guid OperationUuid, decimal Amount, Guid TenderFinancialAccountId, string? Reference);
+    public sealed record SalePaymentBody(Guid OperationUuid, decimal Amount, Guid TenderFinancialAccountId, string? Reference,
+        Guid? PaymentMethodId = null, Guid? CashSessionId = null);
     public sealed record ReasonBody(string Reason);
 }

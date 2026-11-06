@@ -16,7 +16,8 @@ namespace Nexora.Infrastructure.Experience;
 /// seconde barrière.
 /// </summary>
 public sealed class GlobalSearchService(
-    NexoraDbContext db, ITenantContext tenant, IPermissionService permissions) : IGlobalSearchService
+    NexoraDbContext db, ITenantContext tenant, IPermissionService permissions,
+    Nexora.Infrastructure.Payroll.PayrollAccess payrollAccess) : IGlobalSearchService
 {
     private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
@@ -99,6 +100,12 @@ public sealed class GlobalSearchService(
 
         if (granted.Contains(Permissions.Hr.ViewEmployees))
         {
+            // Même périmètre que le module RH (audit 2026-10 éd. 2) : un Manager restreint à son équipe ne trouve
+            // que son équipe — la recherche cherchait dans toute l'entreprise.
+            var scope = await payrollAccess.ScopeAsync(
+                [Permissions.Hr.ViewEmployees, Permissions.Hr.ManageEmployees, Permissions.Payroll.ViewSalaries],
+                [Permissions.Hr.ApproveRequests], allowSelf: true, ct);
+            var allowed = scope.Ids.ToArray();
             // Jamais de donnée sensible (salaire, banque, identifiants) : nom, matricule, poste.
             var rows = await db.Database.SqlQuery<Row>($"""
                 SELECT e.id AS "Id", e.first_name || ' ' || e.last_name AS "Title",
@@ -106,6 +113,7 @@ public sealed class GlobalSearchService(
                 FROM nexora.employee e
                 CROSS JOIN LATERAL (SELECT nexora.search_norm({q}) AS n) s
                 WHERE e.company_id = {Company}
+                  AND ({scope.All} OR e.id = ANY({allowed}))
                   AND (nexora.search_norm(e.first_name || ' ' || e.last_name) LIKE '%' || s.n || '%'
                        OR nexora.search_norm(e.last_name || ' ' || e.first_name) LIKE '%' || s.n || '%'
                        OR nexora.search_norm(e.employee_number) LIKE '%' || s.n || '%')

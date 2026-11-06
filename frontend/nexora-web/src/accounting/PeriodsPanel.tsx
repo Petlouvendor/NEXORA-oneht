@@ -3,10 +3,10 @@ import { useAuth } from "@/auth/AuthContext";
 import { useToast } from "@/shared/Toast";
 import { useAsync } from "@/shared/useAsync";
 import { useSubmit } from "@/shared/forms";
-import { dateShort, money } from "@/shared/format";
+import { dateShort, money, todayIso } from "@/shared/format";
 import { Badge, Button, Card, ConfirmDialog, DataTable, Field, Modal, SectionLabel, Select } from "@/shared/ui";
 import {
-  closePeriod, closeYear, generateOpeningBalances, previewCloseYear, reopenPeriod,
+  closePeriod, closeYear, generateOpeningBalances, nextYearState, openNextYear, previewCloseYear, reopenPeriod,
   type AccountingPeriod, type YearEndControl,
 } from "@/accounting/accountingApi";
 
@@ -25,15 +25,29 @@ export function PeriodsPanel({ periods, onChanged }: { periods: AccountingPeriod
   const [periodId, setPeriodId] = useState("");
   const selected = periods.find((p) => p.id === periodId) ?? periods.find((p) => p.status === "open") ?? periods[periods.length - 1];
   const report = useAsync(() => (selected ? previewCloseYear(selected.id) : Promise.resolve(null)), [selected?.id, selected?.status]);
-  const [dialog, setDialog] = useState<{ kind: "close" | "reopen" | "year" | "opening"; period: AccountingPeriod } | null>(null);
+  const [dialog, setDialog] = useState<{ kind: "close" | "reopen" | "year" | "opening" | "next"; period: AccountingPeriod } | null>(null);
   const { busy, error, submit } = useSubmit();
   const r = report.data;
   const done = () => { report.reload(); onChanged(); };
+  const next = nextYearState(periods, todayIso());
+  const canManage = hasPermission("accounting.close_period");
 
   return (
     <div style={{ display: "grid", gap: 12 }}>
       <Card>
-        <SectionLabel>Périodes comptables</SectionLabel>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
+          <SectionLabel>Périodes comptables</SectionLabel>
+          {canManage && next.last && (
+            <Button size="sm" variant={next.dueSoon ? "primary" : "subtle"} disabled={busy || !next.canOpen}
+              title={next.canOpen ? undefined : `${next.last.name} n'a pas encore commencé.`}
+              onClick={() => setDialog({ kind: "next", period: next.last! })}>Ouvrir l'exercice suivant</Button>
+          )}
+        </div>
+        {canManage && next.dueSoon && next.last && (
+          <div role="status" style={{ margin: "6px 0", fontSize: 13, color: "var(--nx-text-2)" }}>
+            {next.last.name} se termine le {dateShort(next.last.endDate)} : ouvrez l'exercice suivant pour préparer le changement d'année.
+          </div>
+        )}
         {error && <div role="alert" className="nx-error-text">{error}</div>}
         <DataTable exportTitle="Périodes comptables"
           columns={[
@@ -87,6 +101,16 @@ export function PeriodsPanel({ periods, onChanged }: { periods: AccountingPeriod
         )}
       </Card>
 
+      {dialog?.kind === "next" && (
+        <ConfirmDialog title="Ouvrir l'exercice suivant" confirmLabel="Ouvrir l'exercice"
+          message={`Un exercice d'un an commencera le lendemain de la fin de ${dialog.period.name} (${dateShort(dialog.period.endDate)}). Les opérations datées de cet exercice seront acceptées.`}
+          onCancel={() => setDialog(null)}
+          onConfirm={async () => {
+            setDialog(null);
+            const created = await submit(() => openNextYear());
+            if (created) { toast.success(`${created.name} ouvert.`); done(); }
+          }} />
+      )}
       {dialog?.kind === "close" && (
         <ConfirmDialog title={`Clôturer ${dialog.period.name}`} confirmLabel="Clôturer"
           message="Plus aucune écriture ne pourra être datée dans cette période (ventes, achats et saisies manuelles comprises) tant qu'elle n'est pas rouverte."

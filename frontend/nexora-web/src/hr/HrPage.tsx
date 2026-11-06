@@ -145,7 +145,7 @@ function EmployeesPanel() {
       {rows ? <DataTable columns={columns} rows={rows} rowKey={(r) => r.id} empty="Aucun employé." exportTitle="Employés" /> : <Spinner />}
       {creating && (
         <EmployeeDialog canSetSalary={hasPermission("payroll.manage_compensation")} onClose={() => setCreating(false)}
-                        onDone={(e) => { setCreating(false); navigate(`/hr/employees/${e.id}`); }} />
+                        onDone={(e) => { setCreating(false); void navigate(`/hr/employees/${e.id}`); }} />
       )}
     </Card>
   );
@@ -168,7 +168,7 @@ function PeriodsPanel() {
     try {
       const run = await calculatePeriod(p.id);
       toast.success(`Paie ${run.runNumber} calculée : ${run.itemCount} employé(s), ${run.blockingCount} anomalie(s) bloquante(s).`);
-      navigate(`/hr/payroll/${run.id}`);
+      void navigate(`/hr/payroll/${run.id}`);
     } catch (e) { toast.error(errorText(e)); } finally { setBusy(null); }
   };
   const columns: Array<Column<PayrollPeriod>> = [

@@ -56,6 +56,13 @@ public interface IFiscalYearService
     /// <summary>Solde les comptes de résultat vers le résultat de l'exercice (journal CL), puis clôture la période.</summary>
     Task<Result<CloseYearResultDto>> CloseYearAsync(Guid periodId, CloseYearRequest r, CancellationToken ct = default);
 
+    /// <summary>
+    /// Réouverture d'un exercice clôturé (audit 2026-10 éd. 2, A-044) : annule l'écriture de clôture par son miroir,
+    /// passe la clôture à « reopened » avec le motif et rouvre la période. Renvoie faux si l'exercice n'avait pas de
+    /// clôture d'exercice (simple réouverture de période, à la charge de l'appelant).
+    /// </summary>
+    Task<Result<bool>> ReopenClosedYearAsync(Guid periodId, string reason, CancellationToken ct = default);
+
     /// <summary>Génère l'écriture d'à-nouveaux d'une période à partir des soldes de bilan de la période source (journal AN).</summary>
     Task<Result<OpeningBalancesResultDto>> GenerateOpeningBalancesAsync(Guid targetPeriodId, GenerateOpeningBalancesRequest r, CancellationToken ct = default);
 }

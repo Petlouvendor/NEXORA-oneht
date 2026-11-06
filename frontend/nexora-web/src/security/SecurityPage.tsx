@@ -245,9 +245,9 @@ export function SecurityPage() {
                   <button className="nx-btn nx-btn--ghost" style={{ padding: "2px 10px", fontSize: 12 }} disabled={busy}
                           onClick={() => run(() => reviewSignal(sig.id, "reviewing"))}>Prendre en revue</button>
                   <button className="nx-btn nx-btn--ghost" style={{ padding: "2px 10px", fontSize: 12 }} disabled={busy}
-                          onClick={async () => { const note = await ask({ title: "Confirmer le signal", label: "Note de revue", required: true, multiline: true }); if (note !== null) run(() => reviewSignal(sig.id, "confirmed", note)); }}>Confirmer</button>
+                          onClick={async () => { const note = await ask({ title: "Confirmer le signal", label: "Note de revue", required: true, multiline: true }); if (note !== null) void run(() => reviewSignal(sig.id, "confirmed", note)); }}>Confirmer</button>
                   <button className="nx-btn nx-btn--ghost" style={{ padding: "2px 10px", fontSize: 12 }} disabled={busy}
-                          onClick={async () => { const note = await ask({ title: "Faux positif", label: "Note", required: true, defaultValue: "faux positif" }); if (note !== null) run(() => reviewSignal(sig.id, "false_positive", note)); }}>Faux positif</button>
+                          onClick={async () => { const note = await ask({ title: "Faux positif", label: "Note", required: true, defaultValue: "faux positif" }); if (note !== null) void run(() => reviewSignal(sig.id, "false_positive", note)); }}>Faux positif</button>
                 </div>
               )}
             </div>
@@ -268,9 +268,9 @@ export function SecurityPage() {
               <div style={{ color: "var(--nx-text-2)", fontSize: 13 }}>{rel(req.requestedAt)} · {req.actions.filter((a) => a.action === "approve").length} approbation(s)</div>
               <div style={{ display: "flex", gap: 6 }}>
                 <button className="nx-btn" style={{ padding: "2px 12px", fontSize: 12 }} disabled={busy}
-                        onClick={async () => { const c = await ask({ title: "Approuver la demande", label: "Commentaire (facultatif)" }); if (c !== null) run(() => decideApproval(req.id, true, c || undefined)); }}>Approuver</button>
+                        onClick={async () => { const c = await ask({ title: "Approuver la demande", label: "Commentaire (facultatif)" }); if (c !== null) void run(() => decideApproval(req.id, true, c || undefined)); }}>Approuver</button>
                 <button className="nx-btn nx-btn--ghost" style={{ padding: "2px 12px", fontSize: 12 }} disabled={busy}
-                        onClick={async () => { const m = await ask({ title: "Refuser la demande", label: "Motif du refus", required: true, danger: true, confirmLabel: "Refuser" }); if (m !== null) run(() => decideApproval(req.id, false, m)); }}>Refuser</button>
+                        onClick={async () => { const m = await ask({ title: "Refuser la demande", label: "Motif du refus", required: true, danger: true, confirmLabel: "Refuser" }); if (m !== null) void run(() => decideApproval(req.id, false, m)); }}>Refuser</button>
               </div>
             </div>
           ))}
@@ -417,14 +417,14 @@ export function SecurityPage() {
               {g.status === "pending" && hasPermission("security.approve_emergency_access") && (
                 <div style={{ display: "flex", gap: 6 }}>
                   <button className="nx-btn" style={{ padding: "2px 12px", fontSize: 12 }} disabled={busy}
-                          onClick={async () => { const n = await ask({ title: "Approuver l'accès d'urgence", label: "Note d'approbation", required: true }); if (n !== null) run(() => decideEmergencyAccess(g.id, true, n)); }}>Approuver</button>
+                          onClick={async () => { const n = await ask({ title: "Approuver l'accès d'urgence", label: "Note d'approbation", required: true }); if (n !== null) void run(() => decideEmergencyAccess(g.id, true, n)); }}>Approuver</button>
                   <button className="nx-btn nx-btn--ghost" style={{ padding: "2px 12px", fontSize: 12 }} disabled={busy}
-                          onClick={async () => { const m = await ask({ title: "Refuser l'accès d'urgence", label: "Motif du refus", required: true, danger: true, confirmLabel: "Refuser" }); if (m !== null) run(() => decideEmergencyAccess(g.id, false, m)); }}>Refuser</button>
+                          onClick={async () => { const m = await ask({ title: "Refuser l'accès d'urgence", label: "Motif du refus", required: true, danger: true, confirmLabel: "Refuser" }); if (m !== null) void run(() => decideEmergencyAccess(g.id, false, m)); }}>Refuser</button>
                 </div>
               )}
               {g.isActive && hasPermission("security.approve_emergency_access") && (
                 <button className="nx-btn nx-btn--ghost" style={{ padding: "2px 12px", fontSize: 12, justifySelf: "start", color: "var(--nx-error)" }} disabled={busy}
-                        onClick={async () => { const m = await ask({ title: "Révoquer l'accès d'urgence", label: "Motif de révocation", required: true, danger: true, confirmLabel: "Révoquer" }); if (m !== null) run(() => revokeEmergencyAccess(g.id, m)); }}>
+                        onClick={async () => { const m = await ask({ title: "Révoquer l'accès d'urgence", label: "Motif de révocation", required: true, danger: true, confirmLabel: "Révoquer" }); if (m !== null) void run(() => revokeEmergencyAccess(g.id, m)); }}>
                   Révoquer maintenant
                 </button>
               )}
@@ -451,7 +451,7 @@ export function SecurityPage() {
                 </div>
                 {f.status !== "resolved" && f.status !== "false_positive" && (
                   <button className="nx-btn nx-btn--ghost" style={{ padding: "2px 10px", fontSize: 12, justifySelf: "start" }} disabled={busy}
-                          onClick={async () => { const n = await ask({ title: "Constat résolu", label: "Notes de remédiation", required: true, multiline: true }); if (n !== null) run(() => updateFindingStatus(f.id, "resolved", n)); }}>
+                          onClick={async () => { const n = await ask({ title: "Constat résolu", label: "Notes de remédiation", required: true, multiline: true }); if (n !== null) void run(() => updateFindingStatus(f.id, "resolved", n)); }}>
                     Marquer résolu
                   </button>
                 )}
@@ -465,7 +465,7 @@ export function SecurityPage() {
                         { value: "critical", label: "Critique" }, { value: "high", label: "Haute" }, { value: "medium", label: "Moyenne" },
                         { value: "low", label: "Basse" }, { value: "info", label: "Information" }] });
                       if (severity === null) return;
-                      run(() => reportFinding({ source: "manual", severity, title }));
+                      void run(() => reportFinding({ source: "manual", severity, title }));
                     }}>
               Déclarer un constat manuel
             </button>

@@ -50,7 +50,9 @@ public sealed class ConfigurationController(
     public async Task<IActionResult> History(CancellationToken ct)
         => Ok(await transfer.HistoryAsync(ct));
 
-    // --- §44-45 versions & rollback ---------------------------
+    // --- §44-45 versions -------------------------------------
+    // Audit 2026-10 éd. 2, A-037 : la route « rollback » ne changeait que le statut des versions — rien n'était restauré.
+    // Elle est retirée ; publier une version la marque comme référence datée (historique), sans appliquer l'instantané.
 
     [HttpGet("{domain}/versions")]
     [RequirePermission(Permissions.Admin.ConfigVersions)]
@@ -62,8 +64,4 @@ public sealed class ConfigurationController(
     public async Task<IActionResult> Publish(Guid versionId, [FromBody] ActivateVersionRequest? r, CancellationToken ct)
         => FromResult(await versions.ActivateAsync(versionId, r ?? new ActivateVersionRequest(null, null), ct));
 
-    [HttpPost("{versionId:guid}/rollback")]
-    [RequirePermission(Permissions.Admin.ConfigVersions)]
-    public async Task<IActionResult> Rollback(Guid versionId, [FromBody] ActivateVersionRequest? r, CancellationToken ct)
-        => FromResult(await versions.ActivateAsync(versionId, r ?? new ActivateVersionRequest(null, "rollback"), ct));
 }

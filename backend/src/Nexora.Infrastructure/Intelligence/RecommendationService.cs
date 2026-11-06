@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Nexora.Application.Abstractions;
 using Nexora.Application.Credit;
 using Nexora.Application.Finance.Treasury;
@@ -22,8 +23,29 @@ namespace Nexora.Infrastructure.Intelligence;
 public sealed class SqlRecommendationService(
     NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow, IDateTimeProvider clock,
     ITreasuryQueries treasury, ICreditPortfolioQueries credit, IBudgetReports budgetReports,
-    ITaskService tasks, IInsightService insights, IBusinessCalendar calendar) : IRecommendationService
+    ITaskService tasks, IInsightService insights, IBusinessCalendar calendar, IPermissionService permissions,
+    Microsoft.Extensions.Logging.ILogger<SqlRecommendationService> logger) : IRecommendationService
 {
+    // A-048 : catégories filtrées selon les permissions de pilotage de l'utilisateur (IntelligenceVisibility).
+    private IReadOnlyCollection<string>? _granted;
+    private async Task<IReadOnlyCollection<string>> GrantedAsync(CancellationToken ct)
+        => _granted ??= tenant.UserId is null ? [] : await permissions.CurrentPermissionsAsync(tenant, ct);
+
+    private async Task<List<Row>> VisibleAsync(IEnumerable<Row> rows, CancellationToken ct)
+    {
+        var granted = await GrantedAsync(ct);
+        return rows.Where(r => Nexora.Application.Intelligence.IntelligenceVisibility.IsVisible(r.Category, granted)).ToList();
+    }
+
+    /// <summary>Recommandation hors des catégories visibles : traitée comme introuvable (ni lue, ni modifiée).</summary>
+    private async Task<bool> HiddenAsync(Guid id, CancellationToken ct)
+    {
+        var category = (await db.Database.SqlQuery<string>($"""
+            SELECT category AS "Value" FROM nexora.recommendation WHERE id = {id} AND company_id = {Company}
+            """).ToListAsync(ct)).FirstOrDefault();
+        return category is not null && !Nexora.Application.Intelligence.IntelligenceVisibility.IsVisible(category, await GrantedAsync(ct));
+    }
+
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
     private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
 
@@ -64,7 +86,7 @@ public sealed class SqlRecommendationService(
                     : await db.Database.SqlQueryRaw<Row>(
                         Select + " WHERE company_id = {0} AND status IN ('new','viewed') AND category = {1} ORDER BY priority_score DESC, created_at DESC LIMIT 200",
                         Company, category.Trim()).ToListAsync(ct))
-                .Select(ToDto).ToList();
+                is var open ? (await VisibleAsync(open, ct)).Select(ToDto).ToList() : [];
         var rows = (status, category) switch
         {
             (null, null) => await db.Database.SqlQueryRaw<Row>(
@@ -79,12 +101,13 @@ public sealed class SqlRecommendationService(
                 Select + " WHERE company_id = {0} AND status = {1} AND category = {2} ORDER BY priority_score DESC, created_at DESC LIMIT 200",
                 Company, s.Trim().ToLowerInvariant(), c.Trim().ToLowerInvariant()).ToListAsync(ct),
         };
-        return rows.Select(ToDto).ToList();
+        return (await VisibleAsync(rows, ct)).Select(ToDto).ToList();
     }
 
     /// <summary>État « Vue » (§17) : première consultation — qui, quand. Sans effet sur une recommandation déjà décidée.</summary>
     public async Task<Result<RecommendationDto>> MarkViewedAsync(Guid id, CancellationToken ct = default)
     {
+        if (await HiddenAsync(id, ct)) return Error.NotFound("recommendation.not_found", "Recommandation introuvable.");
         var rows = await db.Database.ExecuteSqlAsync($"""
             UPDATE nexora.recommendation
                SET status = CASE WHEN status = 'new' THEN 'viewed' ELSE status END,
@@ -99,29 +122,35 @@ public sealed class SqlRecommendationService(
     public async Task<Result<RecommendationDto>> GetAsync(Guid id, CancellationToken ct = default)
     {
         var row = await db.Database.SqlQueryRaw<Row>(Select + " WHERE id = {0} AND company_id = {1}", id, Company).FirstOrDefaultAsync(ct);
-        return row is null ? Error.NotFound("recommendation.not_found", "Recommandation introuvable.") : Result.Success(ToDto(row));
+        return row is null || (await VisibleAsync([row], ct)).Count == 0
+            ? Error.NotFound("recommendation.not_found", "Recommandation introuvable.")
+            : Result.Success(ToDto(row));
     }
 
     // --- §5, §20 Vue générale — agrège les recommandations, jamais un second calcul --------
 
-    private sealed record LevelCountRow(string PriorityLevel, int Count);
+    private sealed record LevelCountRow(string PriorityLevel, string Category, int Count);
 
     public async Task<IntelligenceDashboardDto> DashboardAsync(CancellationToken ct = default)
     {
-        var counts = await db.Database.SqlQueryRaw<LevelCountRow>("""
-            SELECT priority_level AS "PriorityLevel", count(*)::int AS "Count"
+        // A-048 : comptes et listes limités aux catégories visibles de l'utilisateur.
+        var granted = await GrantedAsync(ct);
+        var counts = (await db.Database.SqlQueryRaw<LevelCountRow>("""
+            SELECT priority_level AS "PriorityLevel", category AS "Category", count(*)::int AS "Count"
             FROM nexora.recommendation WHERE company_id = {0} AND status IN ('new', 'viewed')
-            GROUP BY priority_level
-            """, Company).ToListAsync(ct);
-        int CountOf(string level) => counts.FirstOrDefault(c => c.PriorityLevel == level)?.Count ?? 0;
+            GROUP BY priority_level, category
+            """, Company).ToListAsync(ct))
+            .Where(c => Nexora.Application.Intelligence.IntelligenceVisibility.IsVisible(c.Category, granted)).ToList();
+        int CountOf(string level) => counts.Where(c => c.PriorityLevel == level).Sum(c => c.Count);
 
-        var topActions = await db.Database.SqlQueryRaw<Row>(
-            Select + " WHERE company_id = {0} AND status IN ('new', 'viewed') AND nature = 'risk' ORDER BY priority_score DESC LIMIT 5",
-            Company).ToListAsync(ct);
-        var topOpportunities = await db.Database.SqlQueryRaw<Row>(
-            Select + " WHERE company_id = {0} AND status IN ('new', 'viewed') AND nature = 'opportunity' ORDER BY priority_score DESC LIMIT 5",
-            Company).ToListAsync(ct);
-        var openAnomalies = (await insights.ListAsync("open", ct)).Count;
+        var topActions = (await VisibleAsync(await db.Database.SqlQueryRaw<Row>(
+            Select + " WHERE company_id = {0} AND status IN ('new', 'viewed') AND nature = 'risk' ORDER BY priority_score DESC LIMIT 50",
+            Company).ToListAsync(ct), ct)).Take(5).ToList();
+        var topOpportunities = (await VisibleAsync(await db.Database.SqlQueryRaw<Row>(
+            Select + " WHERE company_id = {0} AND status IN ('new', 'viewed') AND nature = 'opportunity' ORDER BY priority_score DESC LIMIT 50",
+            Company).ToListAsync(ct), ct)).Take(5).ToList();
+        var openAnomalies = (await insights.ListAsync("open", ct))
+            .Count(i => Nexora.Application.Intelligence.IntelligenceVisibility.IsVisible(i.Category, granted));
 
         return new IntelligenceDashboardDto(
             CountOf("critical"), CountOf("important"), CountOf("watch"), CountOf("opportunity"), openAnomalies,
@@ -130,6 +159,7 @@ public sealed class SqlRecommendationService(
 
     public async Task<Result<RecommendationDto>> AcceptAsync(Guid id, AcceptRecommendationRequest request, CancellationToken ct = default)
     {
+        if (await HiddenAsync(id, ct)) return Error.NotFound("recommendation.not_found", "Recommandation introuvable.");
         var rows = await db.Database.ExecuteSqlAsync($"""
             UPDATE nexora.recommendation SET status = 'accepted', decided_by = {tenant.UserId}, decided_at = now(),
                    decision_reason = {request.Note}, updated_at = now()
@@ -150,6 +180,7 @@ public sealed class SqlRecommendationService(
 
     public async Task<Result> DismissAsync(Guid id, DismissRecommendationRequest request, CancellationToken ct = default)
     {
+        if (await HiddenAsync(id, ct)) return Error.NotFound("recommendation.not_found", "Recommandation introuvable.");
         var rows = await db.Database.ExecuteSqlAsync($"""
             UPDATE nexora.recommendation SET status = 'dismissed', decided_by = {tenant.UserId}, decided_at = now(),
                    decision_reason = {request.Reason}, updated_at = now()
@@ -162,6 +193,7 @@ public sealed class SqlRecommendationService(
 
     public async Task<Result<RecommendationDto>> SnoozeAsync(Guid id, SnoozeRecommendationRequest request, CancellationToken ct = default)
     {
+        if (await HiddenAsync(id, ct)) return Error.NotFound("recommendation.not_found", "Recommandation introuvable.");
         if (request.Until <= clock.UtcNow) return Error.Validation("recommendation.snooze_until", "La date de report doit être future.");
         var rows = await db.Database.ExecuteSqlAsync($"""
             UPDATE nexora.recommendation SET status = 'snoozed', snooze_until = {request.Until},
@@ -175,6 +207,7 @@ public sealed class SqlRecommendationService(
 
     public async Task<Result<RecommendationDto>> ModifyAsync(Guid id, ModifyRecommendationRequest request, CancellationToken ct = default)
     {
+        if (await HiddenAsync(id, ct)) return Error.NotFound("recommendation.not_found", "Recommandation introuvable.");
         var overrideJson = JsonSerializer.Serialize(request.OverrideValue, Web);
         var rows = await db.Database.ExecuteSqlAsync($"""
             UPDATE nexora.recommendation SET status = 'modified', override_value = {overrideJson}::jsonb,
@@ -188,6 +221,7 @@ public sealed class SqlRecommendationService(
 
     public async Task<Result<RecommendationDto>> ResolveAsync(Guid id, ResolveRecommendationRequest request, CancellationToken ct = default)
     {
+        if (await HiddenAsync(id, ct)) return Error.NotFound("recommendation.not_found", "Recommandation introuvable.");
         var outcome = request.Outcome.Trim().ToLowerInvariant();
         if (outcome is not ("positive" or "negative"))
             return Error.Validation("recommendation.outcome", "Résultat attendu : positive ou negative.");
@@ -214,15 +248,26 @@ public sealed class SqlRecommendationService(
         var today = calendar.Today;
         var rules = await LoadEnabledRulesAsync(today, ct);
         var created = 0;
-        if (rules.TryGetValue("stock_reorder", out var r1)) created += await GenerateStockReorder(r1, today, ct);
-        if (rules.TryGetValue("stock_dormant", out var r2)) created += await GenerateStockDormant(r2, today, ct);
-        if (rules.TryGetValue("receivable_priority", out var r3)) created += await GenerateReceivablePriority(r3, today, ct);
-        if (rules.TryGetValue("cashflow_risk", out var r4)) created += await GenerateCashflowRisk(r4, today, ct);
-        if (rules.TryGetValue("budget_overrun", out var r5)) created += await GenerateBudgetOverrun(r5, today, ct);
-        if (rules.TryGetValue("sales_spike", out var r6)) created += await GenerateSalesSpike(r6, today, ct);
-        if (rules.TryGetValue("sales_decline", out var r7)) created += await GenerateSalesDecline(r7, today, ct);
-        if (rules.TryGetValue("customer_inactive", out var r8)) created += await GenerateCustomerInactive(r8, today, ct);
-        if (rules.TryGetValue("supplier_price_increase", out var r9)) created += await GenerateSupplierPriceIncrease(r9, today, ct);
+        // Une règle au seuil illisible (enregistré avant la validation, ou modifié en base) est sautée ; les autres
+        // règles de l'entreprise produisent quand même leurs recommandations (audit 2026-10 éd. 2).
+        async Task Run(string key, Func<RuleRow, Task<int>> generate)
+        {
+            if (!rules.TryGetValue(key, out var rule)) return;
+            try { created += await generate(rule); }
+            catch (Exception ex) when (ex is JsonException or InvalidOperationException or FormatException)
+            {
+                logger.LogWarning(ex, "Règle d'intelligence {Rule} ignorée : seuil illisible ({Threshold})", key, rule.ThresholdJson);
+            }
+        }
+        await Run("stock_reorder", r => GenerateStockReorder(r, today, ct));
+        await Run("stock_dormant", r => GenerateStockDormant(r, today, ct));
+        await Run("receivable_priority", r => GenerateReceivablePriority(r, today, ct));
+        await Run("cashflow_risk", r => GenerateCashflowRisk(r, today, ct));
+        await Run("budget_overrun", r => GenerateBudgetOverrun(r, today, ct));
+        await Run("sales_spike", r => GenerateSalesSpike(r, today, ct));
+        await Run("sales_decline", r => GenerateSalesDecline(r, today, ct));
+        await Run("customer_inactive", r => GenerateCustomerInactive(r, today, ct));
+        await Run("supplier_price_increase", r => GenerateSupplierPriceIncrease(r, today, ct));
         return created;
     }
 
@@ -279,10 +324,14 @@ public sealed class SqlRecommendationService(
                   AND (inventory_location_id = sb.inventory_location_id OR inventory_location_id IS NULL)
                 ORDER BY inventory_location_id NULLS LAST LIMIT 1
             ) rr ON true
+            -- Vélocité de CET emplacement (audit 2026-10 éd. 2) : les ventes de toute l'entreprise étaient comparées au
+            -- stock d'un seul dépôt — un magasin peu actif recevait la proposition de réassort du plus gros. Sorties
+            -- de vente nettes des retours, telles que le grand livre de stock les a enregistrées.
             LEFT JOIN LATERAL (
-                SELECT SUM(sl.quantity) total_qty, COUNT(DISTINCT s.sold_at::date) history_days
-                FROM nexora.sale_line sl JOIN nexora.sale s ON s.id = sl.sale_id
-                WHERE sl.product_id = p.id AND s.company_id = {Company} AND s.status = 'completed' AND s.sold_at::date > {windowStart}
+                SELECT -SUM(sm.quantity) total_qty, COUNT(DISTINCT sm.occurred_at::date) FILTER (WHERE sm.movement_type = 'sale') history_days
+                FROM nexora.stock_movement sm
+                WHERE sm.product_id = p.id AND sm.company_id = {Company} AND sm.inventory_location_id = sb.inventory_location_id
+                  AND sm.movement_type IN ('sale', 'sale_return') AND sm.occurred_at::date > {windowStart}
             ) v ON true
             WHERE sb.company_id = {Company} AND sb.quantity_available <= rr.reorder_point
             """).ToListAsync(ct);
@@ -317,7 +366,7 @@ public sealed class SqlRecommendationService(
                 $"avec une vélocité de {Math.Round(velocity, 2):0.##} unité(s)/jour.",
                 evidence, impact, rule.ActionLabel, $"Réapprovisionner {r.Name} d'environ {suggested:0} unité(s).",
                 3, r.OnHand <= 0 ? 5 : 4, confScore, confLevel, confReason,
-                $"stock/reorder/{r.ProductId}", today, ct);
+                $"stock/reorder/{r.ProductId}/{r.LocationId}", today, ct);
         }
         return created;
     }

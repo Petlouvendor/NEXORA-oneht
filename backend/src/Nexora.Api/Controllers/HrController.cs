@@ -213,6 +213,7 @@ public sealed class HrController(
     {
         if (!AuditedEntities.Contains(entityType))
             throw new DomainException(Error.Validation("hr.audit_entity", $"Objet « {entityType} » hors du périmètre de l'audit RH."));
-        return Ok(await audit.QueryAsync(new AuditQueryFilter(from, to, null, entityType, entityId, null, page, 100), ct));
+        return Ok(await audit.QueryAsync(new AuditQueryFilter(from, to, null, entityType, entityId, null, page, 100), ct,
+            Permissions.Payroll.Audit));   // A-034 : seulement les entreprises où l'appelant détient payroll.audit
     }
 }

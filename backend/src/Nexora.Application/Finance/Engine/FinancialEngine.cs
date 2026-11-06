@@ -86,8 +86,35 @@ public sealed class FinancialEngine(
         }
         catch (InvalidOperationException ex)
         {
+            if (await ParallelWinnerAsync(evt, ct) is { } replayed) return Result.Success(replayed);
             logger.LogWarning(ex, "Échec de génération pour {Event} ({Op})", evt.GetType().Name, evt.OperationUuid);
             return Error.Validation("finance.posting_failed", ex.Message);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (await ParallelWinnerAsync(evt, ct) is { } replayed) return Result.Success(replayed);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Même opération traitée en même temps par une autre requête (double envoi) : une contrainte d'unicité sur
+    /// l'identifiant d'opération a refusé la seconde écriture. On rejoue la première au lieu d'échouer (audit 2026-10,
+    /// A-004 — le contrôle d'idempotence est fait avant la transaction). Si la transaction englobante est déjà annulée,
+    /// la vérification est impossible : on laisse remonter l'échec d'origine.
+    /// </summary>
+    private async Task<PostingResult?> ParallelWinnerAsync(FinancialEvent evt, CancellationToken ct)
+    {
+        try
+        {
+            if (await journalStore.FindByOperationAsync(evt.OperationUuid, ct) is not { } winner) return null;
+            logger.LogInformation("Événement {Op} traité en parallèle → rejeu de l'écriture {Entry}", evt.OperationUuid, winner);
+            var replay = await journalStore.GetWithLinesAsync(winner, ct);
+            return new PostingResult(winner, replay?.EntryNumber ?? "", WasReplay: true);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return null;
         }
     }
 
@@ -184,7 +211,7 @@ public sealed class FinancialEngine(
             }
 
             case CashSaleRecorded e:
-                await MoveCashAsync(e.TenderFinancialAccountId, e.Total.Amount, "deposit", "sale", e.SaleId, e.OperationUuid, ct);
+                await MoveCashAsync(e.TenderFinancialAccountId, e.Total.Amount, e.Total.Currency, "deposit", "sale", e.SaleId, e.OperationUuid, evt.OccurredAt, ct);
                 return new PostingResult(entry.Id, entry.EntryNumber);
 
             case PosSaleRecorded e:
@@ -192,7 +219,7 @@ public sealed class FinancialEngine(
                 // Idempotence portée par journal_entry.source_operation_uuid + sale.source_operation_uuid ;
                 // les mouvements de trésorerie par moyen ne portent pas l'uuid (plusieurs par vente).
                 foreach (var t in e.Tenders.Where(t => !t.Amount.IsZero))
-                    await MoveCashAsync(t.FinancialAccountId, t.Amount.Amount, "deposit", "sale", e.SaleId, null, ct);
+                    await MoveCashAsync(t.FinancialAccountId, t.Amount.Amount, t.Amount.Currency, "deposit", "sale", e.SaleId, null, evt.OccurredAt, ct);
                 Guid? recvId = null;
                 if (!e.CreditAmount.IsZero && e.CustomerId is { } cust)
                 {
@@ -216,19 +243,19 @@ public sealed class FinancialEngine(
 
             case SaleRefundRecorded e:
                 if (e is { AgainstReceivable: false, RefundMethod: "cash" or "card" or "bank_transfer", TenderFinancialAccountId: { } acc })
-                    await MoveCashAsync(acc, -e.Total.Amount, "withdrawal", "sale_return", e.SaleReturnId, e.OperationUuid, ct);
+                    await MoveCashAsync(acc, -e.Total.Amount, e.Total.Currency, "withdrawal", "sale_return", e.SaleReturnId, e.OperationUuid, evt.OccurredAt, ct);
                 return new PostingResult(entry.Id, entry.EntryNumber);
 
             case CashPurchaseRecorded e:
-                await MoveCashAsync(e.TenderFinancialAccountId, -e.Total.Amount, "withdrawal", "cash_purchase", e.ReferenceId, e.OperationUuid, ct);
+                await MoveCashAsync(e.TenderFinancialAccountId, -e.Total.Amount, e.Total.Currency, "withdrawal", "cash_purchase", e.ReferenceId, e.OperationUuid, evt.OccurredAt, ct);
                 return new PostingResult(entry.Id, entry.EntryNumber);
 
             case ExpenseRecorded e:
-                await MoveCashAsync(e.TenderFinancialAccountId, -e.Total.Amount, "withdrawal", "expense", e.ExpenseId, e.OperationUuid, ct);
+                await MoveCashAsync(e.TenderFinancialAccountId, -e.Total.Amount, e.Total.Currency, "withdrawal", "expense", e.ExpenseId, e.OperationUuid, evt.OccurredAt, ct);
                 return new PostingResult(entry.Id, entry.EntryNumber);
 
             case BankChargeRecorded e:
-                await MoveCashAsync(e.BankFinancialAccountId, -e.Amount.Amount, "fee", "bank_charge", null, e.OperationUuid, ct);
+                await MoveCashAsync(e.BankFinancialAccountId, -e.Amount.Amount, e.Amount.Currency, "fee", "bank_charge", null, e.OperationUuid, evt.OccurredAt, ct);
                 return new PostingResult(entry.Id, entry.EntryNumber);
 
             case ReceivableWrittenOff:
@@ -237,12 +264,16 @@ public sealed class FinancialEngine(
                 return new PostingResult(entry.Id, entry.EntryNumber);
 
             case CashCountRecorded e:
-                await MoveCashAsync(e.CashFinancialAccountId, e.Variance.Amount, "adjustment", "cash_session", e.CashSessionId, e.OperationUuid, ct);
+                await MoveCashAsync(e.CashFinancialAccountId, e.Variance.Amount, e.Variance.Currency, "adjustment", "cash_session", e.CashSessionId, e.OperationUuid, evt.OccurredAt, ct);
+                return new PostingResult(entry.Id, entry.EntryNumber);
+
+            case TreasuryOpeningBalanceRecorded e:
+                await MoveCashAsync(e.FinancialAccountId, e.Amount.Amount, e.Amount.Currency, "opening", "opening_balance", e.FinancialAccountId, e.OperationUuid, evt.OccurredAt, ct);
                 return new PostingResult(entry.Id, entry.EntryNumber);
 
             case FinancialTransferRecorded e:
-                await MoveCashAsync(e.FromFinancialAccountId, -e.Amount.Amount, "transfer_out", "financial_transfer", null, e.OperationUuid, ct);
-                await MoveCashAsync(e.ToFinancialAccountId, e.Amount.Amount, "transfer_in", "financial_transfer", null, e.OperationUuid, ct);
+                await MoveCashAsync(e.FromFinancialAccountId, -e.Amount.Amount, e.Amount.Currency, "transfer_out", "financial_transfer", null, e.OperationUuid, evt.OccurredAt, ct);
+                await MoveCashAsync(e.ToFinancialAccountId, e.Amount.Amount, e.Amount.Currency, "transfer_in", "financial_transfer", null, e.OperationUuid, evt.OccurredAt, ct);
                 return new PostingResult(entry.Id, entry.EntryNumber);
 
             case CustomerPaymentReceived e:
@@ -289,24 +320,24 @@ public sealed class FinancialEngine(
             }
 
             case CustomerCreditRefunded e:
-                await MoveCashAsync(e.TenderFinancialAccountId, -e.Amount.Amount, "withdrawal", "customer_refund", e.RefundId, e.OperationUuid, ct);
+                await MoveCashAsync(e.TenderFinancialAccountId, -e.Amount.Amount, e.Amount.Currency, "withdrawal", "customer_refund", e.RefundId, e.OperationUuid, evt.OccurredAt, ct);
                 return new PostingResult(entry.Id, entry.EntryNumber);
 
             // Module paie (§32) : chaque versement / remboursement est un mouvement de trésorerie référencé.
             case EmployeeAdvancePaid e:
-                await MoveCashAsync(e.TenderFinancialAccountId, -e.Amount.Amount, "withdrawal", "employee_advance", e.AdvanceId, e.OperationUuid, ct);
+                await MoveCashAsync(e.TenderFinancialAccountId, -e.Amount.Amount, e.Amount.Currency, "withdrawal", "employee_advance", e.AdvanceId, e.OperationUuid, evt.OccurredAt, ct);
                 return new PostingResult(entry.Id, entry.EntryNumber);
 
             case EmployeeAdvanceRepaid e:
-                await MoveCashAsync(e.TenderFinancialAccountId, e.Amount.Amount, "deposit", "advance_repayment", e.RepaymentId, e.OperationUuid, ct);
+                await MoveCashAsync(e.TenderFinancialAccountId, e.Amount.Amount, e.Amount.Currency, "deposit", "advance_repayment", e.RepaymentId, e.OperationUuid, evt.OccurredAt, ct);
                 return new PostingResult(entry.Id, entry.EntryNumber);
 
             case SalaryPaid e:
-                await MoveCashAsync(e.TenderFinancialAccountId, -e.Amount.Amount, "withdrawal", "salary_payment", e.SalaryPaymentId, e.OperationUuid, ct);
+                await MoveCashAsync(e.TenderFinancialAccountId, -e.Amount.Amount, e.Amount.Currency, "withdrawal", "salary_payment", e.SalaryPaymentId, e.OperationUuid, evt.OccurredAt, ct);
                 return new PostingResult(entry.Id, entry.EntryNumber);
 
             case EmployeeExpensePaid e:
-                await MoveCashAsync(e.TenderFinancialAccountId, -e.Amount.Amount, "withdrawal", "employee_expense_claim", e.ClaimId, e.OperationUuid, ct);
+                await MoveCashAsync(e.TenderFinancialAccountId, -e.Amount.Amount, e.Amount.Currency, "withdrawal", "employee_expense_claim", e.ClaimId, e.OperationUuid, evt.OccurredAt, ct);
                 return new PostingResult(entry.Id, entry.EntryNumber);
 
             case SupplierPaymentMade e:
@@ -317,11 +348,22 @@ public sealed class FinancialEngine(
         }
     }
 
+    /// <summary>
+    /// Transaction de trésorerie datée de l'opération (audit 2026-10, A-004) — elle l'était de l'instant du traitement :
+    /// une vente hors ligne rejouée, ou toute opération datée, tombait en trésorerie à une autre date que son écriture.
+    /// </summary>
+    /// <remarks>La devise du mouvement doit être celle du compte (audit 2026-10) : le montant était ajouté tel quel au
+    /// solde du compte, dans sa devise — une vente de 1 000 HTG encaissée sur un compte en USD le créditait de
+    /// 1 000 USD, alors que l'écriture, elle, portait 1 000 HTG. Aucune conversion n'est faite ici : refus.</remarks>
     private async Task MoveCashAsync(
-        Guid financialAccountId, decimal signedAmount, string type, string refType, Guid? refId, Guid? opUuid, CancellationToken ct)
+        Guid financialAccountId, decimal signedAmount, string currencyCode, string type, string refType, Guid? refId,
+        Guid? opUuid, DateTimeOffset occurredAt, CancellationToken ct)
     {
         var acc = await financialAccounts.GetAsync(financialAccountId, ct)
             ?? throw new InvalidOperationException($"Compte financier {financialAccountId} introuvable.");
+        if (await currency.ResolveCurrencyIdAsync(currencyCode, ct) != acc.CurrencyId)
+            throw new InvalidOperationException(
+                $"Le compte « {acc.Name} » n'est pas tenu en {currencyCode} : choisissez un compte de cette devise.");
 
         await financialAccounts.AddTransactionAsync(new FinancialTransaction
         {
@@ -333,7 +375,7 @@ public sealed class FinancialEngine(
             CurrencyId = acc.CurrencyId,
             ReferenceType = refType,
             ReferenceId = refId,
-            OccurredAt = DateTimeOffset.UtcNow,
+            OccurredAt = occurredAt,
             Status = "cleared",
             SourceOperationUuid = opUuid,
             CreatedBy = tenant.UserId,
@@ -381,6 +423,8 @@ public sealed class FinancialEngine(
                 // Module clients §23 : un versement ne solde jamais la créance d'un autre client.
                 if (r is not null && r.CustomerId != customerId)
                     throw new InvalidOperationException($"La créance {a.TargetId} n'appartient pas à ce client.");
+                if (r is not null && r.CurrencyId != currencyId)
+                    throw new InvalidOperationException($"La créance {a.TargetId} n'est pas dans la devise du paiement ({amount.Currency}).");
                 open = r?.RemainingAmount;
             }
             else
@@ -388,6 +432,8 @@ public sealed class FinancialEngine(
                 var p = await subledger.GetPayableAsync(a.TargetId, ct);
                 if (p is not null && p.SupplierId != supplierId)
                     throw new InvalidOperationException($"La dette {a.TargetId} n'appartient pas à ce fournisseur.");
+                if (p is not null && p.CurrencyId != currencyId)
+                    throw new InvalidOperationException($"La dette {a.TargetId} n'est pas dans la devise du paiement ({amount.Currency}).");
                 open = p?.RemainingAmount;
             }
 
@@ -412,9 +458,9 @@ public sealed class FinancialEngine(
         }
 
         var signed = direction == PaymentDirection.Inbound ? amount.Amount : -amount.Amount;
-        await MoveCashAsync(tenderAccountId, signed,
+        await MoveCashAsync(tenderAccountId, signed, amount.Currency,
             direction == PaymentDirection.Inbound ? "deposit" : "withdrawal",
-            "payment", payment.Id, evt.OperationUuid, ct);
+            "payment", payment.Id, evt.OperationUuid, evt.OccurredAt, ct);
 
         return new PostingResult(entry.Id, entry.EntryNumber,
             PaymentId: payment.Id,

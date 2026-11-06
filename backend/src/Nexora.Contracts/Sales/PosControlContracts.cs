@@ -97,7 +97,10 @@ public sealed record PendingClosingDto(
 /// la taxe par défaut (0 sans taxe). La caisse en déduit le montant dû exactement comme le serveur (phase 6).</summary>
 public sealed record PosProductDto(
     Guid ProductId, string Name, string Sku, string? Barcode, decimal? SalePrice, string? Currency, string Availability,
-    decimal TaxRate = 0m, bool PriceIncludesTax = false);
+    decimal TaxRate = 0m, bool PriceIncludesTax = false,
+    // Quantité ajoutée par la lecture (audit 2026-10, A-015) : contenu d'un code de carton (12), ou poids lu sur une
+    // étiquette de balance (1,250 kg).
+    decimal PackSize = 1m);
 
 /// <summary>Liste courte et pertinente ; <paramref name="MinChars"/> / <paramref name="MaxResults"/>
 /// rappellent au client les bornes configurées.</summary>

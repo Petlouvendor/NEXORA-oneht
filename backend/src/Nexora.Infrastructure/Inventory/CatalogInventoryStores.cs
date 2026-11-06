@@ -8,6 +8,7 @@ using Nexora.Domain.Inventory;
 using Nexora.Domain.Purchasing;
 using Nexora.Infrastructure.Persistence;
 using Nexora.Domain.Common;
+using Nexora.Domain.Accounting;
 
 namespace Nexora.Infrastructure.Inventory;
 
@@ -302,7 +303,7 @@ public sealed class EfPurchasingStore(NexoraDbContext db, ITenantContext tenant)
             CROSS JOIN LATERAL (SELECT EXISTS (
                 SELECT 1 FROM nexora.journal_entry je
                 WHERE je.company_id = r.company_id AND je.source_type = 'goods_receipt' AND je.source_id = r.id
-                  AND je.status IN ('posted', 'reversed')) AS accrued) a
+                  AND je.status = ANY({LedgerStatuses.InLedger})) AS accrued) a
             WHERE r.company_id = {Company} AND r.status = 'posted' AND l.product_id = ANY({ids})
               AND (r.id = {goodsReceiptId} OR ({goodsReceiptId}::uuid IS NULL AND r.purchase_order_id = {purchaseOrderId}))
             GROUP BY l.product_id
@@ -317,7 +318,7 @@ public sealed class EfPurchasingStore(NexoraDbContext db, ITenantContext tenant)
         var row = await db.Database.SqlQuery<ReceiptStateRow>($"""
             SELECT EXISTS (SELECT 1 FROM nexora.journal_entry je
                            WHERE je.company_id = r.company_id AND je.source_type = 'goods_receipt' AND je.source_id = r.id
-                             AND je.status IN ('posted', 'reversed')) AS "Accrued",
+                             AND je.status = ANY({LedgerStatuses.InLedger})) AS "Accrued",
                    EXISTS (SELECT 1 FROM nexora.supplier_invoice i
                            WHERE i.company_id = r.company_id AND i.status <> 'cancelled'
                              AND (i.goods_receipt_id = r.id
@@ -462,6 +463,22 @@ public sealed class EfInventoryOpsStore(NexoraDbContext db, ITenantContext tenan
     public Task<StockTransfer?> GetTransferAsync(Guid id, CancellationToken ct = default)
         => db.StockTransfers.Include(t => t.Lines).FirstOrDefaultAsync(t => t.Id == id, ct);
 
+    public async Task<StockTransfer?> LockTransferAsync(Guid id, CancellationToken ct = default)
+    {
+        await db.Database.ExecuteSqlAsync($"SELECT id FROM nexora.stock_transfer WHERE id = {id} FOR UPDATE", ct);
+        var transfer = await db.StockTransfers.Include(t => t.Lines).FirstOrDefaultAsync(t => t.Id == id, ct);
+        if (transfer is null) return null;
+        // Déjà suivi par le contexte (lecture antérieure) : on écrase par l'état en base, lu après le verrou.
+        await db.Entry(transfer).ReloadAsync(ct);
+        foreach (var line in transfer.Lines) await db.Entry(line).ReloadAsync(ct);
+        return transfer;
+    }
+
+    public async Task<string?> LockCountStatusAsync(Guid id, CancellationToken ct = default)
+        => (await db.Database.SqlQuery<string>($"""
+            SELECT status AS "Value" FROM nexora.inventory_count WHERE id = {id} FOR UPDATE
+            """).ToListAsync(ct)).FirstOrDefault();
+
     public async Task AddCountAsync(InventoryCount count, CancellationToken ct = default) => await db.InventoryCounts.AddAsync(count, ct);
     public Task<InventoryCount?> GetCountAsync(Guid id, CancellationToken ct = default)
         => db.InventoryCounts.Include(c => c.Lines).FirstOrDefaultAsync(c => c.Id == id, ct);
@@ -470,6 +487,31 @@ public sealed class EfInventoryOpsStore(NexoraDbContext db, ITenantContext tenan
         => await db.StockBalances.AsNoTracking()
             .Where(s => s.ProductId == productId && s.InventoryLocationId == locationId)
             .Select(s => (decimal?)s.QuantityOnHand).FirstOrDefaultAsync(ct) ?? 0m;
+
+    public async Task<decimal> MovementsBetweenAsync(Guid productId, Guid locationId, Guid? lotId, DateTimeOffset after,
+        DateTimeOffset upTo, CancellationToken ct = default)
+        => await db.Database.SqlQuery<decimal>($"""
+            SELECT COALESCE(SUM(quantity), 0) AS "Value" FROM nexora.stock_movement
+            WHERE company_id = {Company} AND product_id = {productId} AND inventory_location_id = {locationId}
+              AND ({lotId}::uuid IS NULL OR lot_id = {lotId}::uuid)
+              AND movement_type NOT IN ('reservation', 'release')
+              AND created_at > {after} AND created_at <= {upTo}
+            """).FirstAsync(ct);
+
+    private sealed record LotQuantityRow(Guid LotId, decimal Quantity);
+
+    public async Task<IReadOnlyList<(Guid LotId, decimal Quantity)>> LotQuantitiesAsync(Guid productId, Guid locationId,
+        CancellationToken ct = default)
+        => (await db.Database.SqlQuery<LotQuantityRow>($"""
+                SELECT ls.lot_id AS "LotId", ls.quantity_on_hand AS "Quantity"
+                FROM nexora.lot_stock ls
+                JOIN nexora.lot l ON l.id = ls.lot_id
+                JOIN nexora.product p ON p.id = l.product_id AND p.track_lots
+                WHERE ls.company_id = {Company} AND l.product_id = {productId} AND ls.inventory_location_id = {locationId}
+                  AND ls.quantity_on_hand <> 0
+                ORDER BY l.expiration_date NULLS LAST, l.lot_number
+                """).ToListAsync(ct))
+            .Select(r => (r.LotId, r.Quantity)).ToList();
 
     public async Task<decimal> AverageCostAsync(Guid productId, Guid locationId, CancellationToken ct = default)
         => await db.StockBalances.AsNoTracking()

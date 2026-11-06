@@ -33,7 +33,9 @@ internal static class CustomerAccountRules
     public static readonly IReadOnlySet<string> ActionOutcomes = new HashSet<string>(
         ["reached", "no_answer", "promise", "refused", "dispute", "paid", "other"]);
 
-    public static decimal Money(decimal v) => Math.Round(v, 2, MidpointRounding.AwayFromZero);
+    /// <summary>Arrondi bancaire, comme les ventes et le moteur financier (audit 2026-10 éd. 2 : « au plus loin de zéro »
+    /// ici, au pair ailleurs — un centime d'écart entre un versement client et l'écriture qu'il produit).</summary>
+    public static decimal Money(decimal v) => Math.Round(v, 2, MidpointRounding.ToEven);
 
     public static Guid Company(ITenantContext tenant)
         => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();

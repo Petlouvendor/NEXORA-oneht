@@ -30,10 +30,12 @@ public sealed class PostingRuleSet : IPostingRuleSet
             ExpenseRecorded e => await Expense(e, ctx, ct),
             CashCountRecorded e => await CashCount(e, ctx, ct),
             FinancialTransferRecorded e => await Transfer(e, ctx, ct),
+            TreasuryOpeningBalanceRecorded e => await TreasuryOpening(e, ctx, ct),
             BankChargeRecorded e => await BankCharge(e, ctx, ct),
             ReceivableWrittenOff e => await ReceivableWriteOff(e, ctx, ct),
             InventoryWriteOffRecorded e => await InventoryWriteOff(e, ctx, ct),
             InventoryRevaluationRecorded e => await InventoryRevaluation(e, ctx, ct),
+            InventoryOpeningRecorded e => await InventoryOpening(e, ctx, ct),
             SupplierReturnRecorded e => await SupplierReturn(e, ctx, ct),
             PosSaleRecorded e => await PosSale(e, ctx, ct),
             SaleRefundRecorded e => await SaleRefund(e, ctx, ct),
@@ -49,6 +51,7 @@ public sealed class PostingRuleSet : IPostingRuleSet
             EmployeeExpensePaid e => await EmployeeExpensePayment(e, ctx, ct),
             _ => throw new NotSupportedException($"Aucune règle de génération pour {evt.GetType().Name}."),
         };
+        draft.AbsorbConversionRounding(ctx.FunctionalDecimals);
         draft.EnsureBalanced();
         return draft;
     }
@@ -93,6 +96,11 @@ public sealed class PostingRuleSet : IPostingRuleSet
     private static async Task AddCogs(JournalEntryDraft d, Money? cogs, PostingContext ctx, DateTimeOffset at, CancellationToken ct)
     {
         if (cogs is not { } c || c.IsZero) return;
+        // Le coût vient de la valorisation du stock, tenue en devise fonctionnelle : le convertir au taux de la vente le
+        // multipliait par ce taux (audit 2026-10 éd. 2, A-052). Un coût dans une autre devise est une erreur d'appelant.
+        if (c.Currency != ctx.FunctionalCurrency)
+            throw new InvalidOperationException(
+                $"Le coût des marchandises vendues doit être en {ctx.FunctionalCurrency} (reçu en {c.Currency}).");
         var (cogsBase, rateId) = await ctx.ToFunctional(c, at, ct);
         d.Debit(await ctx.Account(AccountKeys.Cogs, ct), c, cogsBase, rateId, "Coût des marchandises vendues");
         d.Credit(await ctx.Account(AccountKeys.Inventory, ct), c, cogsBase, rateId);
@@ -250,6 +258,28 @@ public sealed class PostingRuleSet : IPostingRuleSet
         return d;
     }
 
+    /// <summary>Solde d'ouverture : D trésorerie / C report à nouveau (l'inverse pour un découvert).</summary>
+    private static async Task<JournalEntryDraft> TreasuryOpening(TreasuryOpeningBalanceRecorded e, PostingContext ctx, CancellationToken ct)
+    {
+        var d = new JournalEntryDraft("OD", ctx.DateOf(e.OccurredAt), ctx.FunctionalCurrency,
+            "treasury_opening", e.FinancialAccountId, "Solde d'ouverture de trésorerie");
+        var amount = e.Amount.Abs();
+        var (amountBase, rateId) = await ctx.ToFunctional(amount, e.OccurredAt, ct);
+        var treasury = await ctx.TenderAccount(e.FinancialAccountId, ct);
+        var carried = await ctx.Account(AccountKeys.RetainedEarnings, ct);
+        if (e.Amount.IsPositive)
+        {
+            d.Debit(treasury, amount, amountBase, rateId);
+            d.Credit(carried, amount, amountBase, rateId);
+        }
+        else
+        {
+            d.Debit(carried, amount, amountBase, rateId);
+            d.Credit(treasury, amount, amountBase, rateId);
+        }
+        return d;
+    }
+
     private static async Task<JournalEntryDraft> BankCharge(BankChargeRecorded e, PostingContext ctx, CancellationToken ct)
     {
         var d = new JournalEntryDraft("BQ", ctx.DateOf(e.OccurredAt), ctx.FunctionalCurrency,
@@ -278,6 +308,16 @@ public sealed class PostingRuleSet : IPostingRuleSet
         var (valueBase, rateId) = await ctx.ToFunctional(e.Value.Abs(), e.OccurredAt, ct);
         d.Debit(await ctx.Account(AccountKeys.InventoryLoss, ct), e.Value.Abs(), valueBase, rateId);
         d.Credit(await ctx.Account(AccountKeys.Inventory, ct), e.Value.Abs(), valueBase, rateId);
+        return d;
+    }
+
+    private static async Task<JournalEntryDraft> InventoryOpening(InventoryOpeningRecorded e, PostingContext ctx, CancellationToken ct)
+    {
+        var d = new JournalEntryDraft("OD", ctx.DateOf(e.OccurredAt), ctx.FunctionalCurrency,
+            "inventory_opening", e.ProductId, "Stock d'ouverture");
+        var (valueBase, rateId) = await ctx.ToFunctional(e.Value, e.OccurredAt, ct);
+        d.Debit(await ctx.Account(AccountKeys.Inventory, ct), e.Value, valueBase, rateId);
+        d.Credit(await ctx.Account(AccountKeys.RetainedEarnings, ct), e.Value, valueBase, rateId);
         return d;
     }
 
@@ -368,9 +408,13 @@ public sealed class PostingRuleSet : IPostingRuleSet
 
         if (e.CostOfGoodsRestocked is { } cogs && !cogs.IsZero)
         {
-            var (cogsBase, _) = await ctx.ToFunctional(cogs, e.OccurredAt, ct);
-            d.Debit(await ctx.Account(AccountKeys.Inventory, ct), cogs, cogsBase, rateId, "Réintégration stock");
-            d.Credit(await ctx.Account(AccountKeys.Cogs, ct), cogs, cogsBase, rateId);
+            // Même règle qu'à la vente (A-052) : coût en devise fonctionnelle, sans taux.
+            if (cogs.Currency != ctx.FunctionalCurrency)
+                throw new InvalidOperationException(
+                    $"Le coût du stock réintégré doit être en {ctx.FunctionalCurrency} (reçu en {cogs.Currency}).");
+            var (cogsBase, cogsRateId) = await ctx.ToFunctional(cogs, e.OccurredAt, ct);
+            d.Debit(await ctx.Account(AccountKeys.Inventory, ct), cogs, cogsBase, cogsRateId, "Réintégration stock");
+            d.Credit(await ctx.Account(AccountKeys.Cogs, ct), cogs, cogsBase, cogsRateId);
         }
         return d;
     }

@@ -550,6 +550,7 @@ public sealed class SqlDocumentQueries(NexoraDbContext db, ITenantContext tenant
     {
         var limit = Math.Clamp(r.Limit, 1, 500);
         var all = await SeesAllAsync(ct);
+        var types = r.Types is { Count: > 0 } ? r.Types.ToArray() : null;
         var rows = await db.Database.SqlQuery<DocRow>($"""
             SELECT d.id AS "Id", d.document_type AS "DocumentType", d.document_number AS "DocumentNumber", d.status AS "Status",
                    d.language AS "Language", d.party_type AS "PartyType", d.party_id AS "PartyId",
@@ -565,6 +566,7 @@ public sealed class SqlDocumentQueries(NexoraDbContext db, ITenantContext tenant
             WHERE d.company_id = {Company}
               AND ({all} OR d.created_by = {tenant.UserId} OR d.issued_by = {tenant.UserId})
               AND ({r.Type}::text IS NULL OR d.document_type = {r.Type})
+              AND ({types}::text[] IS NULL OR d.document_type = ANY({types}))
               AND ({r.Status}::text IS NULL OR d.status = {r.Status})
               AND ({r.Number}::text IS NULL OR d.document_number ILIKE '%' || {r.Number} || '%')
               AND ({r.PartyId}::uuid IS NULL OR d.party_id = {r.PartyId})

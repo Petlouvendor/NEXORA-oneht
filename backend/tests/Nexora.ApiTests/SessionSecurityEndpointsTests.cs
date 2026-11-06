@@ -17,10 +17,8 @@ namespace Nexora.ApiTests;
 public sealed class SessionSecurityEndpointsTests(WebApplicationFactory<Program> factory)
     : IClassFixture<WebApplicationFactory<Program>>
 {
-    private const string DevConnString =
-        "Host=localhost;Port=5432;Database=nexora;Username=nexora_app;Password=nexora_app_dev;Search Path=nexora,public;Include Error Detail=true";
-    private const string AdminConnString =
-        "Host=localhost;Port=5432;Database=nexora;Username=postgres;Password=Admin@2023;Search Path=nexora,public";
+    private static readonly string DevConnString = ApiTestDatabase.App;
+    private static readonly string AdminConnString = ApiTestDatabase.Admin;
     private const string Pharmacy = "dce00000-0000-0000-0000-0000000000c1";
     private const string Password = "Session!Test2026";
 

@@ -152,6 +152,7 @@ public sealed class SqlUserAssignmentService(
         // société ne peut pas retirer l'accès de la direction du groupe (finalisation phase 14).
         if (row.ScopeType == "GROUP" && row.GroupId is { } rg && !await ManagesUsersGroupWideAsync(rg, ct))
             return Error.Forbidden("identity.group_scope", "Ce rôle est attribué au niveau du groupe : seul un administrateur du groupe peut le retirer.");
+        if (row.UserId != Caller && await OutranksCallerAsync(row.UserId, ct) is { } outranked) return outranked;
 
         await db.Database.ExecuteSqlAsync($"""
             UPDATE nexora.user_role
@@ -159,6 +160,7 @@ public sealed class SqlUserAssignmentService(
                 reason = COALESCE(reason || ' — ', '') || {"révoquée : " + request.Reason.Trim()}
             WHERE id = {assignmentId} AND revoked_at IS NULL
             """, ct);
+        sessionCache.InvalidateUser(row.UserId);   // droits relus dès la requête suivante (audit 2026-10, A-010)
         return Result.Success();
     }
 
@@ -170,6 +172,7 @@ public sealed class SqlUserAssignmentService(
         if (userId == Caller) return Error.Forbidden("identity.self", "Vous ne pouvez pas changer votre propre statut.");
         if (!await SharesCompanyAsync(userId, ct))
             return Error.NotFound("identity.user", "Utilisateur introuvable dans votre périmètre.");
+        if (await OutranksCallerAsync(userId, ct) is { } outranked) return outranked;
 
         await db.Database.ExecuteSqlAsync($"""
             UPDATE nexora.app_user
@@ -184,10 +187,46 @@ public sealed class SqlUserAssignmentService(
 
     // --- Helpers ---------------------------------------------------------
 
+    /// <summary>
+    /// Anti-élévation sur un compte existant (audit 2026-10, A-010) : on ne suspend pas, et on ne retire pas les
+    /// rôles d'un compte qui détient — dans une entreprise, un groupe ou la plateforme qu'il partage avec l'appelant —
+    /// une permission que l'appelant n'a pas. Avant, seule l'attribution était gardée : un administrateur des
+    /// utilisateurs d'une société pouvait suspendre la direction ou lui retirer son rôle.
+    /// </summary>
+    private async Task<Error?> OutranksCallerAsync(Guid targetUserId, CancellationToken ct)
+    {
+        var caller = await permissions.LoadProfileAsync(Caller, ct);
+        var target = await permissions.LoadProfileAsync(targetUserId, ct);
+        var callerPlatform = (caller.PlatformPermissions ?? []).ToHashSet();
+        var missing = new HashSet<string>((target.PlatformPermissions ?? []).Where(p => !callerPlatform.Contains(p)));
+        foreach (var company in target.CompanyIds.Intersect(caller.CompanyIds))
+        {
+            var held = caller.PermissionsFor(company).Concat(callerPlatform).ToHashSet();
+            missing.UnionWith(target.PermissionsFor(company).Where(p => !held.Contains(p)));
+        }
+        foreach (var group in target.GroupIds.Intersect(caller.GroupIds))
+        {
+            var held = caller.GroupPermissionsFor(group).ToHashSet();
+            missing.UnionWith((target.GroupPermissions is { } gp && gp.TryGetValue(group, out var tp) ? tp : [])
+                .Where(p => !held.Contains(p)));
+        }
+        return missing.Count == 0
+            ? null
+            : Error.Forbidden("identity.escalation",
+                $"Ce compte détient des droits que vous n'avez pas ({string.Join(", ", missing.Order().Take(5))}) : seul un administrateur au moins aussi habilité peut agir sur lui.");
+    }
+
+    /// <summary>
+    /// Entreprises où l'appelant gère les utilisateurs (audit 2026-10 éd. 2, A-033) : la permission était vérifiée sur
+    /// l'entreprise active, mais le périmètre comprenait toute entreprise d'appartenance — un administrateur de A,
+    /// simple caissier dans B, listait et affectait les comptes de B.
+    /// </summary>
     private async Task<Guid[]> AuthorizedCompaniesAsync(CancellationToken ct)
     {
         var profile = await permissions.LoadProfileAsync(Caller, ct);
-        return profile.Memberships.Select(m => m.CompanyId).Distinct().ToArray();
+        return profile.Memberships
+            .Where(m => profile.HasPermission(Nexora.Application.Security.Permissions.Admin.ManageUsers, m.CompanyId))
+            .Select(m => m.CompanyId).Distinct().ToArray();
     }
 
     private sealed class GrantRejected(Error error) : Exception(error.Message) { public Error Error { get; } = error; }

@@ -41,6 +41,9 @@ public sealed class SqlSalesPricing(NexoraDbContext db, ITenantContext tenant) :
         Guid? customerGroupId = customerId is null ? null : await db.Database
             .SqlQuery<Guid?>($"""SELECT customer_group_id AS "Value" FROM nexora.customer WHERE id = {customerId}""")
             .FirstOrDefaultAsync(ct);
+        // Liste tarifaire du groupe du client (A-013) : ses prix priment, les prix de base restent le repli.
+        var priceListId = await Nexora.Infrastructure.Catalog.PriceListResolver.ForCustomerGroupAsync(
+            db, Company, customerGroupId, currencyId, ct);
 
         Guid? couponId = null;
         decimal couponPercent = 0m, couponAmount = 0m;
@@ -61,7 +64,8 @@ public sealed class SqlSalesPricing(NexoraDbContext db, ITenantContext tenant) :
             }
         }
 
-        var result = new List<PricedLine>();
+        var priced = new List<(CheckoutLine Line, decimal UnitPrice, decimal Gross, decimal Promo, string? PromoLabel,
+            Guid? PromoId, decimal TaxRate, Guid? TaxId, decimal UnitCost, string Name)>();
         foreach (var line in lines)
         {
             var product = await db.Products.AsNoTracking().FirstOrDefaultAsync(p => p.Id == line.ProductId, ct)
@@ -73,17 +77,19 @@ public sealed class SqlSalesPricing(NexoraDbContext db, ITenantContext tenant) :
                     WHERE product_id = {line.ProductId} AND price_type = 'sale' AND currency_id = {currencyId}
                       AND quantity_min <= {line.Quantity} AND valid_from <= {at}
                       AND (valid_to IS NULL OR valid_to > {at})
-                      AND price_list_id IS NULL
+                      AND (price_list_id IS NULL OR price_list_id = {priceListId}::uuid)
                       AND (customer_group_id IS NULL OR customer_group_id = {customerGroupId})
-                    ORDER BY (customer_group_id IS NOT NULL) DESC, quantity_min DESC, valid_from DESC
+                    ORDER BY (price_list_id IS NOT NULL) DESC, (customer_group_id IS NOT NULL) DESC, quantity_min DESC, valid_from DESC
                     LIMIT 1
                     """).FirstOrDefaultAsync(ct)
                 : null;
             decimal unitPrice = line.UnitPriceOverride ?? priceRow?.Amount ?? 0m;
 
+            // Taxe fournie par l'appelant : contrôlée par ISalePricingGuard (A-040) ; seule une taxe active de
+            // l'entreprise est retenue ici, jamais celle d'une autre entreprise.
             var taxId = line.TaxId ?? product.DefaultTaxId;
             decimal taxRate = taxId is null ? 0m : await db.Database.SqlQuery<decimal?>($"""
-                SELECT rate AS "Value" FROM nexora.tax WHERE id = {taxId}
+                SELECT rate AS "Value" FROM nexora.tax WHERE id = {taxId} AND company_id = {Company} AND status = 'active'
                 """).FirstOrDefaultAsync(ct) ?? 0m;
 
             // §25 : un prix saisi TTC est ramené au HT de façon déterministe ; le reste du
@@ -109,13 +115,32 @@ public sealed class SqlSalesPricing(NexoraDbContext db, ITenantContext tenant) :
             }
 
             if (couponPercent > 0m) promoDiscount += Math.Round(gross * couponPercent / 100m, 2);
-            else if (couponAmount > 0m && promoDiscount == 0m) promoDiscount += Math.Min(gross, couponAmount);
-
-            result.Add(new PricedLine(
-                line.ProductId, line.Quantity, unitPrice, Math.Round(line.LineDiscount, 2),
-                promoDiscount, promoLabel, promoId, couponId, taxRate, taxId, unitCost, product.Name));
+            priced.Add((line, unitPrice, gross, Math.Min(promoDiscount, gross), promoLabel, promoId, taxRate, taxId, unitCost, product.Name));
         }
-        return result;
+
+        // Coupon à montant fixe : UNE fois par panier (audit 2026-10, A-012 — il s'appliquait à chaque ligne : 50 HTG
+        // devenaient 100 sur deux lignes, 150 sur trois). Réparti au prorata des lignes sans promotion (le coupon fixe
+        // ne se cumule pas avec une promotion, comme avant), plafonné à leur montant ; l'arrondi va à la dernière.
+        var couponShare = new decimal[priced.Count];
+        if (couponAmount > 0m)
+        {
+            var eligible = Enumerable.Range(0, priced.Count).Where(i => priced[i].Promo == 0m && priced[i].Gross > 0m).ToList();
+            var eligibleGross = eligible.Sum(i => priced[i].Gross);
+            var toSpread = Math.Min(couponAmount, eligibleGross);
+            var spread = 0m;
+            for (var k = 0; k < eligible.Count; k++)
+            {
+                var i = eligible[k];
+                couponShare[i] = k == eligible.Count - 1
+                    ? toSpread - spread
+                    : Math.Round(toSpread * priced[i].Gross / eligibleGross, 2, MidpointRounding.ToEven);
+                spread += couponShare[i];
+            }
+        }
+
+        return priced.Select((x, i) => new PricedLine(
+            x.Line.ProductId, x.Line.Quantity, x.UnitPrice, Math.Round(x.Line.LineDiscount, 2),
+            x.Promo + couponShare[i], x.PromoLabel, x.PromoId, couponId, x.TaxRate, x.TaxId, x.UnitCost, x.Name)).ToList();
     }
 
     private sealed record CouponRow(Guid Id, string DiscountType, decimal DiscountValue);
@@ -326,6 +351,12 @@ public sealed class EfSalesReturnStore(NexoraDbContext db, ITenantContext tenant
     public Task<Sale?> GetSaleWithLinesAsync(Guid saleId, CancellationToken ct = default)
         => db.Sales.AsNoTracking().Include(s => s.Lines).FirstOrDefaultAsync(s => s.Id == saleId, ct);
 
+    public async Task LockSaleAsync(Guid saleId, CancellationToken ct = default)
+        => await db.Database.SqlQuery<Guid>($"""
+            SELECT id AS "Value" FROM nexora.sale WHERE id = {saleId} AND company_id = {SalesHelpers.Company(tenant)}
+            FOR UPDATE
+            """).ToListAsync(ct);
+
     public Task<Guid?> ReceivableForSaleAsync(Guid saleId, CancellationToken ct = default)
         => db.Receivables.AsNoTracking().Where(r => r.SaleId == saleId).Select(r => (Guid?)r.Id).FirstOrDefaultAsync(ct);
 
@@ -393,9 +424,9 @@ public sealed class EfCashSessionStore(NexoraDbContext db, ITenantContext tenant
              WHERE id = {sessionId} AND status = 'open'
             """, ct);
 
-    public async Task FinalizeCloseAsync(Guid sessionId, decimal expected, decimal counted, string? notes,
+    public async Task<bool> FinalizeCloseAsync(Guid sessionId, decimal expected, decimal counted, string? notes,
         Guid? validatedBy, string? validationNote, CancellationToken ct = default)
-        => await db.Database.ExecuteSqlAsync($"""
+        => 1 == await db.Database.ExecuteSqlAsync($"""
             UPDATE nexora.cash_session
                SET status = 'closed', closed_at = now(), counted_at = COALESCE(counted_at, now()),
                    expected_balance = {expected}, counted_balance = {counted}, notes = {notes},
@@ -422,6 +453,7 @@ public sealed class SqlSalePricingGuard(
     private Guid Company => SalesHelpers.Company(tenant);
 
     private sealed record ProductState(Guid Id, string Name, string Status, bool IsSellable);
+    private sealed record TaxState(string Status, bool IsProductTax);
 
     public async Task<Nexora.Domain.Common.Result> ValidateProductsAsync(IReadOnlyList<CheckoutLine> requested, CancellationToken ct = default)
     {
@@ -479,6 +511,24 @@ public sealed class SqlSalePricingGuard(
             if (req.UnitPriceOverride is not null && !await Has(Nexora.Application.Security.Permissions.Pos.ChangePrice))
                 return Nexora.Domain.Common.Error.Forbidden("sale.price_override_forbidden",
                     "Modifier le prix de vente exige la permission pos.change_price.");
+
+            // Taxe de la ligne (audit 2026-10 éd. 2, A-040) : le caissier pouvait envoyer l'identifiant d'une taxe à 0 %
+            // et ramener le total de 143 à 130 sans remise déclarée. La taxe est celle de l'article ; une autre taxe exige
+            // pos.change_price (comme un prix forcé) et doit être une taxe active de l'entreprise.
+            if (req.TaxId is { } taxId)
+            {
+                var tax = await db.Database.SqlQuery<TaxState>($"""
+                    SELECT t.status AS "Status", COALESCE(t.id = p.default_tax_id, false) AS "IsProductTax"
+                    FROM nexora.tax t JOIN nexora.product p ON p.id = {line.ProductId}
+                    WHERE t.id = {taxId} AND t.company_id = {Company}
+                    """).FirstOrDefaultAsync(ct);
+                if (tax is null || tax.Status != "active")
+                    return Nexora.Domain.Common.Error.Validation("sale.tax_unknown",
+                        $"Taxe inconnue ou inactive pour « {line.Description} ».");
+                if (!tax.IsProductTax && !await Has(Nexora.Application.Security.Permissions.Pos.ChangePrice))
+                    return Nexora.Domain.Common.Error.Forbidden("sale.tax_override_forbidden",
+                        $"Changer la taxe de « {line.Description} » exige la permission pos.change_price.");
+            }
 
             if (line.ManualDiscount > 0)
             {

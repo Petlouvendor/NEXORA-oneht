@@ -15,7 +15,9 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - nexora-pgdata:/var/lib/postgresql/data
+      # postgres:18 range ses données sous /var/lib/postgresql/18/… : on monte le parent, comme la production
+      # (audit 2026-10 éd. 2 — le montage sur …/data ne correspondait plus à l'image).
+      - nexora-pgdata:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U nexora -d nexora"]
       interval: 5s
@@ -37,6 +39,8 @@ services:
       Database__ConnectionString: "Host=postgres;Port=5432;Database=nexora;Username=nexora_app;Password=${NEXORA_APP_DB_PASSWORD:?definir NEXORA_APP_DB_PASSWORD};Search Path=nexora,public"
       Jwt__SigningKey: "${NEXORA_JWT_SIGNING_KEY:?definir NEXORA_JWT_SIGNING_KEY (32 caracteres minimum)}"
       Security__MfaEncryptionKey: "${NEXORA_MFA_ENCRYPTION_KEY:?definir NEXORA_MFA_ENCRYPTION_KEY (base64 de 32 octets)}"
+      # Clé des données personnelles (paie, banque), distincte de la clé MFA, comme en production.
+      Security__DataEncryptionKey: "${NEXORA_DATA_ENCRYPTION_KEY:?definir NEXORA_DATA_ENCRYPTION_KEY (base64 de 32 octets, differente de la cle MFA)}"
       Cors__Origins__0: "http://localhost:5173"
     ports:
       - "5080:8080"

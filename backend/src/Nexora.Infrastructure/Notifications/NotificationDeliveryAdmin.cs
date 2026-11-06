@@ -68,6 +68,8 @@ public sealed partial class SqlNotificationDeliveryAdmin(
         return Result.Success(r);
     }
 
+    private const int TestMessagesPerHour = 10;
+
     public async Task<Result<OutboxEntryDto>> SendTestAsync(SendTestMessageRequest request, CancellationToken ct = default)
     {
         var c = Find(request.Channel);
@@ -88,6 +90,17 @@ public sealed partial class SqlNotificationDeliveryAdmin(
                 "push" => "Jeton d'appareil invalide.",
                 _ => "Adresse invalide.",
             });
+
+        // Un test part vers une adresse ou un numéro quelconque, à la charge de l'entreprise (SMS facturés) : plafonné
+        // par canal et par heure (audit 2026-10 éd. 2).
+        var recentTests = await db.Database.SqlQuery<int>($"""
+            SELECT COUNT(*)::int AS "Value" FROM nexora.notification_outbox
+            WHERE company_id = {Company} AND channel = {c.Channel} AND category = 'delivery_test'
+              AND created_at > now() - interval '1 hour'
+            """).FirstAsync(ct);
+        if (recentTests >= TestMessagesPerHour)
+            return Error.Conflict("notifications.test_quota",
+                $"Au plus {TestMessagesPerHour} messages de test par canal et par heure. Réessayez plus tard.");
 
         // Le test passe par la file et le répartiteur, comme un vrai message : son résultat est journalisé.
         var id = Guid.NewGuid();

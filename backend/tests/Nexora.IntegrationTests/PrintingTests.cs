@@ -150,6 +150,20 @@ public sealed class PrintingTests(FinanceEngineFixture fx)
         return wb.Worksheets.SelectMany(w => w.CellsUsed()).Any(c => c.GetString().Contains(text, StringComparison.Ordinal));
     }
 
+    // ---- Audit 2026-10 éd. 2 : impressions simultanées — un seul original ----
+    [Fact]
+    public async Task Simultaneous_prints_of_one_receipt_produce_a_single_original()
+    {
+        var customer = await NewCustomer();
+        var sale = await CreditSale(customer.Id, await Product(100m), 3m);
+        var payment = await Pay(sale.ReceivableId!.Value, 100m);
+
+        var prints = await Task.WhenAll(Enumerable.Range(0, 4).Select(_ => Print(PrintableKinds.CustomerPayment, payment.Id, "xlsx")));
+        prints.Count(p => !Contains(p, "DUPLICATA")).Should().Be(1, "une seule sortie est l'original, les autres sont des copies");
+        prints.Where(p => Contains(p, "DUPLICATA")).Select(p => Enumerable.Range(1, 3).Single(n => Contains(p, $"copie n° {n}")))
+            .Should().BeEquivalentTo([1, 2, 3], "chaque copie a son propre numéro");
+    }
+
     // ---- Reçu de versement : total versé / reste à verser du moment, réimpression = DUPLICATA ----
     [Fact]
     public async Task Payment_receipt_freezes_paid_and_remaining_at_payment_time_and_reprints_are_duplicates()

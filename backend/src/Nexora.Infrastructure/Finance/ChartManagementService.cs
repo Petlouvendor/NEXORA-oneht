@@ -4,6 +4,7 @@ using Nexora.Application.Finance.Ledger;
 using Nexora.Contracts.Finance;
 using Nexora.Domain.Common;
 using Nexora.Infrastructure.Persistence;
+using Nexora.Domain.Accounting;
 
 namespace Nexora.Infrastructure.Finance;
 
@@ -22,7 +23,7 @@ public sealed class SqlChartManagementService(NexoraDbContext db, ITenantContext
                a.status AS "Status", a.parent_account_id AS "ParentAccountId", p.code AS "ParentCode", cur.code AS "Currency",
                COALESCE((SELECT SUM(l.base_debit - l.base_credit) FROM nexora.journal_entry_line l
                          JOIN nexora.journal_entry e ON e.id = l.journal_entry_id
-                         WHERE l.account_id = a.id AND e.status IN ('posted', 'reversed')), 0) AS "Balance",
+                         WHERE l.account_id = a.id AND e.status = ANY({LedgerStatuses.InLedger})), 0) AS "Balance",
                (SELECT COUNT(*)::int FROM nexora.journal_entry_line l WHERE l.account_id = a.id) AS "LineCount",
                ARRAY(SELECT m.mapping_key FROM nexora.account_mapping m WHERE m.account_id = a.id ORDER BY 1) AS "Mappings",
                ARRAY(SELECT f.name FROM nexora.financial_account f WHERE f.ledger_account_id = a.id AND f.status <> 'closed' ORDER BY 1) AS "TreasuryAccounts",

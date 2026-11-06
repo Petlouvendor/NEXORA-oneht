@@ -2,6 +2,7 @@ using System.Text;
 using Asp.Versioning;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Nexora.Api.Security;
 using Nexora.Application.Integrations;
 using Nexora.Application.Security;
@@ -144,6 +145,8 @@ public sealed class IntegrationsController(
 
     [HttpPost("webhooks/inbound/{connectorCode}")]
     [AllowAnonymous]
+    [EnableRateLimiting("webhook")]
+    [RequestSizeLimit(1_048_576)]   // 1 Mo : un événement de paiement ou de livraison n'en approche pas
     public async Task<IActionResult> InboundWebhook(string connectorCode, CancellationToken ct)
     {
         using var reader = new StreamReader(Request.Body, Encoding.UTF8);

@@ -98,6 +98,39 @@ public sealed class BiReportingTests(FinanceEngineFixture fx)
         (await objectives.ListAsync()).Should().NotContain(o => o.Id == set.Value.Id);
     }
 
+    // ---- Audit 2026-10 éd. 2 : un objectif d'établissement se mesure sur les ventes de cet établissement ----
+    [Fact]
+    public async Task An_establishment_objective_is_scored_on_that_establishment_only()
+    {
+        var establishment = Guid.NewGuid();
+        await Sql($"""
+            INSERT INTO nexora.establishment (id, company_id, name, code)
+            VALUES ('{establishment}', '{Company}', 'Annexe objectifs', 'OBJ-{establishment:N}'::text);
+            INSERT INTO nexora.sale (id, company_id, establishment_id, document_number, status, currency_id, sold_at, subtotal, total, amount_paid)
+            VALUES ('{Guid.NewGuid()}', '{Company}', '{establishment}', 'BI-{Guid.NewGuid():N}', 'completed',
+                    (SELECT id FROM nexora.currency WHERE code = 'HTG'), now() - interval '1 minute', 777, 777, 777);
+            """);
+        await InsertSale(50_000, DateTimeOffset.UtcNow.AddMinutes(-1));   // ailleurs dans l'entreprise
+
+        await using var s = Scope();
+        var objectives = For<IObjectiveService>(s.ServiceProvider, Direction);
+        (await objectives.SetAsync(new SetObjectiveRequest(null, establishment, "cash", "day", 1000m)))
+            .Error!.Code.Should().Be("objective.establishment_kpi");
+
+        var set = await objectives.SetAsync(new SetObjectiveRequest(null, establishment, "revenue", "day", 700m));
+        set.IsSuccess.Should().BeTrue(set.Error?.Message);
+        try
+        {
+            var score = await objectives.ScoreAsync();
+            score.Items.Should().Contain(i => i.KpiKey == "revenue" && i.Target == 700m && i.Actual == 777m,
+                "seules les ventes de l'établissement comptent");
+        }
+        finally
+        {
+            await objectives.DeleteAsync(set.Value!.Id);
+        }
+    }
+
     // ---- §41 : rapports planifiés ----
     [Fact]
     public async Task Report_schedule_save_list_run_due_delivers_and_logs_execution()
@@ -170,6 +203,8 @@ public sealed class BiReportingTests(FinanceEngineFixture fx)
         cash.IsSuccess.Should().BeTrue(cash.Error?.Message);
         cash.Value!.Method.Should().Be("manual");
         cash.Value.Points.Should().NotBeEmpty();
+        // Audit 2026-10 éd. 2 : la tranche « Au-delà » produisait un point daté de l'an 2300.
+        cash.Value.Points.Should().OnlyContain(p => p.Date <= DateOnly.FromDateTime(DateTime.UtcNow).AddYears(1));
 
         (await forecasts.ListAsync("revenue")).Should().Contain(f => f.Id == revenue.Value.Id);
 

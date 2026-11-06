@@ -12,7 +12,9 @@ public sealed record PosDeviceDto(Guid Id, string Name, string Status);
 /// en vigueur. <c>Codes</c> = codes-barres, PLU ; <c>SearchText</c> = nom, SKU, nom court, alias.</summary>
 public sealed record PosOfflineCatalogItemDto(
     Guid ProductId, string Name, string Sku, string? Barcode, string[] Codes, string SearchText,
-    decimal? SalePrice, string? Currency, string Availability, decimal TaxRate = 0m, bool PriceIncludesTax = false);
+    decimal? SalePrice, string? Currency, string Availability, decimal TaxRate = 0m, bool PriceIncludesTax = false,
+    // Codes de conditionnement « code=quantité » (carton de 12) et préfixes d'étiquettes de balance — audit 2026-10, A-015.
+    string[]? PackCodes = null, string[]? WeightCodes = null);
 
 public sealed record PosOfflinePolicyDto(
     bool AllowOfflineSales, bool AllowOfflineCredit, decimal OfflineCreditLimit, bool AllowOfflineDiscount,

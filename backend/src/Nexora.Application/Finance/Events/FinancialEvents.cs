@@ -103,6 +103,15 @@ public sealed record FinancialTransferRecorded(
     Guid FromFinancialAccountId, Guid ToFinancialAccountId, Money Amount)
     : FinancialEvent(CompanyId, OperationUuid, OccurredAt);
 
+/// <summary>
+/// Solde d'ouverture d'un compte de trésorerie mis en service (audit 2026-10, A-023) : l'argent déjà présent en caisse
+/// ou en banque entre en trésorerie ET en comptabilité, contre le report à nouveau. Un découvert bancaire d'ouverture
+/// est un montant négatif.
+/// </summary>
+public sealed record TreasuryOpeningBalanceRecorded(
+    Guid CompanyId, Guid OperationUuid, DateTimeOffset OccurredAt, Guid FinancialAccountId, Money Amount)
+    : FinancialEvent(CompanyId, OperationUuid, OccurredAt);
+
 /// <summary>Frais bancaires (§8).</summary>
 public sealed record BankChargeRecorded(
     Guid CompanyId, Guid OperationUuid, DateTimeOffset OccurredAt,
@@ -122,6 +131,15 @@ public sealed record InventoryWriteOffRecorded(
     : FinancialEvent(CompanyId, OperationUuid, OccurredAt);
 
 /// <summary>Réévaluation de stock issue d'un écart d'inventaire (Phase 5 §15, §29).</summary>
+/// <summary>
+/// Stock d'ouverture repris à la mise en service (audit 2026-10 éd. 2, A-050) : D Stock / C Report à nouveau, comme
+/// l'ouverture de trésorerie. Avant, l'import créait le stock sans écriture : le compte de stock restait en deçà de la
+/// valorisation de toute la valeur importée.
+/// </summary>
+public sealed record InventoryOpeningRecorded(
+    Guid CompanyId, Guid OperationUuid, DateTimeOffset OccurredAt, Guid ProductId, Money Value)
+    : FinancialEvent(CompanyId, OperationUuid, OccurredAt);
+
 public sealed record InventoryRevaluationRecorded(
     Guid CompanyId, Guid OperationUuid, DateTimeOffset OccurredAt,
     Guid AdjustmentId, Money ValuationDelta)

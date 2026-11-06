@@ -45,6 +45,7 @@ public sealed class SalaryAdvancesController(ISalaryAdvanceService advances) : A
         => FromResult(await advances.CancelAsync(id, r, ct));
 
     [HttpPost("{id:guid}/pay")]
+    [RequireStepUp(StepUpPurposes.Payment)]
     [RequirePermission(Permissions.Payroll.AdvancePay)]
     [Idempotent]
     public async Task<IActionResult> Pay(Guid id, [FromBody] PayAdvanceRequest r, CancellationToken ct)
@@ -52,6 +53,7 @@ public sealed class SalaryAdvancesController(ISalaryAdvanceService advances) : A
 
     /// <summary>Récupération hors paie (remboursement direct de l'employé) — jamais au-delà du solde (§15).</summary>
     [HttpPost("{id:guid}/repay")]
+    [RequireStepUp(StepUpPurposes.Payment)]
     [RequirePermission(Permissions.Payroll.AdvancePay)]
     [Idempotent]
     public async Task<IActionResult> Repay(Guid id, [FromBody] RepayAdvanceRequest r, CancellationToken ct)

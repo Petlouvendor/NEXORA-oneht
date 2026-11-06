@@ -27,16 +27,27 @@ public sealed class SqlSecurityEventLog(NexoraDbContext db, ITenantContext tenan
         }, Json);
 
         using var _ = tenant.BeginSystemScope();
+        // Dans une transaction ouverte, l'insertion se fait sous un point de sauvegarde (audit 2026-10 éd. 2) : un échec
+        // avalé laissait la transaction PostgreSQL avortée, et l'opération appelante échouait plus loin, sans cause lisible.
+        var transaction = db.Database.CurrentTransaction;
+        const string savepoint = "security_event_log";
         try
         {
+            if (transaction is not null) await transaction.CreateSavepointAsync(savepoint, ct);
             await db.Database.ExecuteSqlAsync($"""
                 INSERT INTO nexora.audit_log (company_id, user_id, action, entity_type, entity_id, ip_address, context)
                 VALUES ({companyId}, {userId}, {action}, 'security_event', {userId}, {ipAddress}::inet, {ctx}::jsonb)
                 """, ct);
+            if (transaction is not null) await transaction.ReleaseSavepointAsync(savepoint, ct);
         }
         catch
         {
             // La journalisation ne doit jamais faire échouer l'opération de sécurité elle-même.
+            if (transaction is not null)
+            {
+                try { await transaction.RollbackToSavepointAsync(savepoint, CancellationToken.None); }
+                catch { /* transaction déjà terminée */ }
+            }
         }
     }
 }

@@ -12,6 +12,16 @@ SET search_path TO nexora, public;
 BEGIN;
 SET LOCAL nexora.bypass_rls = 'on';
 
+-- Garde-fou (audit 2026-10 éd. 2) : ce jeu crée des comptes au mot de passe connu (Nexora!2026). Refus sur une base qui
+-- contient déjà des entreprises réelles ; pour forcer : PGOPTIONS="-c nexora.allow_demo_seed=on".
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM nexora.company WHERE id::text NOT LIKE 'dce00000-%')
+       AND current_setting('nexora.allow_demo_seed', true) IS DISTINCT FROM 'on' THEN
+        RAISE EXCEPTION 'Jeu de démonstration refusé : la base contient déjà des entreprises réelles (comptes à mot de passe connu).';
+    END IF;
+END $$;
+
 -- --- Nettoyage (feuilles → racine) ----------------------------------
 SET LOCAL nexora.allow_hard_delete = 'on';
 

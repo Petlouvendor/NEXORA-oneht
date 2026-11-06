@@ -12,7 +12,7 @@ namespace Nexora.Api.Middleware;
 /// Par défaut (aucune fenêtre <c>in_progress</c>), ce middleware ne fait qu'une lecture rapide et
 /// laisse passer — aucun impact sur le comportement existant.
 /// </summary>
-public sealed class MaintenanceModeMiddleware(RequestDelegate next)
+public sealed partial class MaintenanceModeMiddleware(RequestDelegate next)
 {
     private static readonly HashSet<string> SafeMethods = new(StringComparer.OrdinalIgnoreCase) { "GET", "HEAD", "OPTIONS" };
 
@@ -33,7 +33,7 @@ public sealed class MaintenanceModeMiddleware(RequestDelegate next)
 
         if (tenant.UserId is { } userId)
         {
-            var profile = await permissions.LoadProfileAsync(userId, context.RequestAborted);
+            var profile = await Security.RequestPermissionProfile.GetAsync(context, permissions, userId, context.RequestAborted);
             if (profile.HasPermission(Permissions.Operations.Manage, tenant.ActiveCompanyId))
             {
                 await next(context);
@@ -51,13 +51,15 @@ public sealed class MaintenanceModeMiddleware(RequestDelegate next)
         });
     }
 
-    private static bool IsExempt(string path) =>
-        path.Contains("/ops/", StringComparison.OrdinalIgnoreCase)
-        || path.EndsWith("/ops", StringComparison.OrdinalIgnoreCase)
-        || path.Contains("/auth/", StringComparison.OrdinalIgnoreCase)
-        || path.Contains("/health", StringComparison.OrdinalIgnoreCase)
-        || path.Contains("/ready", StringComparison.OrdinalIgnoreCase)
-        || path.StartsWith("/swagger", StringComparison.OrdinalIgnoreCase)
-        // Assistant d'installation (§20) : aucune base n'existe encore, rien à protéger ici.
-        || path.StartsWith("/api/v1/setup", StringComparison.OrdinalIgnoreCase);
+    /// <summary>
+    /// Exemptions sur le PREMIER segment de route, après le préfixe de version (audit 2026-10 éd. 2) : la recherche par
+    /// sous-chaîne exemptait aussi toute route contenant « /ready », « /health » ou « /auth/ » plus loin dans le chemin.
+    /// L'assistant d'installation (§20) est exempté : aucune base n'existe encore, rien à protéger.
+    /// </summary>
+    public static bool IsExempt(string path) =>
+        ExemptRoute().IsMatch(path) || path.StartsWith("/swagger", StringComparison.OrdinalIgnoreCase);
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"^/(api/v[0-9]+(\.[0-9]+)?/)?(ops|auth|health|ready|setup)(/|$)",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant)]
+    private static partial System.Text.RegularExpressions.Regex ExemptRoute();
 }

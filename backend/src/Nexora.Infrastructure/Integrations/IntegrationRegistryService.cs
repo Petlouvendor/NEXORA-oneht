@@ -21,6 +21,19 @@ internal static class IntegrationCrypto
         return "whsec_" + Convert.ToHexString(buf).ToLowerInvariant();
     }
 
+    /// <summary>
+    /// Secrets de signature chiffrés au repos par la clé des données (audit 2026-10 éd. 2 : stockés en clair, lisibles par
+    /// quiconque lit la base). Un secret enregistré avant ce changement, sans préfixe, reste lu tel quel.
+    /// </summary>
+    private const string SealedPrefix = "enc:v1:";
+
+    public static string Seal(Payroll.PersonalDataProtector protector, string secret) => SealedPrefix + protector.Protect(secret);
+
+    public static string? Open(Payroll.PersonalDataProtector protector, string? stored)
+        => stored is not null && stored.StartsWith(SealedPrefix, StringComparison.Ordinal)
+            ? protector.Unprotect(stored[SealedPrefix.Length..])
+            : stored;
+
     public static string Sign(string secret, string body)
         => Convert.ToHexString(HMACSHA256.HashData(Encoding.UTF8.GetBytes(secret), Encoding.UTF8.GetBytes(body)))
             .ToLowerInvariant();
@@ -164,7 +177,7 @@ public sealed class SqlIntegrationRegistry(
                     (id, company_id, code, name, connector_type, provider, environment, status, config,
                      webhook_secret, credentials_ref, configured_by)
                 VALUES ({id}, {Company}, {code}, {request.Name.Trim()}, {type}, {provider}, {env},
-                        'inactive', {config}::jsonb, {IntegrationCrypto.NewSecret()},
+                        'inactive', {config}::jsonb, {IntegrationCrypto.Seal(protector, IntegrationCrypto.NewSecret())},
                         {"vault://" + Company + "/" + code}, {tenant.UserId})
                 """, token);
             return Result.Success(id);
@@ -262,7 +275,7 @@ public sealed class SqlIntegrationRegistry(
     {
         var secret = IntegrationCrypto.NewSecret();
         var n = await db.Database.ExecuteSqlAsync($"""
-            UPDATE nexora.integration_connector SET webhook_secret = {secret}, updated_at = now()
+            UPDATE nexora.integration_connector SET webhook_secret = {IntegrationCrypto.Seal(protector, secret)}, updated_at = now()
             WHERE id = {id} AND company_id = {Company}
             """, ct);
         return n == 0

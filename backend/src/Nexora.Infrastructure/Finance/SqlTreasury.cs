@@ -69,12 +69,9 @@ public sealed class SqlTreasuryQueries(
         db.Database.SqlQuery<AccountRow>($"""
             SELECT fa.id AS "AccountId", fa.name AS "Name", fa.account_type AS "AccountType",
                    cur.code AS "Currency", fa.current_balance AS "SystemBalance", fa.status AS "Status",
-                   fa.current_balance * COALESCE(
-                     CASE WHEN cur.id = co.default_currency_id THEN 1
-                          ELSE (SELECT er.rate FROM nexora.exchange_rate er
-                                WHERE er.base_currency_id = cur.id AND er.quote_currency_id = co.default_currency_id
-                                ORDER BY er.effective_at DESC LIMIT 1)
-                     END, 1) AS "BaseBalance"
+                   -- Même règle que le moteur (taux direct ou inverse, A-046) ; sans taux, 0 et non le solde brut :
+                   -- un solde en dollars n'est plus compté comme des gourdes.
+                   COALESCE(nexora.convert_amount(fa.current_balance, fa.currency_id, co.default_currency_id), 0) AS "BaseBalance"
             FROM nexora.financial_account fa
             JOIN nexora.currency cur ON cur.id = fa.currency_id
             JOIN nexora.company co ON co.id = fa.company_id
@@ -84,24 +81,26 @@ public sealed class SqlTreasuryQueries(
 
     private Task<decimal> ReceivablesDueByAsync(DateOnly by, CancellationToken ct) =>
         db.Database.SqlQuery<decimal>($"""
-            SELECT COALESCE(SUM(original_amount - paid_amount), 0) AS "Value"
-            FROM nexora.customer_receivable
-            WHERE company_id = {Company} AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE','IN_DISPUTE')
-              AND (original_amount - paid_amount) > 0 AND (due_date IS NULL OR due_date <= {by})
+            -- Montants convertis en devise de l'entreprise au taux du jour (audit 2026-10 éd. 2, comme les soldes de comptes).
+            SELECT COALESCE(SUM(COALESCE(nexora.convert_amount(r.remaining_amount, r.currency_id, co.default_currency_id), 0)), 0) AS "Value"
+            FROM nexora.customer_receivable r JOIN nexora.company co ON co.id = r.company_id
+            WHERE r.company_id = {Company} AND r.status IN ('OPEN','PARTIALLY_PAID','OVERDUE','IN_DISPUTE')
+              AND r.remaining_amount > 0 AND (r.due_date IS NULL OR r.due_date <= {by})
             """).FirstAsync(ct);
 
     private Task<decimal> PayablesDueByAsync(DateOnly by, CancellationToken ct) =>
         db.Database.SqlQuery<decimal>($"""
-            SELECT COALESCE(SUM(original_amount - paid_amount), 0) AS "Value"
-            FROM nexora.supplier_payable
-            WHERE company_id = {Company} AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE')
-              AND (original_amount - paid_amount) > 0 AND (due_date IS NULL OR due_date <= {by})
+            SELECT COALESCE(SUM(COALESCE(nexora.convert_amount(p.remaining_amount, p.currency_id, co.default_currency_id), 0)), 0) AS "Value"
+            FROM nexora.supplier_payable p JOIN nexora.company co ON co.id = p.company_id
+            WHERE p.company_id = {Company} AND p.status IN ('OPEN','PARTIALLY_PAID','OVERDUE')
+              AND p.remaining_amount > 0 AND (p.due_date IS NULL OR p.due_date <= {by})
             """).FirstAsync(ct);
 
     private Task<decimal> UnpaidExpensesAsync(CancellationToken ct) =>
         db.Database.SqlQuery<decimal>($"""
-            SELECT COALESCE(SUM(amount + tax_amount), 0) AS "Value" FROM nexora.expense
-            WHERE company_id = {Company} AND status IN ('submitted','approved') AND paid_at IS NULL
+            SELECT COALESCE(SUM(COALESCE(nexora.convert_amount(e.amount + e.tax_amount, e.currency_id, co.default_currency_id), 0)), 0) AS "Value"
+            FROM nexora.expense e JOIN nexora.company co ON co.id = e.company_id
+            WHERE e.company_id = {Company} AND e.status IN ('submitted','approved') AND e.paid_at IS NULL
             """).FirstAsync(ct);
 
     public async Task<IReadOnlyList<TreasuryAccountLineDto>> AccountsAsync(CancellationToken ct = default)
@@ -130,12 +129,14 @@ public sealed class SqlTreasuryQueries(
         var available = cash + bank + mobile + other;
 
         var pending = await db.Database.SqlQuery<decimal>($"""
-            SELECT COALESCE(SUM(amount), 0) AS "Value" FROM nexora.financial_transaction
-            WHERE company_id = {Company} AND status = 'pending'
+            SELECT COALESCE(SUM(COALESCE(nexora.convert_amount(t.amount, t.currency_id, co.default_currency_id), 0)), 0) AS "Value"
+            FROM nexora.financial_transaction t JOIN nexora.company co ON co.id = t.company_id
+            WHERE t.company_id = {Company} AND t.status = 'pending'
             """).FirstAsync(ct);
         var suspense = await db.Database.SqlQuery<decimal>($"""
-            SELECT COALESCE(SUM(ABS(amount)), 0) AS "Value" FROM nexora.treasury_suspense_item
-            WHERE company_id = {Company} AND status = 'open'
+            SELECT COALESCE(SUM(COALESCE(nexora.convert_amount(ABS(si.amount), si.currency_id, co.default_currency_id), 0)), 0) AS "Value"
+            FROM nexora.treasury_suspense_item si JOIN nexora.company co ON co.id = si.company_id
+            WHERE si.company_id = {Company} AND si.status = 'open'
             """).FirstAsync(ct);
 
         var horizonDate = today.AddDays(horizon);
@@ -193,6 +194,9 @@ public sealed class SqlTreasuryQueries(
             alerts.Add($"{oldSuspense} élément(s) en suspens de plus de {maxAge} j — anti-fraude §48.");
         foreach (var a in accounts.Where(a => a.Status == "active" && a.BaseBalance < 0m))
             alerts.Add($"Compte « {a.Name} » à découvert ({Math.Round(a.SystemBalance, 2)} {a.Currency}).");
+        // Sans taux de change, un compte en devise n'est pas compté : le dire plutôt que de le traiter à 1 pour 1.
+        foreach (var a in accounts.Where(a => a.Status == "active" && a.Currency != currency && a.SystemBalance != 0m && a.BaseBalance == 0m))
+            alerts.Add($"Aucun taux {a.Currency} → {currency} : le solde de « {a.Name} » ({Math.Round(a.SystemBalance, 2)} {a.Currency}) n'est pas compté.");
 
         return new LiquidityDto(
             today, currency, horizon,
@@ -211,16 +215,16 @@ public sealed class SqlTreasuryQueries(
             .Sum(a => Math.Round(a.BaseBalance, 2));
 
         var recs = await db.Database.SqlQuery<DueRow>($"""
-            SELECT due_date AS "DueDate", (original_amount - paid_amount) AS "Amount"
-            FROM nexora.customer_receivable
-            WHERE company_id = {Company} AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE','IN_DISPUTE')
-              AND (original_amount - paid_amount) > 0
+            SELECT r.due_date AS "DueDate", COALESCE(nexora.convert_amount(r.remaining_amount, r.currency_id, co.default_currency_id), 0) AS "Amount"
+            FROM nexora.customer_receivable r JOIN nexora.company co ON co.id = r.company_id
+            WHERE r.company_id = {Company} AND r.status IN ('OPEN','PARTIALLY_PAID','OVERDUE','IN_DISPUTE')
+              AND r.remaining_amount > 0
             """).ToListAsync(ct);
         var pays = await db.Database.SqlQuery<DueRow>($"""
-            SELECT due_date AS "DueDate", (original_amount - paid_amount) AS "Amount"
-            FROM nexora.supplier_payable
-            WHERE company_id = {Company} AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE')
-              AND (original_amount - paid_amount) > 0
+            SELECT p.due_date AS "DueDate", COALESCE(nexora.convert_amount(p.remaining_amount, p.currency_id, co.default_currency_id), 0) AS "Amount"
+            FROM nexora.supplier_payable p JOIN nexora.company co ON co.id = p.company_id
+            WHERE p.company_id = {Company} AND p.status IN ('OPEN','PARTIALLY_PAID','OVERDUE')
+              AND p.remaining_amount > 0
             """).ToListAsync(ct);
         var unpaidExpenses = await UnpaidExpensesAsync(ct);
 
@@ -320,13 +324,30 @@ public sealed class SqlSuspenseService(NexoraDbContext db, ITenantContext tenant
         if (current is null) return Error.NotFound("finance.suspense_not_found", "Élément de suspens introuvable.");
         if (current != "open") return Error.Conflict("finance.suspense_closed", "Ce suspens est déjà résolu.");
 
-        await db.Database.ExecuteSqlAsync($"""
+        // Passage en perte ou profit adossé à une écriture validée (audit 2026-10 éd. 2) : le suspens se refermait sans
+        // aucune trace au grand livre — la perte n'apparaissait nulle part dans les comptes.
+        Guid? entryId = null;
+        if (r.Outcome == "written_off")
+        {
+            var number = r.JournalEntryNumber?.Trim();
+            if (string.IsNullOrEmpty(number))
+                return Error.Validation("finance.suspense_entry", "Indiquez le numéro de l'écriture qui constate la perte ou le profit.");
+            entryId = await db.Database.SqlQuery<Guid?>($"""
+                SELECT id AS "Value" FROM nexora.journal_entry
+                WHERE company_id = {Company} AND entry_number = {number} AND status = ANY({Nexora.Domain.Accounting.LedgerStatuses.InLedger})
+                """).FirstOrDefaultAsync(ct);
+            if (entryId is null)
+                return Error.Validation("finance.suspense_entry", $"Écriture « {number} » introuvable ou non validée.");
+        }
+
+        // Une seule résolution l'emporte (le statut lu plus haut peut avoir changé entre-temps).
+        var n = await db.Database.ExecuteSqlAsync($"""
             UPDATE nexora.treasury_suspense_item
                SET status = {r.Outcome}, resolution = {r.Resolution.Trim()}, resolved_at = now(),
-                   resolved_by = {tenant.UserId}, updated_at = now()
-             WHERE id = {id} AND company_id = {Company}
+                   resolved_by = {tenant.UserId}, journal_entry_id = {entryId}, updated_at = now()
+             WHERE id = {id} AND company_id = {Company} AND status = 'open'
             """, ct);
-        return Result.Success();
+        return n == 1 ? Result.Success() : Error.Conflict("finance.suspense_closed", "Ce suspens est déjà résolu.");
     }
 }
 
@@ -416,12 +437,12 @@ public sealed class SqlFinancialCloseService(NexoraDbContext db, ITenantContext 
             """).FirstAsync(ct);
 
         var rec = await db.Database.SqlQuery<CountTotal>($"""
-            SELECT COUNT(*)::int AS "Count", COALESCE(SUM(original_amount - paid_amount), 0) AS "Total"
+            SELECT COUNT(*)::int AS "Count", COALESCE(SUM(remaining_amount), 0) AS "Total"
             FROM nexora.customer_receivable
             WHERE company_id = {Company} AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE') AND due_date < {today}
             """).FirstAsync(ct);
         var pay = await db.Database.SqlQuery<CountTotal>($"""
-            SELECT COUNT(*)::int AS "Count", COALESCE(SUM(original_amount - paid_amount), 0) AS "Total"
+            SELECT COUNT(*)::int AS "Count", COALESCE(SUM(remaining_amount), 0) AS "Total"
             FROM nexora.supplier_payable
             WHERE company_id = {Company} AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE') AND due_date < {today}
             """).FirstAsync(ct);

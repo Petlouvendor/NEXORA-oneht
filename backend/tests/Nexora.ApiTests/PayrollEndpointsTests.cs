@@ -15,8 +15,7 @@ namespace Nexora.ApiTests;
 public sealed class PayrollEndpointsTests(WebApplicationFactory<Program> factory)
     : IClassFixture<WebApplicationFactory<Program>>
 {
-    private const string DevConnString =
-        "Host=localhost;Port=5432;Database=nexora;Username=nexora_app;Password=nexora_app_dev;Search Path=nexora,public;Include Error Detail=true";
+    private static readonly string DevConnString = ApiTestDatabase.App;
     private const string Pharmacy = "dce00000-0000-0000-0000-0000000000c1";
     private const string Unknown = "00000000-0000-0000-0000-000000000001";
 

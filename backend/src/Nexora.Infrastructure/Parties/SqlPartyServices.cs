@@ -173,6 +173,7 @@ public sealed class SqlCustomerService(NexoraDbContext db, ITenantContext tenant
 
         var requested = PartyRules.Clean(r.CustomerNumber);
         var id = Guid.NewGuid();
+        string? attempted = requested;   // numéro réellement tenté (généré ou saisi), pour un message exact
         try
         {
             // Numéro automatique « plus grand + 1 » : un verrou par entreprise, tenu jusqu'à la fin de la
@@ -187,6 +188,7 @@ public sealed class SqlCustomerService(NexoraDbContext db, ITenantContext tenant
                         SELECT 'CLI-' || lpad((COALESCE(MAX(substring(customer_number FROM '^CLI-(\d+)$')::int), 0) + 1)::text, 5, '0') AS "Value"
                         FROM nexora.customer WHERE company_id = {Company}
                         """).FirstAsync(tct);
+                    attempted = number;
                 }
                 await db.Database.ExecuteSqlAsync($"""
                     INSERT INTO nexora.customer (id, company_id, customer_number, name, type, phone, email, address, tax_identifier,
@@ -203,9 +205,9 @@ public sealed class SqlCustomerService(NexoraDbContext db, ITenantContext tenant
                 return number;
             }, ct);
         }
-        catch (Npgsql.PostgresException pg) when (pg.SqlState == "23505")
+        catch (Npgsql.PostgresException pg) when (pg.SqlState == "23505" && pg.ConstraintName == "customer_company_number_uk")
         {
-            return Error.Conflict("customer.number_exists", $"Le numéro client « {requested} » existe déjà.");
+            return Error.Conflict("customer.number_exists", $"Le numéro client « {attempted} » existe déjà.");
         }
         return Result.Success((await GetAsync(id, ct))!);
     }
@@ -338,6 +340,7 @@ public sealed class SqlSupplierService(NexoraDbContext db, ITenantContext tenant
             """).FirstAsync(ct);
         var requested = PartyRules.Clean(r.SupplierNumber);
         var id = Guid.NewGuid();
+        string? attempted = requested;
         try
         {
             // Même garde que pour les clients : numéro automatique calculé sous verrou d'entreprise.
@@ -351,6 +354,7 @@ public sealed class SqlSupplierService(NexoraDbContext db, ITenantContext tenant
                         SELECT 'FRN-' || lpad((COALESCE(MAX(substring(supplier_number FROM '^FRN-(\d+)$')::int), 0) + 1)::text, 5, '0') AS "Value"
                         FROM nexora.supplier WHERE company_id = {Company}
                         """).FirstAsync(tct);
+                    attempted = number;
                 }
                 await db.Database.ExecuteSqlAsync($"""
                     INSERT INTO nexora.supplier (id, company_id, supplier_number, name, type, phone, email, address, tax_identifier, default_currency_id)
@@ -360,9 +364,9 @@ public sealed class SqlSupplierService(NexoraDbContext db, ITenantContext tenant
                 return number;
             }, ct);
         }
-        catch (Npgsql.PostgresException pg) when (pg.SqlState == "23505")
+        catch (Npgsql.PostgresException pg) when (pg.SqlState == "23505" && pg.ConstraintName == "supplier_company_number_uk")
         {
-            return Error.Conflict("supplier.number_exists", $"Le numéro fournisseur « {requested} » existe déjà.");
+            return Error.Conflict("supplier.number_exists", $"Le numéro fournisseur « {attempted} » existe déjà.");
         }
         return Result.Success((await GetAsync(id, ct))!);
     }

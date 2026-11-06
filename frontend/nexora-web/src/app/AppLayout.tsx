@@ -46,7 +46,7 @@ export function AppLayout() {
     if (!activeCompanyId) return;
     let alive = true;
     const poll = () => unreadCount().then((r) => { if (alive) setUnread(r.unread); }).catch(() => {});
-    poll();
+    void poll();
     const t = setInterval(poll, 60_000);
     return () => { alive = false; clearInterval(t); };
   }, [activeCompanyId, onNotifications]);

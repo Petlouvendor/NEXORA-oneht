@@ -14,18 +14,50 @@ namespace Nexora.ApiTests;
 public sealed class PlatformEndpointsTests(WebApplicationFactory<Program> factory)
     : IClassFixture<WebApplicationFactory<Program>>
 {
-    private const string DevConnString =
-        "Host=localhost;Port=5432;Database=nexora;Username=nexora_app;Password=nexora_app_dev;Search Path=nexora,public;Include Error Detail=true";
+    private static readonly string DevConnString = ApiTestDatabase.App;
 
-    private HttpClient Client() => factory.WithWebHostBuilder(b =>
+    /// <summary>Jeton de test fort : sans jeton configuré, le webhook n'existe pas (audit 2026-10 éd. 2, A-049).</summary>
+    private const string WebhookToken = "test-webhook-token-0123456789abcdefghij";
+
+    private HttpClient Client(bool withToken = true) => factory.WithWebHostBuilder(b =>
         b.ConfigureAppConfiguration((_, cfg) => cfg.AddInMemoryCollection(
-            new Dictionary<string, string?> { ["Database:ConnectionString"] = DevConnString }))).CreateClient();
+            new Dictionary<string, string?>
+            {
+                ["Database:ConnectionString"] = DevConnString,
+                ["PlatformBilling:WebhookToken"] = withToken ? WebhookToken : null,
+            }))).CreateClient();
 
     [Fact]
     public async Task Platform_console_requires_authentication()
     {
         (await Client().GetAsync("/api/v1/platform/metrics")).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
         (await Client().GetAsync("/api/v1/platform/customers")).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    [Fact]
+    public async Task Payment_webhook_does_not_exist_without_a_configured_token()
+    {
+        // A-049 : l'ancien jeton par défaut, publié dans le code, ne vaut plus rien ; sans jeton, la route est fermée.
+        foreach (var token in new[] { "dev-platform-webhook-token", "" })
+        {
+            var req = new HttpRequestMessage(HttpMethod.Post, "/api/v1/billing/webhooks/payment")
+            {
+                Content = JsonContent.Create(new { eventId = $"evt-{Guid.NewGuid():N}", eventType = "charge.succeeded", amount = 1m, currencyCode = "USD", outcome = "succeeded" }),
+            };
+            req.Headers.Add("X-Platform-Webhook-Token", token);
+            (await Client(withToken: false).SendAsync(req)).StatusCode.Should().Be(HttpStatusCode.NotFound);
+        }
+    }
+
+    [Fact]
+    public async Task Payment_webhook_refuses_the_former_default_token_when_configured()
+    {
+        var req = new HttpRequestMessage(HttpMethod.Post, "/api/v1/billing/webhooks/payment")
+        {
+            Content = JsonContent.Create(new { eventId = $"evt-{Guid.NewGuid():N}", eventType = "charge.succeeded", amount = 1m, currencyCode = "USD", outcome = "succeeded" }),
+        };
+        req.Headers.Add("X-Platform-Webhook-Token", "dev-platform-webhook-token");
+        (await Client().SendAsync(req)).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }
 
     [Fact]
@@ -81,7 +113,7 @@ public sealed class PlatformEndpointsTests(WebApplicationFactory<Program> factor
         {
             Content = JsonContent.Create(payload),
         };
-        req.Headers.Add("X-Platform-Webhook-Token", "dev-platform-webhook-token");
+        req.Headers.Add("X-Platform-Webhook-Token", WebhookToken);
         return client.SendAsync(req);
     }
 }

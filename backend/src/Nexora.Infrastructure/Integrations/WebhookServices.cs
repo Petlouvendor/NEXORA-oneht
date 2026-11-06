@@ -17,7 +17,7 @@ namespace Nexora.Infrastructure.Integrations;
 /// journalise, puis on dispatche. Une signature invalide ou un doublon n'altère jamais l'état interne.
 /// </summary>
 public sealed class SqlWebhookIngestService(
-    NexoraDbContext db, ITenantContext tenant, IPaymentGateway gateway)
+    NexoraDbContext db, ITenantContext tenant, IPaymentGateway gateway, Payroll.PersonalDataProtector protector)
     : IWebhookIngestService
 {
     private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
@@ -44,8 +44,8 @@ public sealed class SqlWebhookIngestService(
         // À partir d'ici, tout se fait dans la portée de l'entreprise propriétaire du connecteur.
         tenant.SetScope([connector.CompanyId], [], connector.CompanyId);
 
-        var signatureValid = !string.IsNullOrEmpty(connector.WebhookSecret)
-            && IntegrationCrypto.SignatureMatches(connector.WebhookSecret!, rawBody, signature);
+        var secret = IntegrationCrypto.Open(protector, connector.WebhookSecret);
+        var signatureValid = !string.IsNullOrEmpty(secret) && IntegrationCrypto.SignatureMatches(secret, rawBody, signature);
 
         var (providerEventId, eventType, reference, providerAmount) = Parse(rawBody);
         var eventId = Guid.NewGuid();
@@ -234,7 +234,7 @@ public sealed class SqlWebhookIngestService(
 /// </summary>
 public sealed class SqlOutboundWebhookService(
     NexoraDbContext db, ITenantContext tenant, IDateTimeProvider clock, IOutboundWebhookDispatcher dispatcher,
-    IConfiguration configuration)
+    IConfiguration configuration, Payroll.PersonalDataProtector protector)
     : IOutboundWebhookService
 {
     private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
@@ -259,7 +259,7 @@ public sealed class SqlOutboundWebhookService(
         var id = Guid.NewGuid();
         await db.Database.ExecuteSqlAsync($"""
             INSERT INTO nexora.outbound_webhook (id, company_id, name, target_url, secret, subscribed_events, created_by)
-            VALUES ({id}, {Company}, {request.Name.Trim()}, {request.TargetUrl.Trim()}, {IntegrationCrypto.NewSecret()},
+            VALUES ({id}, {Company}, {request.Name.Trim()}, {request.TargetUrl.Trim()}, {IntegrationCrypto.Seal(protector, IntegrationCrypto.NewSecret())},
                     {JsonSerializer.Serialize(events)}::jsonb, {tenant.UserId})
             """, ct);
         return Result.Success(id);
@@ -378,7 +378,7 @@ public sealed class SqlOutboundWebhookService(
 
     private async Task AttemptAsync(DueRow d, CancellationToken ct)
     {
-        var signature = IntegrationCrypto.Sign(d.Secret, d.Payload);
+        var signature = IntegrationCrypto.Sign(IntegrationCrypto.Open(protector, d.Secret)!, d.Payload);
         var (code, error) = await dispatcher.SendAsync(d.TargetUrl, signature, d.Payload, ct);
         var attempts = d.Attempts + 1;
         var ok = error is null && code is >= 200 and < 300;

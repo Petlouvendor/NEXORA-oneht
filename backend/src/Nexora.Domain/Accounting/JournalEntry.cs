@@ -4,6 +4,18 @@ namespace Nexora.Domain.Accounting;
 
 public enum JournalEntryStatus { Draft, Posted, Reversed, Cancelled }
 
+/// <summary>
+/// Écritures qui comptent dans le grand livre (audit 2026-10 éd. 2, A-043). L'extourne passe l'écriture d'origine en
+/// <c>reversed</c> et crée son miroir en <c>posted</c> : ne compter que <c>posted</c> retirait l'origine et gardait le
+/// miroir — l'effet net d'une écriture extournée devenait l'opposé de l'écriture. Toute somme comptable (balance,
+/// grand livre, états, clôture, à-nouveaux, consolidation, indicateurs) filtre par cette seule règle, en SQL :
+/// <c>e.status = ANY({LedgerStatuses.InLedger})</c>.
+/// </summary>
+public static class LedgerStatuses
+{
+    public static readonly string[] InLedger = ["posted", "reversed"];
+}
+
 public sealed class Journal : AuditableEntity
 {
     public Guid CompanyId { get; set; }

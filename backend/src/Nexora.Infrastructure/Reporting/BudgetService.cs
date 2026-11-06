@@ -131,9 +131,19 @@ public sealed class SqlBudgetService(NexoraDbContext db, ITenantContext tenant, 
         if (row.SubmittedBy is not null && row.SubmittedBy == tenant.UserId)
             return Error.Forbidden("budget.four_eyes", "Le demandeur ne peut pas approuver son propre budget.");
 
-        await db.Database.ExecuteSqlAsync($"""
-            UPDATE nexora.budget SET status = 'active', approved_by = {tenant.UserId}, approved_at = now(), updated_at = now() WHERE id = {id}
-            """, ct);
+        await uow.ExecuteInTransactionAsync(async token =>
+        {
+            await db.Database.ExecuteSqlAsync($"""
+                UPDATE nexora.budget SET status = 'active', approved_by = {tenant.UserId}, approved_at = now(), updated_at = now() WHERE id = {id}
+                """, token);
+            // Une révision approuvée remplace la version d'origine (A-047) : celle-ci est close, elle ne compte plus.
+            await db.Database.ExecuteSqlAsync($"""
+                UPDATE nexora.budget o SET status = 'closed', updated_at = now()
+                FROM nexora.budget r
+                WHERE r.id = {id} AND o.id = r.revised_from AND o.company_id = {Company} AND o.status = 'active'
+                """, token);
+            return 0;
+        }, ct);
         await uow.SaveChangesAsync(ct);
         return await GetAsync(id, ct);
     }

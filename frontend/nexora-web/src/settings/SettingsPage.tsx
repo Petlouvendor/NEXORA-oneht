@@ -260,9 +260,23 @@ function BrandingForm() {
         </div>
       </Field>
 
-      <Field label="Logo (URL https ou data:image)"
+      <Field label="Logo (PNG, JPEG ou WebP, 200 Ko au plus)"
              hint="Le logo n'est jamais requis — Nexora One affiche son monogramme par défaut.">
-        <TextInput value={form.logoUrl ?? ""} onChange={(e) => set("logoUrl", e.target.value)} />
+        <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+          {form.logoUrl?.startsWith("data:image/") && (
+            <img src={form.logoUrl} alt="Logo actuel" style={{ height: 40, maxWidth: 160, objectFit: "contain" }} />
+          )}
+          <input type="file" accept="image/png,image/jpeg,image/webp" aria-label="Choisir le logo"
+                 onChange={(e) => {
+                   const file = e.currentTarget.files?.[0];
+                   if (!file) return;
+                   if (file.size > 200 * 1024) { setError("Logo trop lourd (200 Ko au plus)."); return; }
+                   const reader = new FileReader();
+                   reader.onload = () => set("logoUrl", String(reader.result));
+                   reader.readAsDataURL(file);
+                 }} />
+          {form.logoUrl && <Button size="sm" variant="ghost" onClick={() => set("logoUrl", "")}>Retirer</Button>}
+        </div>
       </Field>
 
       <Field label="Format de reçu POS">

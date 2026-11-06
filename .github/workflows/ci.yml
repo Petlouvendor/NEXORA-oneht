@@ -49,6 +49,10 @@ jobs:
     env:
       PGPASSWORD: postgres
       NEXORA_IT_ADMIN: "Host=localhost;Port=5432;Username=postgres;Password=postgres;Database=postgres"
+      # Tests d'API sur leur propre base, jamais sur « nexora », modèle cloné par les tests d'intégration
+      # (audit 2026-10 éd. 2, constat CI).
+      NEXORA_API_TEST_DB: nexora_api_it
+      NEXORA_IT_ADMIN_PASSWORD: postgres
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -60,6 +64,7 @@ jobs:
           PSQL_BIN=psql PGHOST=localhost PGUSER=postgres bash apply.sh nexora
           psql -h localhost -U postgres -d nexora -v ON_ERROR_STOP=1 -f ../seeds/demo_abc_group.sql
           psql -h localhost -U postgres -d nexora -c "ALTER ROLE nexora_app WITH PASSWORD 'nexora_app_dev';"
+          psql -h localhost -U postgres -d postgres -c "CREATE DATABASE nexora_api_it TEMPLATE nexora;"
       - name: Restore
         run: dotnet restore backend/Nexora.sln
       - name: Build (warnings = errors)
@@ -74,7 +79,13 @@ jobs:
           Database__ConnectionString: "Host=localhost;Port=5432;Database=nexora;Username=postgres;Password=postgres"
         run: dotnet backend/src/Nexora.Api/bin/Release/net10.0/Nexora.Api.dll migrate --status
       - name: Scan de vulnérabilités des dépendances (§28)
-        run: dotnet list backend/Nexora.sln package --vulnerable --include-transitive
+        # Bloquant (audit 2026-10, A-028) : la commande rend 0 même quand elle liste des paquets vulnérables.
+        run: |
+          out=$(dotnet list backend/Nexora.sln package --vulnerable --include-transitive)
+          echo "$out"
+          if echo "$out" | grep -q "has the following vulnerable packages"; then
+            echo "::error::Dépendance vulnérable détectée"; exit 1
+          fi
 
   # --- Frontend : build & typecheck ---
   frontend:

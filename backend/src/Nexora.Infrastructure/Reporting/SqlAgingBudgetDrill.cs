@@ -5,6 +5,7 @@ using Nexora.Application.Reporting;
 using Nexora.Contracts.Reporting;
 using Nexora.Infrastructure.Persistence;
 using Nexora.Domain.Common;
+using Nexora.Domain.Accounting;
 
 namespace Nexora.Infrastructure.Reporting;
 
@@ -37,11 +38,15 @@ public sealed class SqlAgingReports(NexoraDbContext db, ITenantContext tenant) :
         var partyTable = kind == "receivable" ? "customer" : "supplier";
         var partyFk = kind == "receivable" ? "customer_id" : "supplier_id";
 
+        // Reste dû = remaining_amount, avoirs fournisseurs déduits (audit 2026-10 éd. 2, A-022 résidu : original − payé
+        // ignorait les avoirs), converti dans la devise de l'entreprise (A-046).
         var sql =
-            "SELECT p.name AS \"Party\", (r.original_amount - r.paid_amount) AS \"Remaining\", " +
+            "SELECT p.name AS \"Party\", " +
+            "nexora.convert_amount(r.remaining_amount, r.currency_id, (SELECT default_currency_id FROM nexora.company WHERE id = {1})) AS \"Remaining\", " +
             "GREATEST(-100000, ({0}::date - COALESCE(r.due_date, r.issue_date)))::int AS \"DaysOverdue\" " +
             $"FROM nexora.{table} r JOIN nexora.{partyTable} p ON p.id = r.{partyFk} " +
-            "WHERE r.company_id = {1} AND r.status IN ('OPEN','PARTIALLY_PAID','OVERDUE') AND (r.original_amount - r.paid_amount) > 0";
+            "WHERE r.company_id = {1} AND r.status IN ('OPEN','PARTIALLY_PAID','OVERDUE') AND r.remaining_amount > 0 " +
+            "AND nexora.convert_amount(r.remaining_amount, r.currency_id, (SELECT default_currency_id FROM nexora.company WHERE id = {1})) IS NOT NULL";
         var raw = await db.Database.SqlQueryRaw<AgingRaw>(sql, asOf, Company).ToListAsync(ct);
 
         int BucketIndex(int days) =>
@@ -61,33 +66,51 @@ public sealed class SqlAgingReports(NexoraDbContext db, ITenantContext tenant) :
 public sealed class SqlBudgetReports(NexoraDbContext db, ITenantContext tenant) : IBudgetReports
 {
     private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
-    private sealed record Row(string AccountCode, string AccountName, decimal Budget, decimal Actual);
+    private sealed record Row(string AccountCode, string AccountName, string AccountType, decimal Budget, decimal Actual);
+    private sealed record BudgetRef(Guid Id, string Name);
+    private sealed record Range(DateOnly From, DateOnly To);
 
+    /// <summary>
+    /// Budget contre réalisé (audit 2026-10 éd. 2, A-047). Avant : toutes les versions de l'exercice étaient additionnées
+    /// — brouillons abandonnés compris, et chaque révision doublait le budget ; le réalisé était pris en valeur absolue
+    /// et sur l'année civile. Désormais : le budget en vigueur seul (actif le plus récemment approuvé, sinon le dernier
+    /// clos), le réalisé signé selon la nature du compte (produits au crédit, charges au débit) et mesuré sur les dates
+    /// de l'exercice comptable.
+    /// </summary>
     public async Task<BudgetVsActualResponse> BudgetVsActualAsync(int fiscalYear, ReportFilter filter, CancellationToken ct = default)
     {
         var currency = await (from c in db.Companies.AsNoTracking()
             join cur in db.Currencies.AsNoTracking() on c.DefaultCurrencyId equals cur.Id
             where c.Id == Company select cur.Code).FirstAsync(ct);
 
-        var name = await db.Database.SqlQuery<string>($"""
-            SELECT COALESCE((SELECT name FROM nexora.budget WHERE company_id = {Company} AND fiscal_year = {fiscalYear} LIMIT 1),'—') AS "Value"
-            """).FirstAsync(ct);
+        var budget = (await db.Database.SqlQuery<BudgetRef>($"""
+            SELECT id AS "Id", name AS "Name" FROM nexora.budget
+            WHERE company_id = {Company} AND fiscal_year = {fiscalYear} AND status IN ('active', 'closed')
+            ORDER BY (status = 'active') DESC, approved_at DESC NULLS LAST, created_at DESC
+            LIMIT 1
+            """).ToListAsync(ct)).FirstOrDefault();
+
+        var range = (await db.Database.SqlQuery<Range>($"""
+            SELECT start_date AS "From", end_date AS "To" FROM nexora.accounting_period
+            WHERE company_id = {Company} AND EXTRACT(YEAR FROM start_date) = {fiscalYear}
+            ORDER BY start_date LIMIT 1
+            """).ToListAsync(ct)).FirstOrDefault() ?? new Range(new DateOnly(fiscalYear, 1, 1), new DateOnly(fiscalYear, 12, 31));
 
         var rows = await db.Database.SqlQuery<Row>($"""
-            SELECT a.code AS "AccountCode", a.name AS "AccountName",
+            SELECT a.code AS "AccountCode", a.name AS "AccountName", a.account_type AS "AccountType",
                    COALESCE(bl.budget, 0) AS "Budget",
                    COALESCE(act.actual, 0) AS "Actual"
             FROM nexora.account a
             LEFT JOIN LATERAL (
                 SELECT SUM(l.amount) budget FROM nexora.budget_line l
-                JOIN nexora.budget b ON b.id = l.budget_id
-                WHERE b.company_id = {Company} AND b.fiscal_year = {fiscalYear} AND l.account_id = a.id
+                WHERE l.budget_id = {budget?.Id}::uuid AND l.account_id = a.id
             ) bl ON true
             LEFT JOIN LATERAL (
                 SELECT SUM(jl.base_debit - jl.base_credit) actual
                 FROM nexora.journal_entry_line jl JOIN nexora.journal_entry je ON je.id = jl.journal_entry_id
-                WHERE je.company_id = {Company} AND je.status = 'posted'
-                  AND EXTRACT(YEAR FROM je.entry_date) = {fiscalYear} AND jl.account_id = a.id
+                WHERE je.company_id = {Company} AND je.status = ANY({LedgerStatuses.InLedger})
+                  AND je.entry_date BETWEEN {range.From} AND {range.To} AND jl.account_id = a.id
+                  AND je.origin <> 'closing'
             ) act ON true
             WHERE a.company_id = {Company} AND a.account_type IN ('revenue','expense')
               AND (COALESCE(bl.budget,0) <> 0 OR COALESCE(act.actual,0) <> 0)
@@ -96,13 +119,14 @@ public sealed class SqlBudgetReports(NexoraDbContext db, ITenantContext tenant) 
 
         var result = rows.Select(r =>
         {
-            var actual = r.AccountName.Length > 0 ? Math.Abs(r.Actual) : r.Actual;
+            // Solde débiteur − créditeur : positif pour une charge, négatif pour un produit — un produit se lit au crédit.
+            var actual = r.AccountType == "revenue" ? -r.Actual : r.Actual;
             var variance = actual - r.Budget;
             return new BudgetVsActualRow(r.AccountCode, r.AccountName, Math.Round(r.Budget, 2), Math.Round(actual, 2),
                 Math.Round(variance, 2), r.Budget == 0 ? 0m : Math.Round(variance / r.Budget * 100m, 1));
         }).ToList();
 
-        return new BudgetVsActualResponse(name, fiscalYear, currency, result,
+        return new BudgetVsActualResponse(budget?.Name ?? "—", fiscalYear, currency, result,
             Math.Round(result.Sum(r => r.Budget), 2), Math.Round(result.Sum(r => r.Actual), 2));
     }
 }

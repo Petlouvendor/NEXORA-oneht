@@ -105,8 +105,9 @@ public sealed class MfaAuthenticationTests(FinanceEngineFixture fx)
         first.Value.MfaToken.Should().NotBeNullOrEmpty();
 
         var verify = s2.ServiceProvider.GetRequiredService<MfaVerifyHandler>();
+        // Code du pas suivant : celui de l'enrôlement a déjà servi (anti-rejeu, audit 2026-10, A-011).
         var second = await verify.HandleAsync(
-            new MfaVerifyLoginRequest(first.Value.MfaToken!, Totp.Generate(secret, DateTimeOffset.UtcNow)));
+            new MfaVerifyLoginRequest(first.Value.MfaToken!, Totp.Generate(secret, DateTimeOffset.UtcNow.AddSeconds(30))));
         second.IsSuccess.Should().BeTrue(second.Error?.Message);
         second.Value!.AccessToken.Should().NotBeNullOrEmpty();
         second.Value.MfaRequired.Should().BeFalse();
@@ -115,6 +116,37 @@ public sealed class MfaAuthenticationTests(FinanceEngineFixture fx)
         var replay = await verify.HandleAsync(
             new MfaVerifyLoginRequest(first.Value.MfaToken!, Totp.Generate(secret, DateTimeOffset.UtcNow)));
         replay.IsSuccess.Should().BeFalse();
+    }
+
+    // ---- Audit 2026-10, A-011 : un code TOTP accepté ne sert pas une seconde fois, même dans sa fenêtre ----
+    [Fact]
+    public async Task A_totp_code_already_accepted_is_refused_on_a_new_challenge()
+    {
+        var uid = await NewUser("pw-replay");
+        string secret, enrollCode;
+        await using (var s = Scope())
+        {
+            AsUser(s.ServiceProvider, uid);
+            var mfa = s.ServiceProvider.GetRequiredService<IMfaService>();
+            secret = (await mfa.BeginEnrollmentAsync()).Value!.Secret;
+            enrollCode = Totp.Generate(secret, DateTimeOffset.UtcNow);
+            (await mfa.ConfirmEnrollmentAsync(new MfaConfirmRequest(enrollCode))).IsSuccess.Should().BeTrue();
+        }
+
+        await using var s2 = Scope();
+        var login = s2.ServiceProvider.GetRequiredService<LoginHandler>();
+        var verify = s2.ServiceProvider.GetRequiredService<MfaVerifyHandler>();
+        var email = await Scalar<string>($"SELECT email FROM nexora.app_user WHERE id = '{uid}'");
+        async Task<bool> SignIn(string code)
+        {
+            var challenge = await login.HandleAsync(new LoginRequest(email!, "pw-replay", null));
+            return (await verify.HandleAsync(new MfaVerifyLoginRequest(challenge.Value!.MfaToken!, code))).IsSuccess;
+        }
+
+        (await SignIn(enrollCode)).Should().BeFalse("le code de l'enrôlement a déjà servi");
+        var next = Totp.Generate(secret, DateTimeOffset.UtcNow.AddSeconds(30));
+        (await SignIn(next)).Should().BeTrue();
+        (await SignIn(next)).Should().BeFalse("l'ancien contrôle acceptait le même code pendant toute sa fenêtre");
     }
 
     // ---- §8-9 : un code de récupération authentifie une seule fois ----
@@ -177,6 +209,40 @@ public sealed class MfaAuthenticationTests(FinanceEngineFixture fx)
         afterLockout.Error!.Code.Should().Be("auth.mfa_too_many_attempts");
     }
 
+    // ---- Audit 2026-10 éd. 2 : des essais parallèles ne dépassent pas les cinq tentatives ----
+    [Fact]
+    public async Task Parallel_wrong_codes_never_exceed_five_attempts()
+    {
+        var uid = await NewUser("pw-parallel");
+        await using (var s = Scope())
+        {
+            AsUser(s.ServiceProvider, uid);
+            var mfa = s.ServiceProvider.GetRequiredService<IMfaService>();
+            var begin = await mfa.BeginEnrollmentAsync();
+            await mfa.ConfirmEnrollmentAsync(new MfaConfirmRequest(Totp.Generate(begin.Value!.Secret, DateTimeOffset.UtcNow)));
+        }
+        string token;
+        await using (var s = Scope())
+        {
+            var email = await Scalar<string>($"SELECT email FROM nexora.app_user WHERE id = '{uid}'");
+            token = (await s.ServiceProvider.GetRequiredService<LoginHandler>().HandleAsync(new LoginRequest(email!, "pw-parallel", null))).Value!.MfaToken!;
+        }
+
+        var start = new TaskCompletionSource();
+        async Task<string> Try()
+        {
+            await start.Task;
+            await using var s = Scope();
+            return (await s.ServiceProvider.GetRequiredService<MfaVerifyHandler>().HandleAsync(new MfaVerifyLoginRequest(token, "000000"))).Error!.Code;
+        }
+        var tries = Enumerable.Range(0, 12).Select(_ => Try()).ToList();
+        start.SetResult();
+        var codes = await Task.WhenAll(tries);
+
+        codes.Count(c => c == "auth.mfa_invalid").Should().BeLessThanOrEqualTo(5, "au plus cinq codes sont réellement vérifiés");
+        (await Scalar<short>($"SELECT max(attempts) FROM nexora.mfa_challenge WHERE user_id = '{uid}'")).Should().BeLessThanOrEqualTo((short)5);
+    }
+
     // ---- §4, §7, §48 : cinq mots de passe erronés verrouillent le compte temporairement ----
     [Fact]
     public async Task Five_bad_passwords_lock_the_account_temporarily()
@@ -194,7 +260,8 @@ public sealed class MfaAuthenticationTests(FinanceEngineFixture fx)
 
         // Même le bon mot de passe est refusé pendant le verrouillage.
         var locked = await login.HandleAsync(new LoginRequest(email!, "correct-horse", null));
-        locked.Error!.Code.Should().Be("auth.account_locked");
+        locked.IsSuccess.Should().BeFalse();
+        locked.Error!.Code.Should().Be("auth.invalid_credentials", "un compte verrouillé répond comme un mot de passe faux");
     }
 
     // ---- §9, §39 : un administrateur réinitialise la MFA d'un utilisateur ----
@@ -232,6 +299,37 @@ public sealed class MfaAuthenticationTests(FinanceEngineFixture fx)
         AsUser(s2.ServiceProvider, Direction);
         (await s2.ServiceProvider.GetRequiredService<IMfaService>().ResetForUserAsync(Direction))
             .Error!.Code.Should().Be("security.self_reset");
+    }
+
+    // ---- Audit 2026-10, A-011 : la permission doit être détenue là où la cible travaille ----
+    [Fact]
+    public async Task Reset_permission_held_in_another_company_does_not_reach_a_shared_company()
+    {
+        var other = await Scalar<Guid>($"SELECT id FROM nexora.company WHERE id <> '{Company}' ORDER BY id LIMIT 1");
+        other.Should().NotBeEmpty("le jeu de test doit compter une seconde entreprise");
+        var caller = await NewUser("pw-caller");
+        var target = await NewUser("pw-target-scope");
+        // Directeur dans l'autre entreprise, simple caissier dans la Pharmacie ABC — comme la cible.
+        await Sql($"""
+            INSERT INTO nexora.access_scope (scope_type, company_id)
+            SELECT 'COMPANY', '{other}' WHERE NOT EXISTS (
+                SELECT 1 FROM nexora.access_scope WHERE scope_type = 'COMPANY' AND company_id = '{other}');
+            INSERT INTO nexora.user_role (user_id, role_id, scope_id)
+            SELECT '{caller}', r.id, sc.id FROM nexora.role r, nexora.access_scope sc
+            WHERE r.name = 'owner_direction' AND r.system_role AND sc.scope_type = 'COMPANY' AND sc.company_id = '{other}'
+            LIMIT 1;
+            INSERT INTO nexora.user_role (user_id, role_id, scope_id)
+            SELECT u.id, ur.role_id, ur.scope_id FROM nexora.user_role ur
+            JOIN nexora.role r ON r.id = ur.role_id AND r.name = 'cashier'
+            CROSS JOIN (VALUES ('{caller}'::uuid), ('{target}'::uuid)) AS u(id)
+            WHERE ur.user_id = '{Cashier}'
+            ON CONFLICT DO NOTHING;
+            """);
+
+        await using var s = Scope();
+        AsUser(s.ServiceProvider, caller);
+        (await s.ServiceProvider.GetRequiredService<IMfaService>().ResetForUserAsync(target))
+            .Error!.Code.Should().Be("security.out_of_scope", "l'ancien contrôle se contentait d'une entreprise commune");
     }
 
     // ---- §37 : la politique d'entreprise signale la MFA comme requise pour un rôle sensible ----

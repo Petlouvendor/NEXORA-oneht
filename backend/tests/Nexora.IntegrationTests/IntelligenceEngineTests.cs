@@ -55,7 +55,9 @@ public sealed class IntelligenceEngineTests(FinanceEngineFixture fx)
         return (productId, locationId);
     }
 
-    private async Task InsertSaleLine(Guid productId, decimal quantity, decimal unitPrice, decimal unitCost, DateTimeOffset soldAt)
+    /// <summary>Vente ; avec <paramref name="location"/>, la sortie de stock correspondante à cet emplacement.</summary>
+    private async Task InsertSaleLine(Guid productId, decimal quantity, decimal unitPrice, decimal unitCost, DateTimeOffset soldAt,
+        Guid? location = null)
     {
         var saleId = Guid.NewGuid();
         var lineTotal = quantity * unitPrice;
@@ -66,20 +68,42 @@ public sealed class IntelligenceEngineTests(FinanceEngineFixture fx)
             INSERT INTO nexora.sale_line (id, sale_id, company_id, product_id, quantity, unit_price, unit_cost, line_total)
             VALUES ('{Guid.NewGuid()}', '{saleId}', '{Company}', '{productId}', {quantity}, {unitPrice}, {unitCost}, {lineTotal});
             """);
+        if (location is { } at)
+            await Sql($"""
+                INSERT INTO nexora.stock_movement (company_id, product_id, inventory_location_id, movement_type, quantity, unit_cost,
+                                                   reference_type, reference_id, occurred_at)
+                VALUES ('{Company}', '{productId}', '{at}', 'sale', {-quantity}, {unitCost}, 'sale', '{saleId}', '{soldAt:O}');
+                """);
     }
+
+    private Task Opening(Guid productId, Guid location, decimal quantity, DateTimeOffset at) => Sql($"""
+        INSERT INTO nexora.stock_movement (company_id, product_id, inventory_location_id, movement_type, quantity, unit_cost,
+                                           reference_type, reference_id, occurred_at)
+        VALUES ('{Company}', '{productId}', '{location}', 'opening', {quantity}, 6, 'opening', '{Guid.NewGuid()}', '{at:O}');
+        """);
 
     // ---- §12-13, §51 : réapprovisionnement intelligent & produit dormant/surstock ----
     [Fact]
     public async Task Generation_stock_reorder_and_dormant_explain_confidence_and_match_scenario()
     {
         // Produit A : vélocité régulière sur 20 jours distincts, stock sous le seuil, délai fournisseur connu.
+        // Audit 2026-10 éd. 2 : un second dépôt, dix fois plus actif, ne gonfle pas la vélocité de celui-ci.
         var (reorderProduct, reorderLocation) = await MakeProduct($"REORD-{Guid.NewGuid():N}"[..12]);
-        for (var d = 1; d <= 20; d++) await InsertSaleLine(reorderProduct, 5, 10, 6, DateTimeOffset.UtcNow.AddDays(-d));
+        var busyStore = Guid.NewGuid();
+        await Sql($"""
+            INSERT INTO nexora.inventory_location (id, company_id, name, location_type)
+            VALUES ('{busyStore}', '{Company}', 'Dépôt actif {busyStore:N}', 'virtual');
+            """);
+        await Opening(reorderProduct, reorderLocation, 105, DateTimeOffset.UtcNow.AddDays(-30));
+        await Opening(reorderProduct, busyStore, 5_000, DateTimeOffset.UtcNow.AddDays(-30));
+        for (var d = 1; d <= 20; d++)
+        {
+            await InsertSaleLine(reorderProduct, 5, 10, 6, DateTimeOffset.UtcNow.AddDays(-d), reorderLocation);
+            await InsertSaleLine(reorderProduct, 50, 10, 6, DateTimeOffset.UtcNow.AddDays(-d), busyStore);
+        }
         await Sql($"""
             INSERT INTO nexora.product_reorder_rule (id, company_id, product_id, reorder_point, reorder_quantity, lead_time_days, status)
             VALUES ('{Guid.NewGuid()}', '{Company}', '{reorderProduct}', 50, 100, 10, 'active');
-            INSERT INTO nexora.stock_balance (id, product_id, inventory_location_id, company_id, quantity_on_hand)
-            VALUES ('{Guid.NewGuid()}', '{reorderProduct}', '{reorderLocation}', '{Company}', 5);
             """);
 
         // Produit B : scénario §51 — aucune vente récente (jamais de mouvement 'sale'), marge historique faible, stock élevé.
@@ -97,7 +121,10 @@ public sealed class IntelligenceEngineTests(FinanceEngineFixture fx)
         created.Should().BeGreaterThanOrEqualTo(2);
 
         var all = await recs.ListAsync("new", null);
-        var reorder = all.Should().ContainSingle(r => r.Category == "stock_reorder" && r.DrillPath == $"stock/reorder/{reorderProduct}").Which;
+        var reorder = all.Should().ContainSingle(r => r.Category == "stock_reorder" && r.DrillPath == $"stock/reorder/{reorderProduct}/{reorderLocation}").Which;
+        reorder.Evidence.GetProperty("onHand").GetDecimal().Should().Be(5m);
+        reorder.Evidence.GetProperty("velocityPerDay").GetDecimal().Should().Be(Math.Round(100m / 60m, 2),
+            "100 unités vendues à CET emplacement sur la fenêtre de 60 jours — pas les 1 100 de l'entreprise");
         reorder.ConfidenceLevel.Should().Be("medium", "20 jours d'historique dépasse le minimum (14) sans atteindre le seuil « élevé » (45)");
         reorder.ImpactEstimate.GetProperty("suggestedQuantity").GetDecimal().Should().BeGreaterThan(0);
         reorder.Why.Should().Contain("seuil de réapprovisionnement");
@@ -294,6 +321,7 @@ public sealed class IntelligenceEngineTests(FinanceEngineFixture fx)
             INSERT INTO nexora.company (id, group_id, name, legal_name, default_currency_id)
             VALUES ('{id}', NULL, 'Test Intelligence {id:N}', 'Test Intelligence {id:N} SARL',
                     (SELECT id FROM nexora.currency WHERE code = 'HTG'));
+            INSERT INTO nexora.access_scope (scope_type, company_id) VALUES ('COMPANY', '{id}');
             """);
         return id;
     }
@@ -326,7 +354,7 @@ public sealed class IntelligenceEngineTests(FinanceEngineFixture fx)
         for (var d = 1; d <= 14; d++) await InsertCompanySale(companyId, 220, DateTimeOffset.UtcNow.AddDays(-d));
 
         await using var s = Scope();
-        var recs = ForCompany<IRecommendationService>(s.ServiceProvider, Direction, companyId);
+        var recs = ForCompany<IRecommendationService>(s.ServiceProvider, await fx.NewCompanyDirectorAsync(companyId), companyId);
         await recs.GenerateAsync();
 
         var all = await recs.ListAsync("new", null);
@@ -347,7 +375,7 @@ public sealed class IntelligenceEngineTests(FinanceEngineFixture fx)
         for (var d = 1; d <= 14; d++) await InsertCompanySale(companyId, 80, DateTimeOffset.UtcNow.AddDays(-d));
 
         await using var s = Scope();
-        var recs = ForCompany<IRecommendationService>(s.ServiceProvider, Direction, companyId);
+        var recs = ForCompany<IRecommendationService>(s.ServiceProvider, await fx.NewCompanyDirectorAsync(companyId), companyId);
         await recs.GenerateAsync();
 
         var decline = (await recs.ListAsync("new", "sales_decline")).Should().ContainSingle().Which;
@@ -488,7 +516,7 @@ public sealed class IntelligenceEngineTests(FinanceEngineFixture fx)
             """);
 
         await using var s = Scope();
-        var recs = ForCompany<IRecommendationService>(s.ServiceProvider, Direction, companyId);
+        var recs = ForCompany<IRecommendationService>(s.ServiceProvider, await fx.NewCompanyDirectorAsync(companyId), companyId);
 
         var dashboard = await recs.DashboardAsync();
         dashboard.CriticalCount.Should().Be(1);

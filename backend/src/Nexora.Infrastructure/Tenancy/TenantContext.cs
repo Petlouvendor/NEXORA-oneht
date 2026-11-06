@@ -37,9 +37,11 @@ public sealed class TenantContext : ITenantContext
         ActiveCompanyId = activeCompanyId;
     }
 
+    public event Action? SystemScopeChanged;
+
     public IDisposable BeginSystemScope()
     {
-        _systemDepth++;
+        if (++_systemDepth == 1) SystemScopeChanged?.Invoke();
         return new Scope(this);
     }
 
@@ -50,7 +52,7 @@ public sealed class TenantContext : ITenantContext
         {
             if (_done) return;
             _done = true;
-            owner._systemDepth--;
+            if (--owner._systemDepth == 0) owner.SystemScopeChanged?.Invoke();
         }
     }
 }

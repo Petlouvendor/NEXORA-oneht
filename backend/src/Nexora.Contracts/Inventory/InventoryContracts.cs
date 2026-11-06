@@ -96,7 +96,8 @@ public sealed record CountSummaryDto(
 
 public sealed record CountLineDto(
     Guid Id, Guid ProductId, string Sku, string ProductName, string? UnitCode, string? LotNumber,
-    decimal SystemQuantity, decimal? CountedQuantity, decimal? Variance, decimal UnitCost, decimal? VarianceValue, string? Note);
+    decimal SystemQuantity, decimal? CountedQuantity, decimal? Variance, decimal UnitCost, decimal? VarianceValue, string? Note,
+    Guid? LotId = null);
 
 public sealed record CountDetailDto(CountSummaryDto Count, IReadOnlyList<CountLineDto> Lines);
 

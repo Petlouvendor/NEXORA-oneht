@@ -48,7 +48,7 @@ public sealed class SqlAlertCenter(
                 $"{expiring.Count} lot(s) expirent sous 60 jours.", "reports/stock/expiry", expiring.Count));
 
         var overdueAr = await One($"""
-            SELECT COUNT(*)::int AS "Count", COALESCE(SUM(original_amount - paid_amount),0) AS "Amount"
+            SELECT COUNT(*)::int AS "Count", COALESCE(SUM(remaining_amount),0) AS "Amount"
             FROM nexora.customer_receivable
             WHERE company_id = {Company} AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE')
               AND due_date IS NOT NULL AND due_date < {today}
@@ -58,7 +58,7 @@ public sealed class SqlAlertCenter(
                 $"{overdueAr.Count} créance(s) échue(s) — {overdueAr.Amount:0.##}.", "reports/aging/receivables", overdueAr.Count));
 
         var overdueAp = await One($"""
-            SELECT COUNT(*)::int AS "Count", COALESCE(SUM(original_amount - paid_amount),0) AS "Amount"
+            SELECT COUNT(*)::int AS "Count", COALESCE(SUM(remaining_amount),0) AS "Amount"
             FROM nexora.supplier_payable
             WHERE company_id = {Company} AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE')
               AND due_date IS NOT NULL AND due_date < {today}
@@ -78,10 +78,11 @@ public sealed class SqlAlertCenter(
             alerts.Add(new("cash_variance", "warning", "Écarts de caisse (7 j)",
                 $"{cashVariance.Count} session(s) avec écart — total {cashVariance.Amount:0.##}.", "reports/cash/sessions", cashVariance.Count));
 
+        // Soldes convertis en devise de l'entreprise (audit 2026-10 éd. 2, A-046) : gourdes et dollars étaient additionnés.
         var lowCash = await One($"""
-            SELECT 0::int AS "Count", COALESCE(SUM(current_balance),0) AS "Amount"
-            FROM nexora.financial_account
-            WHERE company_id = {Company} AND status = 'active' AND account_type IN ('cash','bank','mobile_money')
+            SELECT 0::int AS "Count", COALESCE(SUM(nexora.convert_amount(fa.current_balance, fa.currency_id, co.default_currency_id)),0) AS "Amount"
+            FROM nexora.financial_account fa JOIN nexora.company co ON co.id = fa.company_id
+            WHERE fa.company_id = {Company} AND fa.status = 'active' AND fa.account_type IN ('cash','bank','mobile_money')
             """, ct);
         if (lowCash.Amount < 0m)
             alerts.Add(new("low_cash", "critical", "Trésorerie négative",
@@ -89,14 +90,16 @@ public sealed class SqlAlertCenter(
 
         // Baisse forte des ventes : 7 derniers jours vs 7 précédents (§28)
         var recent = await Scalar($"""
-            SELECT COALESCE(SUM(subtotal - discount_total),0) AS "Value" FROM nexora.sale
-            WHERE company_id = {Company} AND status IN ('completed','partially_refunded','refunded')
-              AND sold_at::date >= {today.AddDays(-7)}
+            SELECT COALESCE(SUM(nexora.convert_amount(s.subtotal - s.discount_total, s.currency_id, co.default_currency_id, s.sold_at)),0) AS "Value"
+            FROM nexora.sale s JOIN nexora.company co ON co.id = s.company_id
+            WHERE s.company_id = {Company} AND s.status IN ('completed','partially_refunded','refunded')
+              AND s.sold_at::date >= {today.AddDays(-7)}
             """, ct);
         var previous = await Scalar($"""
-            SELECT COALESCE(SUM(subtotal - discount_total),0) AS "Value" FROM nexora.sale
-            WHERE company_id = {Company} AND status IN ('completed','partially_refunded','refunded')
-              AND sold_at::date >= {today.AddDays(-14)} AND sold_at::date < {today.AddDays(-7)}
+            SELECT COALESCE(SUM(nexora.convert_amount(s.subtotal - s.discount_total, s.currency_id, co.default_currency_id, s.sold_at)),0) AS "Value"
+            FROM nexora.sale s JOIN nexora.company co ON co.id = s.company_id
+            WHERE s.company_id = {Company} AND s.status IN ('completed','partially_refunded','refunded')
+              AND s.sold_at::date >= {today.AddDays(-14)} AND s.sold_at::date < {today.AddDays(-7)}
             """, ct);
         if (previous > 0m && recent < previous * 0.7m)
             alerts.Add(new("sales_drop", "warning", "Baisse des ventes",

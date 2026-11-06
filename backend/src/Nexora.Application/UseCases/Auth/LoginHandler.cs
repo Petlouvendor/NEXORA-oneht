@@ -18,16 +18,24 @@ public sealed class LoginHandler(
     IDateTimeProvider clock,
     ILogger<LoginHandler> logger)
 {
+    /// <summary>Empreinte factice (calculée une fois) vérifiée pour un compte inconnu.</summary>
+    private static string? DummyHash;
+
     public async Task<Result<AuthTokenResponse>> HandleAsync(
         LoginRequest request, string? ipAddress = null, CancellationToken ct = default)
     {
         var user = await users.FindByEmailAsync(request.Email.Trim(), ct);
 
-        // Message générique : ne pas révéler l'existence du compte (Phase 3 §9).
-        var invalid = Error.Unauthorized("auth.invalid_credentials", "Identifiants invalides.");
+        // Message générique : ne pas révéler l'existence du compte (Phase 3 §9) — ni son verrouillage (audit 2026-10
+        // éd. 2 : « compte verrouillé », répondu sans calcul du mot de passe, désignait un compte existant).
+        var invalid = Error.Unauthorized("auth.invalid_credentials",
+            "Identifiants invalides, ou compte temporairement verrouillé après plusieurs tentatives.");
 
         if (user is null || !user.IsActive || string.IsNullOrEmpty(user.PasswordHash))
         {
+            // Même coût qu'un vrai contrôle de mot de passe : le temps de réponse ne révèle plus si le compte existe
+            // (audit 2026-10, A-011).
+            _ = hasher.Verify(request.Password, DummyHash ??= hasher.Hash(Guid.NewGuid().ToString("N")));
             logger.LogInformation("Échec de connexion pour {Email} (compte inconnu/inactif)", request.Email);
             NexoraMetrics.RecordLogin("invalid");
             return invalid;
@@ -36,11 +44,12 @@ public sealed class LoginHandler(
         // Verrouillage temporaire après essais répétés (Phase 33 §4, §7, §48).
         if (user.LockedUntil is { } until && until > clock.UtcNow)
         {
+            // Même coût et même réponse qu'un mot de passe faux : rien ne distingue un compte verrouillé.
+            _ = hasher.Verify(request.Password, user.PasswordHash);
             await securityEvents.RecordAsync("login.blocked", user.Id, request.CompanyId,
                 detail: "compte verrouillé", ipAddress: ipAddress, ct: ct);
             NexoraMetrics.RecordLogin("locked");
-            return Error.Unauthorized("auth.account_locked",
-                "Compte temporairement verrouillé après plusieurs tentatives. Réessayez plus tard.");
+            return invalid;
         }
 
         if (!hasher.Verify(request.Password, user.PasswordHash))

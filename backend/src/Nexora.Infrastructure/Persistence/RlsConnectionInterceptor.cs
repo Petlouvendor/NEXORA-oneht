@@ -8,16 +8,70 @@ namespace Nexora.Infrastructure.Persistence;
 /// <summary>
 /// Pose les variables de session PostgreSQL consommées par les politiques RLS (Phase 2 §34, Phase 3 §11)
 /// à chaque ouverture de connexion. Le pool Npgsql réinitialise (RESET ALL) au retour :
-/// aucune fuite de contexte entre requêtes.
+/// aucune fuite de contexte entre requêtes. Les réapplique aussi sur la connexion déjà ouverte (transaction en cours)
+/// quand une portée système commence ou se termine (audit 2026-10, A-009).
 /// </summary>
-public sealed class RlsConnectionInterceptor(ITenantContext tenant) : DbConnectionInterceptor
+public sealed class RlsConnectionInterceptor : DbConnectionInterceptor
 {
+    private readonly ITenantContext tenant;
+    private DbConnection? _open;
+    private bool _stale;
+
+    public RlsConnectionInterceptor(ITenantContext tenant)
+    {
+        this.tenant = tenant;
+        tenant.SystemScopeChanged += Reapply;
+    }
+
     public override void ConnectionOpened(DbConnection connection, ConnectionEndEventData eventData)
-        => Apply(connection);
+    {
+        _open = connection;
+        _stale = false;
+        Apply(connection);
+    }
 
     public override async Task ConnectionOpenedAsync(
         DbConnection connection, ConnectionEndEventData eventData, CancellationToken ct = default)
-        => await ApplyAsync(connection, ct).ConfigureAwait(false);
+    {
+        _open = connection;
+        _stale = false;
+        await ApplyAsync(connection, ct).ConfigureAwait(false);
+    }
+
+    public override void ConnectionClosed(DbConnection connection, ConnectionEndEventData eventData)
+    {
+        if (ReferenceEquals(_open, connection)) _open = null;
+    }
+
+    public override Task ConnectionClosedAsync(DbConnection connection, ConnectionEndEventData eventData)
+    {
+        if (ReferenceEquals(_open, connection)) _open = null;
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Connexion ouverte (transaction en cours) : le contexte est marqué périmé et réappliqué juste avant la commande
+    /// suivante (<see cref="RlsCommandInterceptor"/>). Pas tout de suite : la portée peut se terminer pendant qu'une
+    /// requête est encore en cours sur la connexion.
+    /// </summary>
+    private void Reapply()
+    {
+        if (_open is { State: System.Data.ConnectionState.Open }) _stale = true;
+    }
+
+    internal void BeforeCommand(DbCommand command)
+    {
+        if (!_stale || command.Connection is not { } connection || !ReferenceEquals(connection, _open)) return;
+        _stale = false;
+        Apply(connection);
+    }
+
+    internal async Task BeforeCommandAsync(DbCommand command, CancellationToken ct)
+    {
+        if (!_stale || command.Connection is not { } connection || !ReferenceEquals(connection, _open)) return;
+        _stale = false;
+        await ApplyAsync(connection, ct).ConfigureAwait(false);
+    }
 
     private void Apply(DbConnection connection)
     {

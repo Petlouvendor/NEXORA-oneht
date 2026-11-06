@@ -5,6 +5,7 @@ using Nexora.Application.Finance.Reports;
 using Nexora.Contracts.Finance;
 using Nexora.Infrastructure.Persistence;
 using Nexora.Domain.Common;
+using Nexora.Domain.Accounting;
 
 namespace Nexora.Infrastructure.Finance;
 
@@ -32,7 +33,7 @@ public sealed class SqlFinancialReports(
             FROM nexora.journal_entry_line l
             JOIN nexora.journal_entry e ON e.id = l.journal_entry_id
             JOIN nexora.account a ON a.id = l.account_id
-            WHERE e.company_id = {Company} AND e.status = 'posted' AND e.entry_date <= {asOf}
+            WHERE e.company_id = {Company} AND e.status = ANY({LedgerStatuses.InLedger}) AND e.entry_date <= {asOf}
             GROUP BY a.code, a.name, a.account_type
             HAVING COALESCE(SUM(l.base_debit),0) <> COALESCE(SUM(l.base_credit),0)
             ORDER BY a.code
@@ -63,7 +64,7 @@ public sealed class SqlFinancialReports(
             FROM nexora.journal_entry_line l
             JOIN nexora.journal_entry e ON e.id = l.journal_entry_id
             JOIN nexora.account a ON a.id = l.account_id
-            WHERE e.company_id = {Company} AND e.status = 'posted'
+            WHERE e.company_id = {Company} AND e.status = ANY({LedgerStatuses.InLedger})
               AND a.code = {accountCode} AND e.entry_date < {from}
             """).FirstAsync(ct);
 
@@ -74,7 +75,7 @@ public sealed class SqlFinancialReports(
             JOIN nexora.journal_entry e ON e.id = l.journal_entry_id
             JOIN nexora.journal j ON j.id = e.journal_id
             JOIN nexora.account a ON a.id = l.account_id
-            WHERE e.company_id = {Company} AND e.status = 'posted'
+            WHERE e.company_id = {Company} AND e.status = ANY({LedgerStatuses.InLedger})
               AND a.code = {accountCode} AND e.entry_date BETWEEN {from} AND {to}
             ORDER BY e.entry_date, e.entry_number, l.line_number
             """).ToListAsync(ct);
@@ -126,20 +127,25 @@ public sealed class SqlFinancialReports(
     public async Task<CashFlowForecastResponse> CashFlowForecastAsync(DateOnly from, DateOnly to, CancellationToken ct = default)
     {
         var func = await currency.FunctionalCurrencyAsync(ct);
-        var opening = await db.FinancialAccounts.AsNoTracking()
-            .Where(a => a.CompanyId == Company && a.Status == "active"
-                        && (a.AccountType == "cash" || a.AccountType == "bank" || a.AccountType == "mobile_money"))
-            .SumAsync(a => a.CurrentBalance, ct);
+        // Soldes, créances et dettes convertis dans la devise de l'entreprise au taux du jour (audit 2026-10 éd. 2,
+        // A-046) : un compte en dollars était additionné aux gourdes.
+        var opening = await db.Database.SqlQuery<decimal>($"""
+            SELECT COALESCE(SUM(nexora.convert_amount(fa.current_balance, fa.currency_id, co.default_currency_id)), 0) AS "Value"
+            FROM nexora.financial_account fa JOIN nexora.company co ON co.id = fa.company_id
+            WHERE fa.company_id = {Company} AND fa.status = 'active' AND fa.account_type IN ('cash','bank','mobile_money')
+            """).FirstAsync(ct);
 
         var inflows = await db.Database.SqlQuery<DueRow>($"""
-            SELECT COALESCE(due_date, {to}) AS "DueDate", SUM(original_amount - paid_amount) AS "Amount"
+            SELECT COALESCE(due_date, {to}) AS "DueDate",
+                   SUM(nexora.convert_amount(remaining_amount, currency_id, (SELECT default_currency_id FROM nexora.company WHERE id = {Company}))) AS "Amount"
             FROM nexora.customer_receivable
             WHERE company_id = {Company} AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE')
             GROUP BY COALESCE(due_date, {to})
             """).ToListAsync(ct);
 
         var outflows = await db.Database.SqlQuery<DueRow>($"""
-            SELECT COALESCE(due_date, {to}) AS "DueDate", SUM(original_amount - paid_amount) AS "Amount"
+            SELECT COALESCE(due_date, {to}) AS "DueDate",
+                   SUM(nexora.convert_amount(remaining_amount, currency_id, (SELECT default_currency_id FROM nexora.company WHERE id = {Company}))) AS "Amount"
             FROM nexora.supplier_payable
             WHERE company_id = {Company} AND status IN ('OPEN','PARTIALLY_PAID','OVERDUE')
             GROUP BY COALESCE(due_date, {to})
@@ -168,7 +174,7 @@ public sealed class SqlFinancialReports(
             FROM nexora.journal_entry_line l
             JOIN nexora.journal_entry e ON e.id = l.journal_entry_id
             JOIN nexora.account a ON a.id = l.account_id
-            WHERE e.company_id = {Company} AND e.status = 'posted'
+            WHERE e.company_id = {Company} AND e.status = ANY({LedgerStatuses.InLedger})
               AND e.entry_date BETWEEN {from} AND {to}
               AND (NOT {excludeClosing} OR e.origin <> 'closing')
             GROUP BY a.code, a.name, a.account_type
@@ -192,12 +198,12 @@ public sealed class SqlFinancialReports(
 
         var sql =
             "SELECT p.name AS \"Party\", " +
-            "(r.original_amount - r.paid_amount) AS \"Remaining\", " +
+            "r.remaining_amount AS \"Remaining\", " +
             "GREATEST(0, ({0}::date - COALESCE(r.due_date, r.issue_date)))::int AS \"DaysOverdue\" " +
             $"FROM nexora.{table} r " +
             $"JOIN nexora.{partyTable} p ON p.id = r.{partyFk} " +
             "WHERE r.company_id = {1} AND r.status IN ('OPEN','PARTIALLY_PAID','OVERDUE') " +
-            "AND (r.original_amount - r.paid_amount) > 0";
+            "AND r.remaining_amount > 0";
         var raw = await db.Database.SqlQueryRaw<AgedRawRow>(sql, asOf, Company).ToListAsync(ct);
 
         static string Bucket(int d) => d <= 0 ? "Courant" : d <= 30 ? "1-30 j" : d <= 60 ? "31-60 j" : d <= 90 ? "61-90 j" : "> 90 j";

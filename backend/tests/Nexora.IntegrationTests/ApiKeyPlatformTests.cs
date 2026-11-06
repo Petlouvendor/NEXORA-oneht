@@ -136,6 +136,32 @@ public sealed class ApiKeyPlatformTests(FinanceEngineFixture fx)
         (await auth.ResolveAsync(created.Value!.Secret, null)).Outcome.Should().Be(ApiKeyOutcome.Expired);
     }
 
+    // ---- Audit 2026-10 éd. 2 : la rotation ne recopie pas un droit que le propriétaire a perdu ----
+    [Fact]
+    public async Task Rotation_refuses_scopes_the_owner_no_longer_holds()
+    {
+        await using var s = Scope();
+        AsDirection(s.ServiceProvider);
+        var keys = s.ServiceProvider.GetRequiredService<IApiKeyService>();
+        var original = await keys.CreateAsync(new CreateApiKeyRequest("Droits perdus", [await AnOwnedPermission(s.ServiceProvider)]));
+        original.IsSuccess.Should().BeTrue(original.Error?.Message);
+
+        // Le propriétaire n'a plus aucun rôle (simulé par un propriétaire sans affectation).
+        var former = Guid.NewGuid();
+        await using (var c = new NpgsqlConnection(fx.TestConnectionString))
+        {
+            await c.OpenAsync();
+            await using var cmd = new NpgsqlCommand($"""
+                INSERT INTO nexora.app_user (id, email, password_hash, full_name, status)
+                VALUES ('{former}', 'former-{former:N}@test.demo', crypt('x', gen_salt('bf', 4)), 'Ancien', 'active');
+                UPDATE nexora.api_key SET owner_user_id = '{former}' WHERE id = '{original.Value!.Key.Id}';
+                """, c);
+            await cmd.ExecuteNonQueryAsync();
+        }
+
+        (await keys.RotateAsync(original.Value!.Key.Id)).Error!.Code.Should().Be("api_key.scope_excess");
+    }
+
     // ---- §14 : rotation → l'ancien secret meurt, un nouveau est émis avec le même périmètre ----
     [Fact]
     public async Task Rotation_kills_the_old_secret_and_issues_a_new_one()

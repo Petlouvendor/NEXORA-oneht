@@ -42,6 +42,17 @@ public sealed class LoginHandlerTests
     }
 
     [Fact]
+    public async Task Unknown_user_costs_a_password_check_like_a_known_one()
+    {
+        // Audit 2026-10, A-011 : sans vérification, la réponse immédiate révélait que le compte n'existe pas.
+        _users.FindByEmailAsync("ghost@x", Arg.Any<CancellationToken>()).Returns((AppUser?)null);
+
+        await CreateSut().HandleAsync(new LoginRequest("ghost@x", "pw", null));
+
+        _hasher.Received(1).Verify("pw", Arg.Any<string>());
+    }
+
+    [Fact]
     public async Task Wrong_password_yields_generic_unauthorized_and_registers_the_failure()
     {
         var user = new AppUser { Id = Guid.NewGuid(), Email = "u@x", PasswordHash = "hash", Status = "active" };
@@ -66,8 +77,10 @@ public sealed class LoginHandlerTests
 
         var result = await CreateSut().HandleAsync(new LoginRequest("u@x", "whatever", null));
 
-        result.Error!.Code.Should().Be("auth.account_locked");
-        _hasher.DidNotReceive().Verify(Arg.Any<string>(), Arg.Any<string>());
+        // Audit 2026-10 éd. 2 : même réponse et même calcul qu'un mot de passe faux — le verrouillage ne désigne plus
+        // un compte existant.
+        result.Error!.Code.Should().Be("auth.invalid_credentials");
+        _hasher.Received(1).Verify("whatever", "hash");
     }
 
     [Fact]

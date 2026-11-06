@@ -239,13 +239,13 @@ public sealed class SqlInventoryDocumentQueries(NexoraDbContext db, ITenantConte
                    CASE WHEN l.counted_quantity IS NULL THEN NULL ELSE l.variance END AS "Variance",
                    l.unit_cost AS "UnitCost",
                    CASE WHEN l.counted_quantity IS NULL THEN NULL ELSE ROUND(l.variance * l.unit_cost, 2) END AS "VarianceValue",
-                   l.note AS "Note"
+                   l.note AS "Note", l.lot_id AS "LotId"
             FROM nexora.inventory_count_line l
             JOIN nexora.product p ON p.id = l.product_id
             LEFT JOIN nexora.unit u ON u.id = p.unit_id
             LEFT JOIN nexora.lot lt ON lt.id = l.lot_id
             WHERE l.inventory_count_id = {id}
-            ORDER BY p.name
+            ORDER BY p.name, lt.lot_number
             """).ToListAsync(ct);
         if (!await CanSeeValuationAsync(ct)) lines = lines.Select(l => l with { UnitCost = 0m, VarianceValue = null }).ToList();
         return new CountDetailDto(header, lines);

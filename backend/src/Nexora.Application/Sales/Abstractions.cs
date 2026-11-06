@@ -135,6 +135,8 @@ public interface ISalesReturnStore
     Task<Guid?> FindReturnByOperationAsync(Guid operationUuid, CancellationToken ct = default);
     Task AddReturnAsync(Domain.Sales.SaleReturn ret, CancellationToken ct = default);
     Task<Domain.Sales.Sale?> GetSaleWithLinesAsync(Guid saleId, CancellationToken ct = default);
+    /// <summary>Verrouille la vente jusqu'à la fin de la transaction : deux retours d'une même vente passent l'un après l'autre.</summary>
+    Task LockSaleAsync(Guid saleId, CancellationToken ct = default);
     Task<Guid?> ReceivableForSaleAsync(Guid saleId, CancellationToken ct = default);
     /// <summary>Crédit né de la vente et son reste dû (0 si soldé, radié ou annulé) — module clients §11.</summary>
     Task<SaleReceivableBalance?> ReceivableBalanceForSaleAsync(Guid saleId, CancellationToken ct = default);
@@ -156,7 +158,8 @@ public interface ICashSessionStore
     /// <summary>Clôture comptée en attente de validation Manager (statut <c>closing</c>, guide §13).</summary>
     Task MarkCountedAsync(Guid sessionId, decimal expected, decimal counted, string? notes, CancellationToken ct = default);
     /// <summary>Clôture définitive ; <paramref name="validatedBy"/> renseigné quand un Manager a validé l'écart.</summary>
-    Task FinalizeCloseAsync(Guid sessionId, decimal expected, decimal counted, string? notes,
+    /// <returns><c>false</c> si la session n'était plus ouverte (clôturée entre-temps par une autre demande).</returns>
+    Task<bool> FinalizeCloseAsync(Guid sessionId, decimal expected, decimal counted, string? notes,
         Guid? validatedBy, string? validationNote, CancellationToken ct = default);
     Task<string> CurrencyCodeAsync(Guid currencyId, CancellationToken ct = default);
 }

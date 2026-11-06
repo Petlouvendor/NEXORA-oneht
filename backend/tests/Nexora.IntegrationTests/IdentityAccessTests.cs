@@ -93,21 +93,49 @@ public sealed class IdentityAccessTests(FinanceEngineFixture fx)
         await using var s = Scope();
         var (assign, _, _, tc) = Services(s.ServiceProvider);
 
-        // Un porteur du rôle « cashier » tente d'accorder « chief_accountant ».
-        tc.SetUser(Cashier);
+        // Un administrateur des utilisateurs sans droits comptables tente d'accorder « chief_accountant ».
+        tc.SetUser(Direction);
         tc.SetScope([Company], [], Company);
         var target = await NewUser("Cible");
         await assign.GrantAsync(target, new GrantAssignmentRequest("cashier", "COMPANY", Company, null, null, null, null));
+        tc.SetUser(await UserAdministratorOnlyAsync());
 
         var escalation = await assign.GrantAsync(target, new GrantAssignmentRequest(
             "chief_accountant", "COMPANY", Company, null, null, null, null));
         escalation.IsSuccess.Should().BeFalse();
         escalation.Error!.Code.Should().Be("identity.escalation");
 
+        // Sans admin.manage_users dans l'entreprise, ses comptes sont hors du périmètre de gestion (audit 2026-10
+        // éd. 2, A-033) : la cible est introuvable pour l'appelant.
+        tc.SetUser(Cashier);
+        (await assign.GrantAsync(target, new GrantAssignmentRequest("cashier", "COMPANY", Company, null, null, null, null)))
+            .Error!.Code.Should().Be("identity.user");
+
         // Le super_administrateur ne s'attribue pas par ce canal.
         tc.SetUser(Direction);
         (await assign.GrantAsync(target, new GrantAssignmentRequest("super_administrator", "COMPANY", Company, null, null, null, null)))
             .Error!.Code.Should().Be("identity.role_protected");
+    }
+
+    /// <summary>Utilisateur dont le seul droit est admin.manage_users dans la Pharmacie (rôle personnalisé de test).</summary>
+    private async Task<Guid> UserAdministratorOnlyAsync()
+    {
+        var user = Guid.NewGuid();
+        var role = Guid.NewGuid();
+        await using var c = new Npgsql.NpgsqlConnection(fx.TestConnectionString);
+        await c.OpenAsync();
+        await using var cmd = new Npgsql.NpgsqlCommand($"""
+            INSERT INTO nexora.app_user (id, email, password_hash, full_name, status)
+            VALUES ('{user}', 'uadmin-{user:N}@test.demo', crypt('x', gen_salt('bf', 4)), 'Administrateur des utilisateurs', 'active');
+            INSERT INTO nexora.role (id, company_id, name, description, system_role, status)
+            VALUES ('{role}', '{Company}', 'user_admin_{role:N}', 'Gestion des utilisateurs seulement', false, 'active');
+            INSERT INTO nexora.role_permission (role_id, permission_id)
+            SELECT '{role}', id FROM nexora.permission WHERE code = 'admin.manage_users';
+            INSERT INTO nexora.user_role (user_id, role_id, scope_id)
+            SELECT '{user}', '{role}', id FROM nexora.access_scope WHERE scope_type = 'COMPANY' AND company_id = '{Company}' LIMIT 1;
+            """, c);
+        await cmd.ExecuteNonQueryAsync();
+        return user;
     }
 
     // ---- §14-16, §39 : le périmètre effectif alimente le sélecteur ----

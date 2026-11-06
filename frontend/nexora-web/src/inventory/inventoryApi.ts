@@ -190,7 +190,7 @@ export interface CountSummary {
   startedAt: string | null; validatedAt: string | null; validatedByName: string | null; notes: string | null;
 }
 export interface CountLine {
-  id: string; productId: string; sku: string; productName: string; unitCode: string | null; lotNumber: string | null;
+  id: string; productId: string; sku: string; productName: string; unitCode: string | null; lotNumber: string | null; lotId?: string | null;
   systemQuantity: number; countedQuantity: number | null; variance: number | null; unitCost: number;
   varianceValue: number | null; note: string | null;
 }

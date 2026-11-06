@@ -21,7 +21,8 @@ namespace Nexora.Infrastructure.Sync;
 public sealed class SqlSyncService(
     NexoraDbContext db, IUnitOfWork uow, ITenantContext tenant, IDateTimeProvider clock,
     SalesService sales, IDeliveryService delivery, IFieldInterventionService interventions,
-    Nexora.Application.Customers.ICustomerAccountService customerAccounts, IPermissionService permissions) : ISyncService
+    Nexora.Application.Customers.ICustomerAccountService customerAccounts, IPermissionService permissions,
+    ISalesPricing pricing) : ISyncService
 {
     private Guid Company => tenant.ActiveCompanyId ?? throw TenantErrors.ActiveCompanyRequired();
     private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
@@ -335,9 +336,17 @@ public sealed class SqlSyncService(
             return await ConflictAsync(opId, op, "validation", refusal,
                 "Vérifier la vente puis l'accepter (« le poste a raison ») pour l'enregistrer, ou l'annuler.", ct);
 
+        // Session déjà comptée ou fermée (audit 2026-10 éd. 2, A-003 résidu) : la vente rejouée s'ajoutait en silence à
+        // une caisse dont l'écart était déjà constaté — le caissier pouvait ainsi justifier après coup un manquant. Elle
+        // devient un conflit : un responsable (sync.manage) vérifie l'écart de clôture, puis l'accepte ou l'annule.
+        if (!bypassPolicy && cmd.CashSessionId is { } sessionId && await ClosedSessionAsync(sessionId, ct) is { } closed)
+            return await ConflictAsync(opId, op, "period",
+                $"Vente hors ligne rattachée à la session {closed.DocumentNumber ?? sessionId.ToString()}, déjà {(closed.Status == "closing" ? "comptée" : "fermée")}.",
+                "Vérifier l'écart de clôture de la session, puis accepter la vente (« le poste a raison ») ou l'annuler.", ct);
+
         // Contrôle de crédit offline (§17) : le crédit projeté est bloqué si la politique l'interdit.
         var paid = cmd.Tenders.Sum(t => t.Amount);
-        var estimatedTotal = EstimateTotal(cmd);
+        var estimatedTotal = await EstimateTotalAsync(cmd, ct);
         var offlineCredit = Math.Max(0m, estimatedTotal - paid);
         if (!bypassPolicy && offlineCredit > 0m)
         {
@@ -391,6 +400,15 @@ public sealed class SqlSyncService(
     /// Politique hors ligne (phase 6) — ce que la vente hors ligne n'avait pas le droit de faire : remise interdite,
     /// moyen de paiement non autorisé, vente faite après la durée maximale sans contact avec le serveur.
     /// </summary>
+    private sealed record SessionStateRow(string Status, string? DocumentNumber);
+
+    /// <summary>Session de caisse de l'entreprise qui n'est plus ouverte (comptée ou fermée), sinon null.</summary>
+    private async Task<SessionStateRow?> ClosedSessionAsync(Guid sessionId, CancellationToken ct)
+        => (await db.Database.SqlQuery<SessionStateRow>($"""
+            SELECT status AS "Status", NULL::text AS "DocumentNumber" FROM nexora.cash_session
+            WHERE id = {sessionId} AND company_id = {Company} AND status <> 'open'
+            """).ToListAsync(ct)).FirstOrDefault();
+
     private async Task<string?> PolicyRefusalAsync(CheckoutCommand cmd, SyncOperationInput op, PolicyRow policy, DateTimeOffset? lastSeen, CancellationToken ct)
     {
         if (!policy.AllowOfflineDiscount && cmd.Lines.Any(l => l.LineDiscount > 0m))
@@ -420,8 +438,29 @@ public sealed class SqlSyncService(
         return null;
     }
 
-    private static decimal EstimateTotal(CheckoutCommand cmd)
-        => cmd.Lines.Sum(l => (l.UnitPriceOverride ?? 0m) * l.Quantity - l.LineDiscount);
+    /// <summary>
+    /// Total TTC de la vente rejouée, calculé par la tarification du serveur — la même que l'encaissement (audit
+    /// 2026-10, A-016). Avant : prix forcé seulement, donc 0 dans le cas courant où la caisse ne force aucun prix ; le
+    /// refus du crédit hors ligne et son plafond ne s'appliquaient jamais. Article inconnu : estimation d'origine (la
+    /// vente sera de toute façon refusée à l'encaissement).
+    /// </summary>
+    private async Task<decimal> EstimateTotalAsync(CheckoutCommand cmd, CancellationToken ct)
+    {
+        try
+        {
+            var priced = await pricing.PriceCartAsync(cmd.InventoryLocationId, cmd.CustomerId, cmd.Currency,
+                cmd.SoldAt ?? clock.UtcNow, cmd.Lines, cmd.CouponCode, ct);
+            return priced.Sum(l =>
+            {
+                var net = Math.Max(0m, Math.Round(l.UnitPrice * l.Quantity, 2) - l.ManualDiscount - l.PromotionDiscount);
+                return net + Math.Round(net * l.TaxRate / 100m, 2);
+            });
+        }
+        catch (InvalidOperationException)
+        {
+            return cmd.Lines.Sum(l => (l.UnitPriceOverride ?? 0m) * l.Quantity - l.LineDiscount);
+        }
+    }
 
     private async Task<SyncOperationResult> ConflictAsync(
         Guid opId, SyncOperationInput op, string type, string detail, string recommended, CancellationToken ct)

@@ -23,6 +23,9 @@ public sealed record FinancialTransactionDto(
     string? ReferenceType, Guid? ReferenceId, string? Label, string? CounterpartyAccountName,
     string? JournalEntryNumber, string Status, string? CreatedByName);
 
+/// <summary>Solde d'ouverture d'un compte encore sans mouvement (audit 2026-10, A-023). Sans date : maintenant.</summary>
+public sealed record TreasuryOpeningBalanceRequest(Guid OperationUuid, decimal Amount, DateOnly? Date = null, string? Note = null);
+
 public sealed record TreasuryTransferRequest(Guid OperationUuid, Guid FromAccountId, Guid ToAccountId, decimal Amount, string? Note);
 
 public sealed record TreasuryChargeRequest(Guid OperationUuid, Guid AccountId, decimal Amount, string Description);

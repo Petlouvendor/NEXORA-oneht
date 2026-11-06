@@ -12,10 +12,12 @@ describe("paiements en ligne", () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it("simulation : boutons « Simuler » seulement en test ; réel : vérification auprès du fournisseur seulement", () => {
-    expect(intentActions({ mode: "simulation", status: "pending" }, "test")).toEqual({ verify: false, simulate: true, refund: false });
+    expect(intentActions({ mode: "simulation", status: "pending" }, "test")).toEqual({ verify: false, simulate: true, refund: false, refundManual: false });
     expect(intentActions({ mode: "simulation", status: "pending" }, "production").simulate).toBe(false);
-    expect(intentActions({ mode: "real", status: "pending" }, "test")).toEqual({ verify: true, simulate: false, refund: false });
-    expect(intentActions({ mode: "real", status: "confirmed" }, "production")).toEqual({ verify: false, simulate: false, refund: true });
+    expect(intentActions({ mode: "real", status: "pending" }, "test")).toEqual({ verify: true, simulate: false, refund: false, refundManual: false });
+    expect(intentActions({ mode: "simulation", status: "confirmed" }, "test").refund).toBe(true);
+    // Paiement réel : aucun fournisseur ne rembourse par API — la marche à suivre, pas un bouton voué au refus.
+    expect(intentActions({ mode: "real", status: "confirmed" }, "production")).toEqual({ verify: false, simulate: false, refund: false, refundManual: true });
   });
 
   it("identifiants demandés pour MonCash seulement ; les cinq statuts de test ont un libellé", () => {

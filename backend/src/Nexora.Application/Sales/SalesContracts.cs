@@ -63,7 +63,10 @@ public sealed record ReturnResult(
 
 public sealed record OpenSessionCommand(Guid CashRegisterId, Guid? PosTerminalId, decimal OpeningBalance);
 public sealed record CloseSessionCommand(Guid SessionId, decimal CountedBalance, string? Notes);
-public sealed record CashInOutCommand(Guid SessionId, string MovementType, decimal Amount, string? Note);
+/// <param name="CounterpartFinancialAccountId">Compte d'où vient (apport) ou où va (sortie, prélèvement) l'argent :
+/// coffre, banque, autre caisse. Obligatoire : l'argent ne disparaît plus des livres (audit 2026-10, A-019).</param>
+public sealed record CashInOutCommand(Guid SessionId, string MovementType, decimal Amount, string? Note,
+    Guid? CounterpartFinancialAccountId = null, Guid? OperationUuid = null);
 
 public sealed record ValidateCloseCommand(Guid SessionId, string? Note);
 

@@ -55,7 +55,6 @@ public static class DependencyInjection
 {
     public static IServiceCollection AddInfrastructure(this IServiceCollection services, IConfiguration config)
     {
-        var db = config.GetSection(NexoraDbOptions.SectionName).Get<NexoraDbOptions>() ?? new NexoraDbOptions();
         services.Configure<NexoraDbOptions>(config.GetSection(NexoraDbOptions.SectionName));
         services.Configure<JwtOptions>(config.GetSection(JwtOptions.SectionName));
 
@@ -64,24 +63,28 @@ public static class DependencyInjection
         services.AddScoped<ITenantContext>(sp => sp.GetRequiredService<TenantContext>());
 
         services.AddScoped<RlsConnectionInterceptor>();
+        services.AddScoped<RlsCommandInterceptor>();
         services.AddScoped<IBranchScopeResolver, Nexora.Infrastructure.Identity.SqlBranchScopeResolver>();
 
         // Chaîne réelle via configuration / secret manager (§18). Valeur de repli inerte
         // pour permettre le démarrage de l'hôte en test sans base.
-        var connectionString = string.IsNullOrWhiteSpace(db.ConnectionString)
-            ? "Host=localhost;Port=5432;Database=nexora;Username=nexora_app;Search Path=nexora,public"
-            : db.ConnectionString;
-
+        // Lue à la construction du contexte (IOptions), pas à l'enregistrement : une configuration ajoutée après
+        // coup (WebApplicationFactory.ConfigureAppConfiguration des tests d'API) est ainsi réellement appliquée
+        // (audit 2026-10, T-002 — les tests d'API écrivaient dans `nexora` quelle que soit la base déclarée).
         services.AddDbContext<NexoraDbContext>((sp, options) =>
         {
+            var current = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<NexoraDbOptions>>().Value;
+            var connectionString = string.IsNullOrWhiteSpace(current.ConnectionString)
+                ? "Host=localhost;Port=5432;Database=nexora;Username=nexora_app;Search Path=nexora,public"
+                : current.ConnectionString;
             options.UseNpgsql(connectionString, npgsql =>
             {
                 // Pas de retry auto : les transactions sont gérées manuellement (UnitOfWork)
                 // et l'idempotence est portée par l'identifiant d'opération (Phase 4 §33).
-                npgsql.CommandTimeout(db.CommandTimeoutSeconds);
+                npgsql.CommandTimeout(current.CommandTimeoutSeconds);
                 npgsql.MigrationsHistoryTable("__ef_migrations_history_unused", "nexora");
             });
-            options.AddInterceptors(sp.GetRequiredService<RlsConnectionInterceptor>());
+            options.AddInterceptors(sp.GetRequiredService<RlsConnectionInterceptor>(), sp.GetRequiredService<RlsCommandInterceptor>());
         });
 
         // Assistant d'installation (résumé fonctionnel §20) — SetupState est enregistré par l'hôte.
@@ -168,6 +171,8 @@ public static class DependencyInjection
         services.AddScoped<ITenderOptionsQuery, Nexora.Infrastructure.Sales.SqlTenderOptionsQuery>();
         services.AddScoped<IPosOfflineService, Nexora.Infrastructure.Sales.SqlPosOfflineService>();
         services.AddScoped<Nexora.Application.Finance.ITreasuryManagementService, Nexora.Infrastructure.Finance.SqlTreasuryManagementService>();
+        services.AddScoped<Nexora.Application.Finance.IOpeningBalanceRecovery, Nexora.Infrastructure.Finance.OpeningBalanceRecoveryService>();
+        services.AddScoped<Nexora.Application.Finance.ICostOfGoodsCurrencyRecovery, Nexora.Infrastructure.Finance.CostOfGoodsCurrencyRecoveryService>();
         services.AddScoped<Nexora.Application.Finance.IExpenseService, Nexora.Infrastructure.Finance.SqlExpenseService>();
         services.AddScoped<Nexora.Application.Finance.Ledger.IChartManagementService, Nexora.Infrastructure.Finance.SqlChartManagementService>();
         services.AddScoped<ISalesReturnStore, EfSalesReturnStore>();
@@ -365,6 +370,8 @@ public static class DependencyInjection
             Nexora.Infrastructure.Operations.SqlPlatformMetrics>();
 
         // Administration opérationnelle & maintenance (Phase 41)
+        services.AddScoped<Nexora.Application.Operations.IPlatformOperationGuard, Nexora.Infrastructure.Operations.PlatformOperationGuard>();
+        services.AddScoped<Nexora.Application.Finance.IExchangeRateService, Nexora.Infrastructure.Finance.SqlExchangeRateService>();
         services.AddScoped<Nexora.Application.Operations.IJobRegistry, Nexora.Infrastructure.Operations.SqlJobRegistry>();
         services.AddScoped<Nexora.Application.Operations.IQueueAdminService, Nexora.Infrastructure.Operations.SqlQueueAdminService>();
         services.AddScoped<Nexora.Application.Operations.IOpsDiagnosticsService, Nexora.Infrastructure.Operations.SqlOpsDiagnosticsService>();

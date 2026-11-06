@@ -37,6 +37,14 @@ public static class ProductionConfiguration
         if (!string.IsNullOrWhiteSpace(dataKey) && Base64KeyProblem(dataKey) is { } dataProblem)
             problems.Add("Security:DataEncryptionKey " + dataProblem);
 
+        // Facturation plateforme (A-049) : facultative — sans jeton, le webhook est fermé — mais un jeton fourni doit
+        // être fort ; l'ancien jeton de développement, publié dans le code, est refusé.
+        var webhookToken = configuration["PlatformBilling:WebhookToken"];
+        if (!string.IsNullOrWhiteSpace(webhookToken)
+            && (webhookToken.Length < 32 || webhookToken.StartsWith("dev-", StringComparison.OrdinalIgnoreCase)
+                || WeakMarkers.Any(m => webhookToken.Contains(m, StringComparison.OrdinalIgnoreCase))))
+            problems.Add("PlatformBilling:WebhookToken trop court (< 32 caractères) ou de développement");
+
         var connection = configuration["Database:ConnectionString"] ?? "";
         if (string.IsNullOrWhiteSpace(connection))
             problems.Add("Database:ConnectionString absente");
@@ -83,6 +91,16 @@ public static class ProductionConfiguration
             secrets.Count == 0
                 ? "clé de signature, clés de chiffrement et connexion fournies par l'environnement"
                 : string.Join(" ; ", secrets)));
+
+        // Clé des données personnelles distincte de la clé MFA (audit 2026-10 éd. 2) : à défaut, une seule clé protège
+        // les secrets MFA et les identifiants bancaires et fiscaux. Avertissement seulement : une installation existante
+        // a chiffré ses données avec la clé MFA, et changer de clé exige de les rechiffrer.
+        var dataKey = NonEmpty(configuration["Security:DataEncryptionKey"]);
+        var separateDataKey = dataKey is not null && dataKey != NonEmpty(configuration["Security:MfaEncryptionKey"]);
+        checks.Add(new("data_key", "Clé des données personnelles", "security", separateDataKey ? "pass" : "warn",
+            separateDataKey
+                ? "clé distincte de la clé MFA"
+                : "Security:DataEncryptionKey absente ou égale à la clé MFA : la même clé protège MFA et données personnelles"));
 
         var publicUrl = NonEmpty(configuration["PublicUrl"]);
         var proxy = BehindReverseProxy(configuration);

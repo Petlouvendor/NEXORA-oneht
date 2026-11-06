@@ -19,7 +19,8 @@ public sealed class SqlHrTimeService(
     ITenantContext tenant,
     PayrollAccess access,
     PayrollConfigurationReader config,
-    PayrollNotifier notifier) : IHrTimeService
+    PayrollNotifier notifier,
+    IUnitOfWork uow) : IHrTimeService
 {
     private Guid Company => PayrollRules.Company(tenant);
     private Guid UserId => PayrollRules.User(tenant);
@@ -40,7 +41,7 @@ public sealed class SqlHrTimeService(
         {
             "23505" => Error.Conflict("hr.duplicate", "Une saisie existe déjà pour cet employé à cette date."),
             "23514" when pg.MessageText.Contains("verrouill", StringComparison.OrdinalIgnoreCase) => Locked(pg.MessageText),
-            "23514" => Error.Validation("hr.invalid", pg.MessageText),
+            "23514" => Error.Validation("hr.invalid", Persistence.DatabaseErrors.ClientMessage(pg)),
             "23503" => Error.Validation("hr.invalid", "Employé ou période introuvable dans l'entreprise."),
             _ => null,
         };
@@ -85,6 +86,9 @@ public sealed class SqlHrTimeService(
         if (from is { } f) q = q.Where(x => x.WorkDate >= f);
         if (to is { } t) q = q.Where(x => x.WorkDate <= t);
         if (!string.IsNullOrWhiteSpace(validationStatus)) q = q.Where(x => x.ValidationStatus == validationStatus);
+        // Périmètre appliqué AVANT la limite (audit 2026-10 éd. 2) : tronquée d'abord, la liste pouvait
+        // cacher une partie de l'équipe d'un Manager.
+        if (!scope.All) { var inScope = scope.Ids.ToArray(); q = q.Where(x => inScope.Contains(x.EmployeeId)); }
         return (await q.OrderByDescending(x => x.WorkDate).ThenBy(x => x.EmployeeName).Take(2000).ToListAsync(ct))
             .Where(x => scope.Allows(x.EmployeeId)).Select(ToDto).ToList();
     }
@@ -195,6 +199,9 @@ public sealed class SqlHrTimeService(
         var q = LeaveQuery();
         if (employeeId is { } e) q = q.Where(x => x.EmployeeId == e);
         if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.Status == status);
+        // Périmètre appliqué AVANT la limite (audit 2026-10 éd. 2) : tronquée d'abord, la liste pouvait
+        // cacher une partie de l'équipe d'un Manager.
+        if (!scope.All) { var inScope = scope.Ids.ToArray(); q = q.Where(x => inScope.Contains(x.EmployeeId)); }
         return (await q.OrderByDescending(x => x.StartDate).Take(1000).ToListAsync(ct)).Where(x => scope.Allows(x.EmployeeId)).Select(ToDto).ToList();
     }
 
@@ -217,20 +224,30 @@ public sealed class SqlHrTimeService(
             return Error.Validation("hr.leave_paid", "Une absence injustifiée ne peut pas être rémunérée.");
         var paid = r.Paid ?? PayrollRules.PaidLeaveTypes.Contains(r.LeaveType);
 
-        var overlap = await db.Database.SqlQuery<bool>($"""
-            SELECT EXISTS(SELECT 1 FROM nexora.leave_record WHERE employee_id = {r.EmployeeId} AND status IN ('requested','approved')
-                          AND daterange(start_date, end_date, '[]') && daterange({r.StartDate}, {r.EndDate}, '[]')) AS "Value"
-            """).FirstAsync(ct);
-        if (overlap) return Error.Conflict("hr.leave_overlap", "Une absence est déjà demandée ou approuvée sur ces dates.");
-
         var id = Guid.NewGuid();
         try
         {
-            await db.Database.ExecuteSqlAsync($"""
-                INSERT INTO nexora.leave_record (id, company_id, employee_id, leave_type, start_date, end_date, days, paid, reason, status, requested_by)
-                VALUES ({id}, {Company}, {r.EmployeeId}, {r.LeaveType}, {r.StartDate}, {r.EndDate}, {Math.Round(days, 2)}, {paid},
-                        {r.Reason}, 'requested', {UserId})
-                """, ct);
+            // Contrôle de chevauchement et insertion sous verrou du dossier (audit 2026-10 éd. 2) : deux demandes
+            // simultanées sur les mêmes dates passaient chacune le contrôle.
+            await uow.ExecuteInTransactionAsync(async token =>
+            {
+                await db.Database.ExecuteSqlAsync($"SELECT 1 FROM nexora.employee WHERE id = {r.EmployeeId} AND company_id = {Company} FOR UPDATE", token);
+                var overlap = await db.Database.SqlQuery<bool>($"""
+                    SELECT EXISTS(SELECT 1 FROM nexora.leave_record WHERE employee_id = {r.EmployeeId} AND status IN ('requested','approved')
+                                  AND daterange(start_date, end_date, '[]') && daterange({r.StartDate}, {r.EndDate}, '[]')) AS "Value"
+                    """).FirstAsync(token);
+                if (overlap) throw new PayrollRefusal(Error.Conflict("hr.leave_overlap", "Une absence est déjà demandée ou approuvée sur ces dates."));
+                await db.Database.ExecuteSqlAsync($"""
+                    INSERT INTO nexora.leave_record (id, company_id, employee_id, leave_type, start_date, end_date, days, paid, reason, status, requested_by)
+                    VALUES ({id}, {Company}, {r.EmployeeId}, {r.LeaveType}, {r.StartDate}, {r.EndDate}, {Math.Round(days, 2)}, {paid},
+                            {r.Reason}, 'requested', {UserId})
+                    """, token);
+                return 0;
+            }, ct);
+        }
+        catch (PayrollRefusal refusal)
+        {
+            return refusal.Error;
         }
         catch (Exception ex) when (FromDatabase(ex) is { } error)
         {
@@ -320,6 +337,9 @@ public sealed class SqlHrTimeService(
         var q = OvertimeQuery();
         if (employeeId is { } e) q = q.Where(x => x.EmployeeId == e);
         if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.Status == status);
+        // Périmètre appliqué AVANT la limite (audit 2026-10 éd. 2) : tronquée d'abord, la liste pouvait
+        // cacher une partie de l'équipe d'un Manager.
+        if (!scope.All) { var inScope = scope.Ids.ToArray(); q = q.Where(x => inScope.Contains(x.EmployeeId)); }
         return (await q.OrderByDescending(x => x.WorkDate).Take(1000).ToListAsync(ct)).Where(x => scope.Allows(x.EmployeeId)).Select(ToDto).ToList();
     }
 
@@ -436,6 +456,9 @@ public sealed class SqlHrTimeService(
         if (periodId is { } p) q = q.Where(x => x.PeriodId == p);
         if (employeeId is { } e) q = q.Where(x => x.EmployeeId == e);
         if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.Status == status);
+        // Périmètre appliqué AVANT la limite (audit 2026-10 éd. 2) : tronquée d'abord, la liste pouvait
+        // cacher une partie de l'équipe d'un Manager.
+        if (!scope.All) { var inScope = scope.Ids.ToArray(); q = q.Where(x => inScope.Contains(x.EmployeeId)); }
         return (await q.OrderByDescending(x => x.SubmittedAt).Take(1000).ToListAsync(ct)).Where(x => scope.Allows(x.EmployeeId)).Select(ToDto).ToList();
     }
 

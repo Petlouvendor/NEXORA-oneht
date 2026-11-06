@@ -20,9 +20,19 @@ namespace Nexora.Infrastructure.Operations;
 ///   resolved_notifications  — seules les notifications archivées ou expirées sont purgeables ;
 ///                              une notification non lue et non archivée n'est jamais supprimée.
 /// </summary>
-public sealed class SqlRetentionPurgeService(NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow, IDateTimeProvider clock)
+public sealed class SqlRetentionPurgeService(NexoraDbContext db, ITenantContext tenant, IUnitOfWork uow, IDateTimeProvider clock,
+    IPlatformOperationGuard guard)
     : IRetentionPurgeService
 {
+    private const string Manage = Nexora.Application.Security.Permissions.Operations.Manage;
+
+    /// <summary>
+    /// Seules les notifications se purgent par entreprise ; sessions, défis MFA et historiques de jobs sont des
+    /// données de l'installation entière. Une opération qui dépasse l'entreprise active exige l'exploitant (A-031).
+    /// </summary>
+    private bool OwnCompanyOnly(string dataType, Guid? companyId)
+        => dataType == "resolved_notifications" && companyId is { } c && c == tenant.ActiveCompanyId;
+
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
     private static readonly string[] DataTypes =
         ["expired_sessions", "expired_mfa_challenges", "completed_job_runs", "resolved_notifications"];
@@ -40,9 +50,11 @@ public sealed class SqlRetentionPurgeService(NexoraDbContext db, ITenantContext 
 
     public async Task<IReadOnlyList<RetentionPolicyDto>> ListPoliciesAsync(CancellationToken ct = default)
     {
+        var platformWide = await guard.RequirePlatformWideAsync(Manage, ct) is null;
         using var _ = tenant.BeginSystemScope();
         var rows = await db.Database.SqlQueryRaw<PolicyRow>(PolicySelect + " ORDER BY data_type, company_id NULLS FIRST").ToListAsync(ct);
-        return rows.Select(ToPolicyDto).ToList();
+        return rows.Where(r => platformWide || r.CompanyId is null || r.CompanyId == tenant.ActiveCompanyId)
+            .Select(ToPolicyDto).ToList();
     }
 
     public async Task<Result<RetentionPolicyDto>> SavePolicyAsync(SaveRetentionPolicyRequest request, CancellationToken ct = default)
@@ -52,6 +64,8 @@ public sealed class SqlRetentionPurgeService(NexoraDbContext db, ITenantContext 
         if (request.DurationDays <= 0) return Error.Validation("retention.duration", "Durée invalide.");
         var action = request.Action.Trim().ToLowerInvariant();
         if (action is not ("archive" or "delete")) return Error.Validation("retention.action", "Action invalide (archive/delete).");
+        if (!OwnCompanyOnly(dataType, request.CompanyId) && await guard.RequirePlatformWideAsync(Manage, ct) is { } refused)
+            return refused;
 
         using var _ = tenant.BeginSystemScope();
         var id = Guid.NewGuid();
@@ -81,6 +95,16 @@ public sealed class SqlRetentionPurgeService(NexoraDbContext db, ITenantContext 
             """).FirstAsync(ct);
     }
 
+    private async Task<string> EffectiveActionAsync(string dataType, Guid? companyId, CancellationToken ct)
+    {
+        using var _ = tenant.BeginSystemScope();
+        return await db.Database.SqlQuery<string>($"""
+            SELECT action AS "Value" FROM nexora.retention_policy
+            WHERE data_type = {dataType} AND (company_id = {companyId} OR company_id IS NULL)
+            ORDER BY company_id NULLS LAST LIMIT 1
+            """).FirstAsync(ct);
+    }
+
     // ------------------------------------------------------------- Purge (§16-19)
 
     private sealed record RunRow(Guid Id, string DataType, Guid? CompanyId, bool DryRun, DateTimeOffset CutoffDate,
@@ -94,13 +118,22 @@ public sealed class SqlRetentionPurgeService(NexoraDbContext db, ITenantContext 
         FROM nexora.purge_run
         """;
 
-    public async Task<PurgeRunDto> PreviewAsync(PurgePreviewRequest request, CancellationToken ct = default)
-        => await RunAsync(request, dryRun: true, ct);
+    public async Task<Result<PurgeRunDto>> PreviewAsync(PurgePreviewRequest request, CancellationToken ct = default)
+    {
+        var dataType = request.DataType?.Trim().ToLowerInvariant() ?? "";
+        if (!DataTypes.Contains(dataType)) return Error.Validation("purge.data_type", "Type de donnée invalide.");
+        // Les comptages couvrent toute l'installation hors purge de notifications de l'entreprise active (A-031).
+        if (!OwnCompanyOnly(dataType, request.CompanyId) && await guard.RequirePlatformWideAsync(Manage, ct) is { } refused)
+            return refused;
+        return Result.Success(await RunAsync(request, dryRun: true, ct));
+    }
 
     public async Task<Result<PurgeRunDto>> ExecuteAsync(PurgePreviewRequest request, CancellationToken ct = default)
     {
         var dataType = request.DataType?.Trim().ToLowerInvariant() ?? "";
         if (!DataTypes.Contains(dataType)) return Error.Validation("purge.data_type", "Type de donnée invalide.");
+        if (!OwnCompanyOnly(dataType, request.CompanyId) && await guard.RequirePlatformWideAsync(Manage, ct) is { } refused)
+            return refused;
         return Result.Success(await RunAsync(request, dryRun: false, ct));
     }
 
@@ -109,7 +142,11 @@ public sealed class SqlRetentionPurgeService(NexoraDbContext db, ITenantContext 
         var dataType = request.DataType.Trim().ToLowerInvariant();
         using var _ = tenant.BeginSystemScope();
 
-        var cutoff = request.CutoffDate ?? clock.UtcNow.AddDays(-await EffectiveDurationDaysAsync(dataType, request.CompanyId, ct));
+        // La date limite ne dépasse jamais celle de la politique (audit 2026-10 éd. 2) : une date future fournie par
+        // l'appelant purgeait tout ce qui était expiré ou archivé, en deçà de la durée de conservation.
+        var policyCutoff = clock.UtcNow.AddDays(-await EffectiveDurationDaysAsync(dataType, request.CompanyId, ct));
+        var cutoff = request.CutoffDate is { } asked && asked < policyCutoff ? asked : policyCutoff;
+        var action = await EffectiveActionAsync(dataType, request.CompanyId, ct);
         var companyId = request.CompanyId;
 
         var (objectCount, protectedCount) = dataType switch
@@ -151,12 +188,24 @@ public sealed class SqlRetentionPurgeService(NexoraDbContext db, ITenantContext 
         var status = "previewed";
         if (!dryRun)
         {
-            await ExecuteDeleteAsync(dataType, cutoff, companyId, ct);
+            // Politique « archive » (avant : ignorée, tout était supprimé) : les notifications sont archivées, jamais
+            // supprimées ; pour les autres données techniques, archiver n'a pas de sens — rien n'est supprimé.
+            if (action == "archive")
+            {
+                if (dataType == "resolved_notifications")
+                    await db.Database.ExecuteSqlAsync($"""
+                        UPDATE nexora.notification SET archived_at = now()
+                        WHERE archived_at IS NULL AND ((expires_at IS NOT NULL AND expires_at < {cutoff}) OR (read_at IS NOT NULL AND created_at < {cutoff}))
+                          AND ({companyId}::uuid IS NULL OR company_id = {companyId})
+                        """, ct);
+            }
+            else
+                await ExecuteDeleteAsync(dataType, cutoff, companyId, ct);
             status = "executed";
         }
 
         var id = Guid.NewGuid();
-        var journal = JsonSerializer.Serialize(new { dataType, cutoff, objectCount, protectedCount, companyId }, Web);
+        var journal = JsonSerializer.Serialize(new { dataType, cutoff, action, objectCount, protectedCount, companyId }, Web);
         Guid? executedBy = dryRun ? null : tenant.UserId;
         DateTimeOffset? executedAt = dryRun ? null : clock.UtcNow;
         await db.Database.ExecuteSqlAsync($"""
@@ -201,9 +250,10 @@ public sealed class SqlRetentionPurgeService(NexoraDbContext db, ITenantContext 
 
     public async Task<IReadOnlyList<PurgeRunDto>> HistoryAsync(CancellationToken ct = default)
     {
+        var platformWide = await guard.RequirePlatformWideAsync(Manage, ct) is null;
         using var _ = tenant.BeginSystemScope();
         var rows = await db.Database.SqlQueryRaw<RunRow>(RunSelect + " ORDER BY created_at DESC LIMIT 100").ToListAsync(ct);
-        return rows.Select(ToRunDto).ToList();
+        return rows.Where(r => platformWide || r.CompanyId == tenant.ActiveCompanyId).Select(ToRunDto).ToList();
     }
 
     /// <summary>Purge automatique selon les politiques système dues, au plus une fois par jour (§46).</summary>

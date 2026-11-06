@@ -4,7 +4,8 @@ import { norm, offlineRefusal, scanOffline, searchOffline, type OfflineCatalogIt
 const item = (p: Partial<OfflineCatalogItem>): OfflineCatalogItem => ({
   productId: p.productId ?? "p", name: p.name ?? "Article", sku: p.sku ?? "SKU", barcode: p.barcode ?? null,
   codes: p.codes ?? [], searchText: p.searchText ?? norm(`${p.name ?? "Article"} ${p.sku ?? "SKU"}`),
-  salePrice: p.salePrice ?? 100, currency: "HTG", availability: p.availability ?? "in_stock",
+  salePrice: p.salePrice ?? 100, currency: "HTG", availability: p.availability ?? "in_stock", packCodes: p.packCodes ?? null,
+  weightCodes: p.weightCodes ?? null,
 });
 
 const catalog = [
@@ -30,6 +31,20 @@ describe("caisse hors ligne (phase 6)", () => {
     expect(scanOffline(catalog, "3017620422003")?.productId).toBe("a");
     expect(scanOffline(catalog, "caf-250")?.productId).toBe("a");
     expect(scanOffline(catalog, "000")).toBeNull();
+  });
+
+  it("un code de carton ajoute son contenu entier (audit 2026-10, A-015)", () => {
+    const packed = [item({ productId: "d", sku: "EAU-1", codes: ["111", "999"], packCodes: ["999=12"] })];
+    expect(scanOffline(packed, "999")?.packSize).toBe(12);
+    expect(scanOffline(packed, "111")?.packSize).toBe(1);
+  });
+
+  it("une étiquette de balance ajoute le poids lu (audit 2026-10, A-015)", () => {
+    const weighed = [item({ productId: "w", sku: "VIANDE", codes: ["2012345"], weightCodes: ["2012345"] })];
+    const hit = scanOffline(weighed, "2012345012509");
+    expect(hit?.productId).toBe("w");
+    expect(hit?.packSize).toBe(1.25);
+    expect(scanOffline(weighed, "2012345012508")).toBeNull();   // clé de contrôle fausse
   });
 
   it("la politique hors ligne est appliquée avant la mise en file", () => {

@@ -46,7 +46,7 @@ public sealed class PermissionAuthorizationHandler(
         if (tenant.UserId is not { } userId)
             return;   // non authentifié → échec (deny-by-default)
 
-        var profile = await permissions.LoadProfileAsync(userId);
+        var profile = await RequestPermissionProfile.GetAsync(context.Resource as HttpContext, permissions, userId);
 
         // Périmètre : entreprise active si sélectionnée, sinon n'importe laquelle autorisée.
         // Gouvernance de groupe : le droit doit être détenu sur LE groupe visé, par un rôle de groupe

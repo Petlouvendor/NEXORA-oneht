@@ -679,7 +679,8 @@ public sealed class SqlPosCatalogQueries(
                         WHEN rr.reorder_point IS NOT NULL AND sb.available <= rr.reorder_point THEN 'low'
                         ELSE 'in_stock' END AS "Availability",
                    COALESCE((SELECT tx.rate FROM nexora.tax tx WHERE tx.id = p.default_tax_id), 0) AS "TaxRate",
-                   COALESCE(dp.tax_included, false) AS "PriceIncludesTax"
+                   COALESCE(dp.tax_included, false) AS "PriceIncludesTax",
+                   1::numeric AS "PackSize"   -- un article choisi dans la liste s'ajoute à l'unité
             FROM nexora.product p
             JOIN nexora.company co ON co.id = p.company_id
             CROSS JOIN LATERAL (SELECT nexora.search_norm({term}) AS n) q
@@ -723,15 +724,34 @@ public sealed class SqlPosCatalogQueries(
     {
         code = (code ?? "").Trim();
         if (code.Length == 0) return null;
+        var hit = await LookupAsync(code, code, false, inventoryLocationId, ct);
+        // Étiquette de balance : article désigné par le préfixe, quantité = poids lu (audit 2026-10, A-015).
+        if (hit is not null || !Nexora.Domain.Catalog.ScaleLabel.TryDecode(code, out var prefix, out var kilograms)) return hit;
+        var weighed = await LookupAsync(prefix, code, true, inventoryLocationId, ct);
+        return weighed is null ? null : weighed with { PackSize = kilograms };
+    }
+
+    /// <summary>
+    /// Article lu par la caisse : <paramref name="match"/> est le code cherché, le code lu en entier
+    /// (<paramref name="scanned"/>) est renvoyé tel quel. <paramref name="weighed"/> : seul un code-barres
+    /// d'article à poids intégré correspond (préfixe d'une étiquette de balance).
+    /// </summary>
+    private async Task<PosProductDto?> LookupAsync(string match, string scanned, bool weighed, Guid? inventoryLocationId,
+        CancellationToken ct)
+    {
+        var code = match;
         return await db.Database.SqlQuery<PosProductDto>($"""
-            SELECT p.id AS "ProductId", p.name AS "Name", p.sku AS "Sku", {code} AS "Barcode",
+            SELECT p.id AS "ProductId", p.name AS "Name", p.sku AS "Sku", {scanned} AS "Barcode",
                    dp.amount AS "SalePrice", dp.code AS "Currency",
                    CASE WHEN p.product_type NOT IN ('stockable', 'weight') THEN 'untracked'
                         WHEN COALESCE(sb.available, 0) <= 0 THEN 'out'
                         WHEN rr.reorder_point IS NOT NULL AND sb.available <= rr.reorder_point THEN 'low'
                         ELSE 'in_stock' END AS "Availability",
                    COALESCE((SELECT tx.rate FROM nexora.tax tx WHERE tx.id = p.default_tax_id), 0) AS "TaxRate",
-                   COALESCE(dp.tax_included, false) AS "PriceIncludesTax"
+                   COALESCE(dp.tax_included, false) AS "PriceIncludesTax",
+                   COALESCE((SELECT b.pack_size FROM nexora.product_barcode b
+                             WHERE b.product_id = p.id AND b.barcode = {code} AND b.status = 'active' AND b.pack_size > 0
+                             LIMIT 1), 1) AS "PackSize"
             FROM nexora.product p
             JOIN nexora.company co ON co.id = p.company_id
             LEFT JOIN LATERAL (
@@ -751,9 +771,14 @@ public sealed class SqlPosCatalogQueries(
                 WHERE r.product_id = p.id AND r.status = 'active'
                 ORDER BY (r.inventory_location_id = {inventoryLocationId}) DESC NULLS LAST LIMIT 1) rr ON true
             WHERE p.company_id = {Company} AND p.status = 'active' AND p.is_sellable
-              AND (p.barcode = {code} OR coalesce(p.plu_code, '') = {code} OR lower(p.sku) = lower({code})
-                   OR EXISTS (SELECT 1 FROM nexora.product_barcode b
-                              WHERE b.product_id = p.id AND b.barcode = {code} AND b.status = 'active'))
+              AND ((NOT {weighed}
+                    AND (p.barcode = {code} OR coalesce(p.plu_code, '') = {code} OR lower(p.sku) = lower({code})
+                         OR EXISTS (SELECT 1 FROM nexora.product_barcode b
+                                    WHERE b.product_id = p.id AND b.barcode = {code} AND b.status = 'active')))
+                   OR ({weighed}
+                    AND EXISTS (SELECT 1 FROM nexora.product_barcode b
+                                WHERE b.product_id = p.id AND b.barcode = {code} AND b.status = 'active'
+                                  AND b.is_weight_embedded)))
             ORDER BY (p.barcode = {code}) DESC
             LIMIT 1
             """).FirstOrDefaultAsync(ct);

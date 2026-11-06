@@ -29,8 +29,14 @@ public interface IExchangeRateProvider
 /// <summary>Périodes comptables : résolution, clôture, réouverture (§4, §27).</summary>
 public interface IAccountingPeriods
 {
+    /// <summary>Période ouverte couvrant <paramref name="date"/> ; ouvre au besoin les exercices suivants pour une
+    /// opération du jour postérieure au dernier exercice (A-042).</summary>
     Task<AccountingPeriod> ResolveOpenPeriodAsync(DateOnly date, CancellationToken ct = default);
     Task<AccountingPeriod?> GetAsync(Guid periodId, CancellationToken ct = default);
+    /// <summary>Exercice le plus récent (fin la plus tardive), ou null si l'entreprise n'en a aucun.</summary>
+    Task<AccountingPeriod?> LastAsync(CancellationToken ct = default);
+    /// <summary>Crée l'exercice d'un an qui suit immédiatement le dernier.</summary>
+    Task<AccountingPeriod> OpenNextYearAsync(CancellationToken ct = default);
     Task<IReadOnlyList<AccountingPeriod>> ListAsync(CancellationToken ct = default);
     Task CloseAsync(Guid periodId, Guid? closedBy, CancellationToken ct = default);
     Task ReopenAsync(Guid periodId, Guid? reopenedBy, CancellationToken ct = default);

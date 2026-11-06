@@ -48,6 +48,18 @@ public sealed class SqlObjectiveService(NexoraDbContext db, ITenantContext tenan
         if (direction is not ("min" or "max")) return Error.Validation("objective.direction", "Direction invalide (min/max).");
         if (request.Weight <= 0) return Error.Validation("objective.weight", "Le poids doit être positif.");
         if (request.TargetValue < 0) return Error.Validation("objective.target_value", "La cible ne peut pas être négative.");
+        if (request.EstablishmentId is { } establishment)
+        {
+            // Seuls les indicateurs de vente se mesurent par établissement (audit 2026-10 éd. 2) : les autres (trésorerie,
+            // créances, stock…) étaient évalués sur toute l'entreprise sous l'étiquette de l'établissement.
+            if (!EstablishmentKpis.Contains(kpiKey))
+                return Error.Validation("objective.establishment_kpi",
+                    "Cet indicateur ne se mesure pas par établissement : fixez l'objectif pour l'entreprise.");
+            if (!await db.Database.SqlQuery<bool>($"""
+                    SELECT EXISTS(SELECT 1 FROM nexora.establishment WHERE id = {establishment} AND company_id = {Company}) AS "Value"
+                    """).FirstAsync(ct))
+                return Error.Validation("objective.establishment", "Établissement inconnu.");
+        }
 
         var effectiveFrom = request.EffectiveFrom ?? calendar.Today;
         var id = request.Id ?? Guid.NewGuid();
@@ -87,10 +99,10 @@ public sealed class SqlObjectiveService(NexoraDbContext db, ITenantContext tenan
         var granted = await permissions.CurrentPermissionsAsync(tenant, ct);
         active = active.Where(a => KpiCatalog.IsVisible(a.KpiKey, granted)).ToList();
         var items = new List<ObjectiveScoreItemDto>();
-        foreach (var group in active.GroupBy(a => a.PeriodType))
+        foreach (var group in active.GroupBy(a => (a.PeriodType, a.EstablishmentId)))
         {
-            var (from, to) = PeriodRange(group.Key, today);
-            var cc = await kpi.CommandCenterAsync(new ReportFilter { From = from, To = to }, ct);
+            var (from, to) = PeriodRange(group.Key.PeriodType, today);
+            var cc = await kpi.CommandCenterAsync(new ReportFilter { From = from, To = to, EstablishmentId = group.Key.EstablishmentId }, ct);
             foreach (var target in group)
             {
                 var actualKpi = cc.Kpis.FirstOrDefault(k => k.Key == target.KpiKey);
@@ -109,6 +121,12 @@ public sealed class SqlObjectiveService(NexoraDbContext db, ITenantContext tenan
         var grade = score switch { >= 110 => "A", >= 100 => "B", >= 85 => "C", >= 70 => "D", _ => "E" };
         return new ObjectiveScoreDto(score, grade, items, clock.UtcNow);
     }
+
+    private static readonly HashSet<string> EstablishmentKpis =
+    [
+        KpiCatalog.Revenue, KpiCatalog.GrossMargin, KpiCatalog.MarginRate, KpiCatalog.Transactions,
+        KpiCatalog.AverageBasket, KpiCatalog.TodayRevenue,
+    ];
 
     private static (DateOnly From, DateOnly To) PeriodRange(string periodType, DateOnly today) => periodType switch
     {

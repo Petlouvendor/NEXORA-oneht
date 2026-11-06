@@ -18,6 +18,9 @@ export const ENTRY_STATUS: Record<string, { label: string; tone: "success" | "wa
 };
 const ORIGIN: Record<string, string> = { manual: "Manuelle", automatic: "Automatique", system: "Système", import: "Import" };
 
+/** Écritures contrepassables depuis cet écran (audit 2026-10, A-006) : les autres se corrigent par leur opération. */
+const REVERSIBLE = new Set(["manual", "adjustment"]);
+
 const linkStyle = { appearance: "none", background: "transparent", border: "none", padding: 0, cursor: "pointer",
   color: "var(--nx-brand)", font: "inherit" } as const;
 
@@ -149,11 +152,14 @@ function EntryDrawer({ id, onOpen, onClose, onEdit, onChanged }: {
               <Button size="sm" variant="subtle" disabled={busy} onClick={() => onEdit(e)}>Modifier</Button>
               <Button size="sm" variant="danger" disabled={busy} onClick={() => setDialog("delete")}>Supprimer</Button>
             </>}
-            {e.status === "posted" && !e.reversedByEntryId && hasPermission("accounting.reverse") &&
+            {e.status === "posted" && !e.reversedByEntryId && hasPermission("accounting.reverse") && REVERSIBLE.has(e.origin) &&
               <Button size="sm" variant="subtle" disabled={busy} onClick={() => setDialog("reverse")}>Contrepasser</Button>}
           </div>
           {e.status === "posted" && <div style={{ fontSize: 12, color: "var(--nx-text-2)" }}>
-            Une écriture validée ne se modifie pas : on la corrige par une contrepassation puis une nouvelle écriture.</div>}
+            {REVERSIBLE.has(e.origin)
+              ? "Une écriture validée ne se modifie pas : on la corrige par une contrepassation puis une nouvelle écriture."
+              : "Écriture née d'une opération (vente, paiement, dépense…) : pour la corriger, annulez l'opération elle-même, qui remet aussi d'aplomb créances, trésorerie et stock."}
+          </div>}
         </div>
       )}
       {dialog === "delete" && e && (

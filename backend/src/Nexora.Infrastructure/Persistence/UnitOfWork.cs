@@ -12,7 +12,8 @@ public sealed class UnitOfWork(NexoraDbContext db) : IUnitOfWork
     /// Exécute l'action dans une transaction unique : rollback complet en cas d'échec (Phase 3 §15).
     /// Si une transaction est déjà ouverte (moteur financier appelé depuis un autre service),
     /// l'action s'y greffe sans en créer une seconde. Les violations de contraintes / triggers
-    /// PostgreSQL deviennent des <see cref="InvalidOperationException"/> porteuses du message métier.
+    /// PostgreSQL deviennent des <see cref="InvalidOperationException"/> porteuses du message métier (ou d'un message
+    /// neutre pour une contrainte : <see cref="DatabaseErrors"/>).
     /// </summary>
     public async Task<T> ExecuteInTransactionAsync<T>(
         Func<CancellationToken, Task<T>> action, CancellationToken ct = default)
@@ -36,7 +37,7 @@ public sealed class UnitOfWork(NexoraDbContext db) : IUnitOfWork
         {
             await SafeRollback(tx, ct);
             db.ChangeTracker.Clear();
-            throw new InvalidOperationException(pg.MessageText, ex);
+            throw new InvalidOperationException(DatabaseErrors.ClientMessage(pg), ex);
         }
         catch
         {

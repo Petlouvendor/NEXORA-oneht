@@ -105,7 +105,13 @@ public sealed class MobileController(
     public async Task<IActionResult> GetAttachment(Guid id, CancellationToken ct)
     {
         var result = await attachments.GetContentAsync(id, ct);
-        return result.IsSuccess ? File(result.Value!.Content, result.Value.ContentType) : FromResult(result);
+        if (!result.IsSuccess) return FromResult(result);
+        // Seule une image reconnue est affichée en ligne ; tout autre contenu (pièce jointe antérieure au contrôle du
+        // format) est proposé en téléchargement, jamais interprété par le navigateur (audit 2026-10 éd. 2).
+        var (content, _) = result.Value!;
+        return Nexora.Infrastructure.Common.ImageSignature.Detect(content) is { } image
+            ? File(content, image)
+            : File(content, "application/octet-stream", $"piece-jointe-{id:N}.bin");
     }
 
     // --- §12, §52 Tournées de livraison ----------------------------------------------

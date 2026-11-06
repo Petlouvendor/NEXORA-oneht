@@ -93,6 +93,7 @@ public sealed class AdministrationController(
     public async Task<IActionResult> WorkflowCatalog(CancellationToken ct) => Ok(await workflows.CatalogAsync(ct));
 
     [HttpPost("workflows")]
+    [RequireStepUp(StepUpPurposes.PermissionChange)]
     [RequirePermission(Permissions.Admin.Workflows)]
     public async Task<IActionResult> UpsertWorkflow([FromBody] UpsertWorkflowRequest r, CancellationToken ct)
         => FromResult(await workflows.UpsertAsync(r, ct));
@@ -103,11 +104,13 @@ public sealed class AdministrationController(
         => FromResult(await workflows.TestAsync(id, r, ct));
 
     [HttpPost("workflows/{id:guid}/activate")]
+    [RequireStepUp(StepUpPurposes.PermissionChange)]
     [RequirePermission(Permissions.Admin.Workflows)]
     public async Task<IActionResult> ActivateWorkflow(Guid id, CancellationToken ct)
         => FromResult(await workflows.ActivateAsync(id, ct));
 
     [HttpPost("workflows/{id:guid}/status")]
+    [RequireStepUp(StepUpPurposes.PermissionChange)]
     [RequirePermission(Permissions.Admin.Workflows)]
     public async Task<IActionResult> WorkflowStatus(Guid id, [FromBody] Nexora.Contracts.Integrations.SetStatusRequest r, CancellationToken ct)
         => FromResult(await workflows.SetStatusAsync(id, r.Status, ct));
@@ -124,11 +127,13 @@ public sealed class AdministrationController(
     public async Task<IActionResult> Automations(CancellationToken ct) => Ok(await automations.ListAsync(ct));
 
     [HttpPost("automations")]
+    [RequireStepUp(StepUpPurposes.PermissionChange)]
     [RequirePermission(Permissions.Admin.Automations)]
     public async Task<IActionResult> UpsertAutomation([FromBody] UpsertAutomationRequest r, CancellationToken ct)
         => FromResult(await automations.UpsertAsync(r, ct));
 
     [HttpPost("automations/{id:guid}/status")]
+    [RequireStepUp(StepUpPurposes.PermissionChange)]
     [RequirePermission(Permissions.Admin.Automations)]
     public async Task<IActionResult> AutomationStatus(Guid id, [FromBody] Nexora.Contracts.Integrations.SetStatusRequest r, CancellationToken ct)
         => FromResult(await automations.SetStatusAsync(id, r.Status, ct));

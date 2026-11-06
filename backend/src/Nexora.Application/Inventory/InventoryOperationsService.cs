@@ -30,9 +30,19 @@ public interface IInventoryOpsStore
     Task<string> NextNumberAsync(string documentType, CancellationToken ct = default);
     Task AddTransferAsync(StockTransfer transfer, CancellationToken ct = default);
     Task<StockTransfer?> GetTransferAsync(Guid id, CancellationToken ct = default);
+    /// <summary>Verrouille le transfert (FOR UPDATE) dans la transaction en cours et le relit à jour, lignes comprises :
+    /// réceptions, clôtures et annulations concurrentes du même transfert sont sérialisées (A-038).</summary>
+    Task<StockTransfer?> LockTransferAsync(Guid id, CancellationToken ct = default);
+    /// <summary>Verrouille l'inventaire (FOR UPDATE) dans la transaction en cours et renvoie son statut en base (A-038).</summary>
+    Task<string?> LockCountStatusAsync(Guid id, CancellationToken ct = default);
     Task AddCountAsync(InventoryCount count, CancellationToken ct = default);
     Task<InventoryCount?> GetCountAsync(Guid id, CancellationToken ct = default);
     Task<decimal> SystemQuantityAsync(Guid productId, Guid locationId, CancellationToken ct = default);
+    /// <summary>Somme des mouvements (hors réservations) enregistrés entre deux instants sur un article à un emplacement.</summary>
+    Task<decimal> MovementsBetweenAsync(Guid productId, Guid locationId, Guid? lotId, DateTimeOffset after, DateTimeOffset upTo,
+        CancellationToken ct = default);
+    /// <summary>Stock par lot à l'emplacement, pour un article suivi par lot (vide sinon).</summary>
+    Task<IReadOnlyList<(Guid LotId, decimal Quantity)>> LotQuantitiesAsync(Guid productId, Guid locationId, CancellationToken ct = default);
     Task<decimal> AverageCostAsync(Guid productId, Guid locationId, CancellationToken ct = default);
     Task AddAdjustmentAsync(StockAdjustment adjustment, CancellationToken ct = default);
     Task SetCountValidatedAsync(Guid countId, Guid? userId, CancellationToken ct = default);
@@ -153,25 +163,28 @@ public sealed class InventoryOperationsService(
     /// recevoir davantage créerait du stock qui n'a jamais quitté la source.</summary>
     public async Task<Result> ReceiveTransferAsync(Guid transferId, IReadOnlyList<ReceiveTransferLineInput> lines, CancellationToken ct = default)
     {
-        var transfer = await store.GetTransferAsync(transferId, ct);
-        if (transfer is null) return Error.NotFound("inventory.transfer_not_found", "Transfert introuvable.");
-        if (transfer.Status is "completed" or "cancelled")
-            return Error.Conflict("inventory.transfer_closed", "Transfert déjà clôturé.");
-        if (lines.Any(x => transfer.Lines.All(l => l.Id != x.TransferLineId)))
-            return Error.Validation("inventory.transfer_line_unknown", "Ligne de transfert inconnue.");
-        foreach (var x in lines)
-        {
-            var line = transfer.Lines.First(l => l.Id == x.TransferLineId);
-            var remaining = line.QuantityShipped - line.QuantityReceived;
-            if (x.Quantity < 0)
-                return Error.Validation("inventory.quantity", "Une quantité reçue ne peut être négative.");
-            if (x.Quantity > remaining)
-                return Error.Validation("inventory.transfer_over_receipt",
-                    $"Quantité reçue ({x.Quantity}) supérieure au reste en transit ({remaining}).");
-        }
+        if (lines.Any(x => x.Quantity < 0))
+            return Error.Validation("inventory.quantity", "Une quantité reçue ne peut être négative.");
 
+        // Contrôles faits sous verrou, sur l'état relu dans la transaction (audit 2026-10 éd. 2, A-038) : faits avant,
+        // sur une lecture sans verrou, huit réceptions simultanées d'un transfert d'une unité en recevaient sept ou huit.
         return await Guarded(() => uow.ExecuteInTransactionAsync<Result>(async token =>
         {
+            var transfer = await store.LockTransferAsync(transferId, token);
+            if (transfer is null) return Error.NotFound("inventory.transfer_not_found", "Transfert introuvable.");
+            if (transfer.Status is "completed" or "cancelled")
+                return Error.Conflict("inventory.transfer_closed", "Transfert déjà clôturé.");
+            if (lines.Any(x => transfer.Lines.All(l => l.Id != x.TransferLineId)))
+                return Error.Validation("inventory.transfer_line_unknown", "Ligne de transfert inconnue.");
+            foreach (var x in lines)
+            {
+                var line = transfer.Lines.First(l => l.Id == x.TransferLineId);
+                var remaining = line.QuantityShipped - line.QuantityReceived;
+                if (x.Quantity > remaining)
+                    return Error.Validation("inventory.transfer_over_receipt",
+                        $"Quantité reçue ({x.Quantity}) supérieure au reste en transit ({remaining}).");
+            }
+
             var now = clock.UtcNow;
             var movements = new List<StockMovementRequest>();
             var fully = true;
@@ -203,15 +216,15 @@ public sealed class InventoryOperationsService(
     {
         if (string.IsNullOrWhiteSpace(reason))
             return Error.Validation("inventory.reason_required", "Un motif est obligatoire pour clôturer avec un écart.");
-        var transfer = await store.GetTransferAsync(transferId, ct);
-        if (transfer is null) return Error.NotFound("inventory.transfer_not_found", "Transfert introuvable.");
-        if (transfer.Status is "completed" or "cancelled")
-            return Error.Conflict("inventory.transfer_closed", "Transfert déjà clôturé.");
-
-        var missing = transfer.Lines.Where(l => l.QuantityShipped > l.QuantityReceived).ToList();
         var currency = await store.FunctionalCurrencyAsync(ct);
         return await Guarded(() => uow.ExecuteInTransactionAsync<Result<Guid?>>(async token =>
         {
+            // Sous verrou (A-038) : une réception simultanée ne peut ni précéder ni suivre la constatation de l'écart.
+            var transfer = await store.LockTransferAsync(transferId, token);
+            if (transfer is null) return Error.NotFound("inventory.transfer_not_found", "Transfert introuvable.");
+            if (transfer.Status is "completed" or "cancelled")
+                return Error.Conflict("inventory.transfer_closed", "Transfert déjà clôturé.");
+            var missing = transfer.Lines.Where(l => l.QuantityShipped > l.QuantityReceived).ToList();
             var now = clock.UtcNow;
             Guid? adjustmentId = null;
             if (missing.Count > 0)
@@ -256,16 +269,17 @@ public sealed class InventoryOperationsService(
     {
         if (string.IsNullOrWhiteSpace(reason))
             return Error.Validation("inventory.reason_required", "Un motif d'annulation est obligatoire.");
-        var transfer = await store.GetTransferAsync(transferId, ct);
-        if (transfer is null) return Error.NotFound("inventory.transfer_not_found", "Transfert introuvable.");
-        if (transfer.Status is "completed" or "cancelled")
-            return Error.Conflict("inventory.transfer_closed", "Transfert déjà clôturé.");
-        if (transfer.Lines.Any(l => l.QuantityReceived > 0))
-            return Error.Conflict("inventory.transfer_partially_received",
-                "Une partie a déjà été reçue : clôturez le transfert avec écart au lieu de l'annuler.");
-
         return await Guarded(() => uow.ExecuteInTransactionAsync<Result>(async token =>
         {
+            // Sous verrou (A-038) : sans lui, une annulation et une réception simultanées rendaient la marchandise à la
+            // source ET la faisaient entrer à destination.
+            var transfer = await store.LockTransferAsync(transferId, token);
+            if (transfer is null) return Error.NotFound("inventory.transfer_not_found", "Transfert introuvable.");
+            if (transfer.Status is "completed" or "cancelled")
+                return Error.Conflict("inventory.transfer_closed", "Transfert déjà clôturé.");
+            if (transfer.Lines.Any(l => l.QuantityReceived > 0))
+                return Error.Conflict("inventory.transfer_partially_received",
+                    "Une partie a déjà été reçue : clôturez le transfert avec écart au lieu de l'annuler.");
             var now = clock.UtcNow;
             var movements = transfer.Lines.Where(l => l.QuantityShipped > 0).Select(l => new StockMovementRequest(
                 l.ProductId, transfer.SourceLocationId, MovementType.TransferIn, l.QuantityShipped, l.UnitCost,
@@ -308,12 +322,26 @@ public sealed class InventoryOperationsService(
         };
         foreach (var pid in products)
         {
+            var unitCost = await store.AverageCostAsync(pid, locationId, ct);
+            // Article suivi par lot : une ligne par lot en stock (audit 2026-10, A-007) — sans lot, l'ajustement
+            // modifiait le stock de l'article sans toucher ses lots, qui divergeaient.
+            var lots = await store.LotQuantitiesAsync(pid, locationId, ct);
+            if (lots.Count > 0)
+            {
+                foreach (var (lotId, quantity) in lots)
+                    count.Lines.Add(new InventoryCountLine
+                    {
+                        Id = Guid.NewGuid(), InventoryCountId = count.Id, CompanyId = Company,
+                        ProductId = pid, LotId = lotId, SystemQuantity = quantity, UnitCost = unitCost,
+                    });
+                continue;
+            }
             count.Lines.Add(new InventoryCountLine
             {
                 Id = Guid.NewGuid(), InventoryCountId = count.Id, CompanyId = Company,
                 ProductId = pid,
                 SystemQuantity = await store.SystemQuantityAsync(pid, locationId, ct),
-                UnitCost = await store.AverageCostAsync(pid, locationId, ct),
+                UnitCost = unitCost,
             });
         }
         await store.AddCountAsync(count, ct);
@@ -350,10 +378,27 @@ public sealed class InventoryOperationsService(
         if (count is null) return Error.NotFound("inventory.count_not_found", "Inventaire introuvable.");
         if (count.Status == "validated") return Error.Conflict("inventory.count_validated", "Inventaire déjà validé.");
         if (count.Status == "cancelled") return Error.Conflict("inventory.count_closed", "Inventaire annulé.");
+        var countedBefore = count.Lines.ToDictionary(l => l.Id, l => l.CountedQuantity);
         var inputError = ApplyCounts(count, counted);
         if (inputError is not null) return inputError;
 
-        var withVariance = count.Lines.Where(l => l.CountedQuantity is { } q && q != l.SystemQuantity).ToList();
+        // Quantité attendue au moment où chaque ligne a été comptée (audit 2026-10, A-007) : la quantité figée à
+        // l'ouverture plus les mouvements enregistrés depuis (ventes, réceptions, transferts pendant le comptage).
+        // Avant, l'écart se calculait sur la seule quantité figée : une vente faite pendant le comptage était
+        // retranchée deux fois (vendue, puis « manquante » à l'inventaire). Une ligne saisie à l'instant compare au
+        // stock courant ; une ligne saisie plus tôt, au stock de l'instant de sa saisie (updated_at de la ligne).
+        var now = clock.UtcNow;
+        var opened = count.StartedAt ?? count.CreatedAt;
+        var expected = new Dictionary<Guid, decimal>();
+        foreach (var line in count.Lines.Where(l => l.CountedQuantity is not null))
+        {
+            var countedAt = countedBefore[line.Id] != line.CountedQuantity ? now : line.UpdatedAt;
+            expected[line.Id] = line.SystemQuantity + (countedAt > opened
+                ? await store.MovementsBetweenAsync(line.ProductId, count.InventoryLocationId, line.LotId, opened, countedAt, ct)
+                : 0m);
+        }
+
+        var withVariance = count.Lines.Where(l => l.CountedQuantity is { } q && q != expected[l.Id]).ToList();
         if (requireJustification && withVariance.Count > 0 && string.IsNullOrWhiteSpace(note))
             return Error.Validation("inventory.justification_required",
                 "Des écarts existent : un commentaire de validation est obligatoire (il est conservé dans l'audit).");
@@ -361,7 +406,15 @@ public sealed class InventoryOperationsService(
 
         return await Guarded(() => uow.ExecuteInTransactionAsync<Result<Guid?>>(async token =>
         {
-            var now = clock.UtcNow;
+            // Sous verrou, statut relu en base (A-038) : deux validations simultanées passaient toutes deux le contrôle
+            // fait plus haut et postaient deux fois l'écart.
+            if (await store.LockCountStatusAsync(count.Id, token) is "validated" or "cancelled" or null)
+                return Error.Conflict("inventory.count_validated", "Inventaire déjà validé ou annulé.");
+
+            // La quantité système de la ligne devient la quantité attendue : l'écart affiché (colonne générée
+            // compté − système) est exactement l'ajustement passé.
+            foreach (var (lineId, quantity) in expected)
+                count.Lines.First(l => l.Id == lineId).SystemQuantity = quantity;
             var adjustment = new StockAdjustment
             {
                 Id = Guid.NewGuid(),

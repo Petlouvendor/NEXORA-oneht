@@ -56,6 +56,7 @@ public sealed class SchedulerRunner(
     Nexora.Application.Customers.ICreditAlertScanner creditAlerts,
     Nexora.Application.Credit.CollectionsService collections,
     Nexora.Application.Payroll.IPayrollAlerts payrollAlerts,
+    Nexora.Application.Finance.Periods.IAccountingPeriodService accountingPeriods,
     IJobRegistry jobs,
     ILogger<SchedulerRunner> logger)
 {
@@ -90,6 +91,7 @@ public sealed class SchedulerRunner(
         await Run("credit.settle_promises");
         await Run("credit.scan_alerts");
         await Run("payroll.scan_alerts");
+        await Run("accounting.open_next_year");
 
         var result = new SchedulerTickResult(companies.Count, automationsRun, deliveries, expired, failures, lotsExpired, dispatched);
         if (automationsRun + deliveries + expired + failures + lotsExpired + dispatched > 0)
@@ -153,6 +155,7 @@ public sealed class SchedulerRunner(
         ["credit.settle_promises"] = token => PerCompanyAsync(companies, collections.SettleDuePromisesAsync, "échéance des promesses", token),
         ["credit.scan_alerts"] = token => PerCompanyAsync(companies, creditAlerts.ScanAsync, "alertes crédit", token),
         ["payroll.scan_alerts"] = token => PerCompanyAsync(companies, payrollAlerts.ScanAsync, "alertes paie", token),
+        ["accounting.open_next_year"] = token => PerCompanyAsync(companies, accountingPeriods.OpenNextYearIfDueAsync, "ouverture de l'exercice suivant", token),
     };
 
     private async Task<List<CompanyRow>> LoadActiveCompaniesAsync(CancellationToken ct)
@@ -179,6 +182,12 @@ public sealed class SchedulerRunner(
                 failures++;
                 logger.LogWarning(ex, "Planificateur : échec {Label} pour l'entreprise {CompanyId}", label, c.Id);
             }
+            finally
+            {
+                // Un même contexte sert toutes les entreprises (audit 2026-10 éd. 2) : après un échec, des entités suivies
+                // de l'entreprise précédente auraient été enregistrées par la suivante. Le suivi repart vide.
+                db.ChangeTracker.Clear();
+            }
         }
         return (count, failures);
     }
@@ -190,6 +199,10 @@ public sealed class SchedulerRunner(
         {
             logger.LogWarning(ex, "Planificateur : échec {Label}", label);
             return (0, 1);
+        }
+        finally
+        {
+            db.ChangeTracker.Clear();
         }
     }
 

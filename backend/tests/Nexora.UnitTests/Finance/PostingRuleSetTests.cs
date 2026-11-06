@@ -74,6 +74,49 @@ public sealed class PostingRuleSetTests
         draft.TotalBaseDebit.Should().Be(100m);
     }
 
+    /// <summary>
+    /// Audit 2026-10 éd. 2, A-041 : 10,01 USD + 1,01 USD de taxe à 132,5 → 1 326,32 + 133,82 = 1 460,14 HTG en base,
+    /// contre 1 460,15 pour les 11,02 USD encaissés. L'écriture, juste en devise, était refusée pour un centime.
+    /// </summary>
+    [Fact]
+    public async Task A_dollar_sale_at_a_fractional_rate_is_balanced_to_the_cent()
+    {
+        _fx.ConvertAsync(Arg.Any<Money>(), "HTG", Arg.Any<DateTimeOffset>(), Arg.Any<CancellationToken>())
+            .Returns(ci => Task.FromResult((new Money(ci.ArgAt<Money>(0).Amount * 132.5m, "HTG"), (Guid?)Guid.NewGuid())));
+        var evt = new CashSaleRecorded(Company, Guid.NewGuid(), DateTimeOffset.UnixEpoch, Guid.NewGuid(),
+            new Money(10.01m, "USD"), new Money(1.01m, "USD"), Tender);
+
+        var draft = await _sut.BuildAsync(evt, Ctx());
+
+        draft.IsBalanced.Should().BeTrue();
+        draft.TotalBaseDebit.Should().Be(1460.15m, "11,02 USD × 132,5");
+        draft.Lines.Sum(l => l.BaseCredit).Should().Be(1460.15m);
+        draft.Lines.Where(l => l.Credit > 0).Sum(l => l.Credit).Should().Be(11.02m, "les montants en devise ne changent pas");
+    }
+
+    [Fact]
+    public void Conversion_rounding_never_hides_a_real_imbalance()
+    {
+        var d = new JournalEntryDraft("OD", new DateOnly(2026, 3, 10), "HTG");
+        d.Debit(Guid.NewGuid(), new Money(20.02m, "USD"), new Money(2652.65m, "HTG"));
+        d.Credit(Guid.NewGuid(), new Money(10.01m, "USD"), new Money(1326.32m, "HTG"));
+        d.Credit(Guid.NewGuid(), new Money(10.01m, "USD"), new Money(1326.32m, "HTG"));
+        d.AbsorbConversionRounding();
+        d.IsBalanced.Should().BeTrue("un centime d'arrondi sur deux lignes est absorbé");
+
+        var wrong = new JournalEntryDraft("OD", new DateOnly(2026, 3, 10), "HTG");
+        wrong.Debit(Guid.NewGuid(), new Money(300m, "USD"), new Money(40_500m, "HTG"));
+        wrong.Credit(Guid.NewGuid(), new Money(300m, "USD"), new Money(300m, "HTG"));
+        wrong.AbsorbConversionRounding();
+        wrong.IsBalanced.Should().BeFalse("un écart de 40 200 n'est pas un arrondi");
+
+        var unequal = new JournalEntryDraft("OD", new DateOnly(2026, 3, 10), "HTG");
+        unequal.Debit(Guid.NewGuid(), new Money(10.01m, "USD"), new Money(1326.33m, "HTG"));
+        unequal.Credit(Guid.NewGuid(), new Money(10.00m, "USD"), new Money(1326.32m, "HTG"));
+        unequal.AbsorbConversionRounding();
+        unequal.IsBalanced.Should().BeFalse("déséquilibrée en devise : rien n'est ajusté");
+    }
+
     [Fact]
     public async Task Unknown_event_type_is_rejected()
     {

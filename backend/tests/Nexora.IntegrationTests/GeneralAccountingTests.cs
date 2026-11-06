@@ -154,9 +154,9 @@ public sealed class GeneralAccountingTests(FinanceEngineFixture fx)
         }
     }
 
-    // ---- §19 : à-nouveaux générés depuis les soldes de bilan de l'exercice précédent ----
+    // ---- §19 : à-nouveaux — report du résultat clôturé, sans doubler les soldes de bilan (audit 2026-10, A-021) ----
     [Fact]
-    public async Task Opening_balances_are_generated_and_balanced()
+    public async Task Opening_balances_carry_the_closed_result_without_doubling_the_balance_sheet()
     {
         var source = await NewPeriod("Exercice 2020", "2020-01-01", "2020-12-31", "open");
         var target = await NewPeriod("Exercice 2022", "2022-01-01", "2022-12-31", "open");
@@ -164,22 +164,66 @@ public sealed class GeneralAccountingTests(FinanceEngineFixture fx)
         await using var s = Scope();
         var svc = s.ServiceProvider.GetRequiredService<IManualJournalService>();
         var fiscal = s.ServiceProvider.GetRequiredService<IFiscalYearService>();
+        var reports = s.ServiceProvider.GetRequiredService<IFinancialReports>();
         var db = s.ServiceProvider.GetRequiredService<NexoraDbContext>();
 
-        var e = await svc.CreateDraftAsync(Entry("OD", D("2020-05-01"), ("5711", 40_000m, 0m), ("1011", 0m, 40_000m)));
+        var e = await svc.CreateDraftAsync(Entry("OD", D("2020-05-01"), ("5711", 40_000m, 0m), ("7011", 0m, 40_000m)));
         (await svc.PostAsync(e.Value)).IsSuccess.Should().BeTrue();
+
+        // Sans clôture, aucun résultat n'est encore en capitaux propres : rien à reporter.
+        (await fiscal.GenerateOpeningBalancesAsync(target, new GenerateOpeningBalancesRequest(source)))
+            .Error!.Code.Should().Be("accounting.no_balances");
+        (await fiscal.CloseYearAsync(source, new CloseYearRequest())).IsSuccess.Should().BeTrue();
+
+        var before = await reports.BalanceSheetAsync(D("2022-01-31"));
+        var cashBefore = (await reports.TrialBalanceAsync(D("2022-01-31"))).Rows.Where(r => r.AccountCode == "5711").Sum(r => r.Debit - r.Credit);
 
         var an = await fiscal.GenerateOpeningBalancesAsync(target, new GenerateOpeningBalancesRequest(source));
         an.IsSuccess.Should().BeTrue(an.Error?.Message);
-        an.Value!.LineCount.Should().BeGreaterThanOrEqualTo(2);
+        an.Value!.LineCount.Should().Be(2, "résultat de l'exercice → report à nouveau");
         an.Value.EntryDate.Should().Be(D("2022-01-01"));
-
         var entry = await db.JournalEntries.AsNoTracking().Include(x => x.Lines).FirstAsync(x => x.Id == an.Value.EntryId);
         entry.Origin.Should().Be("opening");
         entry.Lines.Sum(l => l.BaseDebit).Should().Be(entry.Lines.Sum(l => l.BaseCredit));
 
+        // Le bilan et la caisse sont identiques avant et après les à-nouveaux (ils étaient doublés).
+        var after = await reports.BalanceSheetAsync(D("2022-01-31"));
+        after.Assets.Subtotal.Should().Be(before.Assets.Subtotal);
+        after.Liabilities.Subtotal.Should().Be(before.Liabilities.Subtotal);
+        after.Equity.Subtotal.Should().Be(before.Equity.Subtotal);
+        after.IsBalanced.Should().BeTrue();
+        (await reports.TrialBalanceAsync(D("2022-01-31"))).Rows.Where(r => r.AccountCode == "5711").Sum(r => r.Debit - r.Credit)
+            .Should().Be(cashBefore);
+
         (await fiscal.GenerateOpeningBalancesAsync(target, new GenerateOpeningBalancesRequest(source)))
             .Error!.Code.Should().Be("accounting.opening_exists");
+    }
+
+    // ---- §18 : deux exercices successifs — chacun ne solde que son propre résultat (audit 2026-10, A-020) ----
+    [Fact]
+    public async Task Second_year_close_settles_only_the_second_year()
+    {
+        var y1 = await NewPeriod("Exercice 2016", "2016-01-01", "2016-12-31", "open");
+        var y2 = await NewPeriod("Exercice 2017", "2017-01-01", "2017-12-31", "open");
+
+        await using var s = Scope();
+        var svc = s.ServiceProvider.GetRequiredService<IManualJournalService>();
+        var fiscal = s.ServiceProvider.GetRequiredService<IFiscalYearService>();
+        var reports = s.ServiceProvider.GetRequiredService<IFinancialReports>();
+
+        var r1 = await svc.CreateDraftAsync(Entry("OD", D("2016-03-01"), ("5711", 10_000m, 0m), ("7011", 0m, 10_000m)));
+        (await svc.PostAsync(r1.Value)).IsSuccess.Should().BeTrue();
+        (await fiscal.CloseYearAsync(y1, new CloseYearRequest())).Value!.NetResult.Should().Be(10_000m);
+
+        var r2 = await svc.CreateDraftAsync(Entry("OD", D("2017-03-01"), ("5711", 4_000m, 0m), ("7011", 0m, 4_000m)));
+        (await svc.PostAsync(r2.Value)).IsSuccess.Should().BeTrue();
+
+        (await fiscal.PreviewCloseAsync(y2)).Value!.NetResult.Should().Be(4_000m, "l'exercice 2016 est déjà soldé");
+        (await fiscal.CloseYearAsync(y2, new CloseYearRequest())).Value!.NetResult.Should().Be(4_000m);
+
+        // Après les deux clôtures, le compte de produits est à zéro au 31/12/2017 (il devenait débiteur de 10 000).
+        (await reports.TrialBalanceAsync(D("2017-12-31"))).Rows.Should().NotContain(r => r.AccountCode == "7011");
+        (await reports.BalanceSheetAsync(D("2017-12-31"))).IsBalanced.Should().BeTrue();
     }
 
     // ---- §18 : clôture d'exercice — le résultat va en capitaux propres, le bilan reste équilibré ----
